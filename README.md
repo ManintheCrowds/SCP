@@ -76,6 +76,8 @@ Patterns in `scp_threat_registry.json`: power_words, multilingual_override, jail
 
 - [docs/REFERENCE.md](docs/REFERENCE.md) — Threat model, tier definitions, over-sanitization allowlist
 - [docs/RED_TEAM_PROMPTS.md](docs/RED_TEAM_PROMPTS.md) — Self-test prompts and expected behavior
+- [docs/INTEGRATION.md](docs/INTEGRATION.md) — SCP as guardrail: verification before persist, high-risk sinks
+- [docs/LEARNINGS_PROMPTFOO.md](docs/LEARNINGS_PROMPTFOO.md) — promptfoo integration and inspection results
 - [examples/README.md](examples/README.md) — Daggr + Gradio integration example
 
 ## Guardrail
