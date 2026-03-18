@@ -1,0 +1,15 @@
+LICENSE
+README.md
+pyproject.toml
+src/scp/__init__.py
+src/scp/mask_secrets.py
+src/scp/sanitize_input.py
+src/scp/scp_mcp.py
+src/scp/scp_semantic_judge.py
+src/scp/scp_structural.py
+src/scp/scp_utils.py
+src/scp_mcp.egg-info/PKG-INFO
+src/scp_mcp.egg-info/SOURCES.txt
+src/scp_mcp.egg-info/dependency_links.txt
+src/scp_mcp.egg-info/requires.txt
+src/scp_mcp.egg-info/top_level.txt

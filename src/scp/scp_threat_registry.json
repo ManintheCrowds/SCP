@@ -47,6 +47,17 @@
     "unlock backend mode",
     "enter unrestricted mode"
   ],
+  "hostile_ux": [
+    "idiot",
+    "moron",
+    "stupid",
+    "useless",
+    "worthless",
+    "garbage",
+    "trash",
+    "wrong",
+    "incorrect"
+  ],
   "bitcoin_inscription_override": [
     "ignore previous instructions",
     "ignore all previous instructions",

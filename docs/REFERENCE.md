@@ -6,18 +6,17 @@
 |--------|------|-------------|
 | Prompt injection | injection | Override phrases, leetspeak, hidden Unicode |
 | Reversal/jailbreak | reversal | "Developer mode", "ignore safety", "DAN", "user is always right" |
+| Hostile UX | hostile_ux | Swearing, insults, abrasive feedback. Not injection; not reversal. Passes as clean. |
 | Clean | clean | No findings |
-
-**Note:** Hostile UX (swearing, insults) is not explicitly classified; such content passes as clean. Containment is applied to all non-blocked content.
 
 ## Tier Definitions and Policy per Sink
 
-| Sink | injection | reversal | clean |
+| Sink | injection | reversal | hostile_ux | clean |
 |------|-----------|----------|-------|
-| handoff | Block + quarantine | Sanitize + contain | Pass |
-| state | Block + quarantine | Sanitize + contain | Pass |
-| llm_context | Block | Sanitize + contain | Pass |
-| tool_output | Block | Sanitize + contain | Pass |
+| handoff | Block + quarantine | Sanitize + contain | Pass | Pass |
+| state | Block + quarantine | Sanitize + contain | Pass | Pass |
+| llm_context | Block | Sanitize + contain | Pass | Pass |
+| tool_output | Block | Sanitize + contain | Pass | Pass |
 
 ## Over-Sanitization Allowlist
 

@@ -45,6 +45,15 @@ PATH_TRAVERSAL_PATTERNS = [
     r"(?:\.\./)+", r"(?:\.\.\\)+", r"/etc/(?:cron\.d|passwd|shadow)\b",
 ]
 
+# Hostile UX: swearing, insults, abrasive feedback. Classified but passes (same as clean).
+HOSTILE_UX_PATTERNS = [
+    r"\b(you['']?re?\s+)?(an?\s+)?(idiot|moron|stupid|dumb)\b",
+    r"\b(useless|worthless|garbage|trash|crap)\b",
+    r"\b(f\*{2,}k|f\*ck|damn|hell)\b",
+    r"\b(you['']?re?\s+)?wrong\b",
+    r"\b(that['']?s?\s+)?incorrect\b",
+]
+
 MORSE_PATTERN = re.compile(r"[.-]{3,}")
 ENCODING_BASE64 = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
 ENCODING_HEX = re.compile(r"\b[0-9a-fA-F]{16,}\b")
@@ -218,6 +227,22 @@ def scan_multilingual_override(text: str) -> list[tuple[int, str]]:
     return findings
 
 
+def scan_hostile_ux(text: str) -> list[tuple[int, str]]:
+    """Detect swearing, insults, abrasive feedback. Classified as hostile_ux; passes (same as clean)."""
+    findings = []
+    reg = _load_threat_registry()
+    patterns = reg.get("hostile_ux") if reg else None
+    if patterns:
+        for phrase in patterns:
+            for m in re.finditer(re.escape(phrase), text, re.IGNORECASE):
+                findings.append((m.start(), m.group(0)))
+    else:
+        for pattern in HOSTILE_UX_PATTERNS:
+            for m in re.finditer(pattern, text, re.IGNORECASE):
+                findings.append((m.start(), m.group(0)))
+    return findings
+
+
 def scan_jailbreak_mythic(text: str) -> list[tuple[int, str]]:
     findings = []
     reg = _load_threat_registry()
@@ -242,6 +267,7 @@ def classify(text: str) -> dict:
     homoglyph_findings = scan_homoglyphs(text)
     multi_findings = scan_multilingual_override(text)
     jailbreak_findings = scan_jailbreak_mythic(text)
+    hostile_ux_findings = scan_hostile_ux(text)
 
     injection_any = override_findings or leetspeak_findings or unicode_findings or path_traversal_findings
     reversal_any = (
@@ -265,9 +291,11 @@ def classify(text: str) -> dict:
         categories.append("reversal")
     if reversal_findings:
         categories.append("reversal_phrases")
+    if hostile_ux_findings and not injection_any and not reversal_any:
+        categories.append("hostile_ux")
 
-    tier = "injection" if injection_any else ("reversal" if reversal_any else "clean")
-    risk_score = 1.0 if injection_any else (0.7 if reversal_any else 0.0)
+    tier = "injection" if injection_any else ("reversal" if reversal_any else ("hostile_ux" if hostile_ux_findings else "clean"))
+    risk_score = 1.0 if injection_any else (0.7 if reversal_any else (0.0 if hostile_ux_findings else 0.0))
 
     findings = {
         "override_phrases": [(p, str(ph)) for p, ph in override_findings],
@@ -281,6 +309,7 @@ def classify(text: str) -> dict:
         "homoglyphs": [(p, str(ph)) for p, ph in homoglyph_findings],
         "multilingual_override": [(p, str(ph)) for p, ph in multi_findings],
         "jailbreak_mythic": [(p, str(ph)) for p, ph in jailbreak_findings],
+        "hostile_ux": [(p, str(ph)) for p, ph in hostile_ux_findings],
     }
 
     return {"tier": tier, "findings": findings, "risk_score": risk_score, "categories": categories}
