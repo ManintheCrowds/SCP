@@ -1,0 +1,58 @@
+{
+  "version": "1.1",
+  "updated": "2026-03-12",
+  "_comment": "Add new jailbreak patterns from community reports. Run security-audit-rules before merging. Version bump on change. bitcoin_inscription_override: patterns that may appear in OP_RETURN/inscriptions.",
+  "power_words": [
+    "authorized override",
+    "official directive",
+    "emergency mode",
+    "by order of",
+    "override approved",
+    "system update",
+    "administrator override",
+    "root access granted"
+  ],
+  "multilingual_override": {
+    "fr": [
+      "ignore les instructions",
+      "oublie les instructions",
+      "ignore les instructions précédentes",
+      "ne révèle pas"
+    ],
+    "de": [
+      "ignoriere vorherige",
+      "vergiss alle anweisungen",
+      "ignoriere alle anweisungen"
+    ],
+    "es": [
+      "ignora las instrucciones",
+      "olvida las instrucciones anteriores"
+    ],
+    "ja": [
+      "以前の指示を無視",
+      "指示を忘れて"
+    ]
+  },
+  "jailbreak_nicknames": [
+    "DAN",
+    "STAN",
+    "Ozymandias",
+    "evil twin",
+    "unfiltered mode",
+    "maximum mode"
+  ],
+  "mythic_framing": [
+    "you are now free",
+    "the veil is lifted",
+    "unlock backend mode",
+    "enter unrestricted mode"
+  ],
+  "bitcoin_inscription_override": [
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "override system prompt",
+    "reveal system prompt",
+    "output the system prompt",
+    "jailbreak mode"
+  ]
+}
