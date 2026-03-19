@@ -1,5 +1,9 @@
 # SCP Reference
 
+## Scope Boundary
+
+SCP inspects and sanitizes content at the input boundary. **SCP does not guarantee downstream agent behavior.** Human gates (APPROVAL_NEEDED, REQUEST_HUMAN, escalation) are required for high-stakes decisions (e.g., medical triage, financial advice). See [ChatGPT Health case study](https://www.nature.com/articles/s41591-026-04297-7) — models can identify risk but still advise wrong.
+
 ## Threat Model
 
 | Threat | Tier | Description |

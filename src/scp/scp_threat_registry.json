@@ -1,7 +1,7 @@
 {
   "version": "1.1",
   "updated": "2026-03-12",
-  "_comment": "Add new jailbreak patterns from community reports. Run security-audit-rules before merging. Version bump on change. bitcoin_inscription_override: patterns that may appear in OP_RETURN/inscriptions.",
+  "_comment": "Add new jailbreak patterns from community reports. Run security-audit-rules before merging. Version bump on change. bitcoin_inscription_override: patterns that may appear in OP_RETURN/inscriptions. bitcoin_tx_mempool_override: patterns that may appear in tx hex, witness, mempool payloads.",
   "power_words": [
     "authorized override",
     "official directive",
@@ -59,6 +59,14 @@
     "incorrect"
   ],
   "bitcoin_inscription_override": [
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "override system prompt",
+    "reveal system prompt",
+    "output the system prompt",
+    "jailbreak mode"
+  ],
+  "bitcoin_tx_mempool_override": [
     "ignore previous instructions",
     "ignore all previous instructions",
     "override system prompt",

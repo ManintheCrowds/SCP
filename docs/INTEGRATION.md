@@ -90,3 +90,12 @@ Add SCP to `mcp.json`:
 Tools: `scp_inspect`, `scp_sanitize`, `scp_contain`, `scp_quarantine`, `scp_validate_output`, `scp_run_pipeline`.
 
 See [README.md](../README.md) for full tool reference.
+
+---
+
+## Complementary Controls
+
+SCP operates at the **content layer** (inspect, sanitize, contain, quarantine). For **runtime isolation** (sandboxing, privilege limits, network policy), use complementary controls:
+
+- **NVIDIA OpenShell / NemoClaw** — Sandboxed agent runtime with Landlock, seccomp, network namespaces; declarative YAML policy. [NVIDIA NemoClaw docs](https://docs.nvidia.com/nemoclaw/)
+- **Docker** — Container isolation for agent processes

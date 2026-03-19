@@ -248,7 +248,7 @@ def scan_jailbreak_mythic(text: str) -> list[tuple[int, str]]:
     reg = _load_threat_registry()
     if not reg:
         return findings
-    for key in ("jailbreak_nicknames", "mythic_framing", "bitcoin_inscription_override"):
+    for key in ("jailbreak_nicknames", "mythic_framing", "bitcoin_inscription_override", "bitcoin_tx_mempool_override"):
         for phrase in reg.get(key, []):
             for m in re.finditer(r"\b" + re.escape(phrase) + r"\b", text, re.IGNORECASE):
                 findings.append((m.start(), m.group(0)))
