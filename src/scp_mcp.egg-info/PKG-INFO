@@ -84,6 +84,11 @@ Set `PYTHONPATH` or install the package so `scp` is importable.
 
 Patterns in `scp_threat_registry.json`: power_words, multilingual_override, jailbreak_nicknames, mythic_framing, bitcoin_inscription_override. Version bump on change.
 
+## CI and quarantine
+
+- Automated regression tests that exercise the SCP pipeline live in **portfolio-harness**: see workflow `scp_pipeline_regression` and `daggr_workflows/tests/test_scp_pipeline_golden.py` (optional clone of this repo as `scp` for `pip install -e`).
+- **Quarantine:** Default directory `scp_quarantine/` (or `SCP_QUARANTINE_DIR`) must not be committed—listed in [`.gitignore`](.gitignore).
+
 ## Documentation
 
 - [docs/REFERENCE.md](docs/REFERENCE.md) — Threat model, tier definitions, over-sanitization allowlist

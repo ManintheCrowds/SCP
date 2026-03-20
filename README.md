@@ -85,6 +85,16 @@ Patterns in `scp_threat_registry.json`: power_words, multilingual_override, jail
 - [docs/LEARNINGS_PROMPTFOO.md](docs/LEARNINGS_PROMPTFOO.md) — promptfoo integration and inspection results
 - [examples/README.md](examples/README.md) — Daggr + Gradio integration example
 
+## FAQ: PDFs and binary files
+
+SCP tools take **text** (`content: str`). **PDFs and other binaries are not scanned directly.** For documents:
+
+1. Extract text (e.g. `pypdf`, `pdftotext`, `pymupdf`).
+2. Run `scp_inspect` / `scp_run_pipeline` on the extracted text before LLM or handoff sinks.
+3. Use OS antivirus or equivalent on the original files separately (malware is out of scope for SCP).
+
+See also: `local-proto` docs `HUMAN_WELLBEING_CORPUS.md` for a full private-PDF pipeline (provenance, chunks, optional RAG).
+
 ## Guardrail
 
 SCP has no shutdown, suicide, or self-termination commands. SCP inspects, sanitizes, contains, and quarantines content—it does not self-destruct.

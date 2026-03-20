@@ -13,3 +13,4 @@ src/scp_mcp.egg-info/SOURCES.txt
 src/scp_mcp.egg-info/dependency_links.txt
 src/scp_mcp.egg-info/requires.txt
 src/scp_mcp.egg-info/top_level.txt
+tests/test_mcp_contract_v1.py
