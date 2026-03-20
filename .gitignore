@@ -1,3 +1,11 @@
+# Environment and secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# Runtime quarantine storage (see SCP_QUARANTINE_DIR)
+scp_quarantine/
+
 # Python bytecode and caches
 __pycache__/
 *.py[cod]
