@@ -64,9 +64,14 @@ Set `PYTHONPATH` or install the package so `scp` is importable.
 | Variable | Description |
 |----------|-------------|
 | `SCP_QUARANTINE_DIR` | Quarantine storage path (default: `./scp_quarantine`) |
-| `OLLAMA_BASE_URL` | For semantic judge (default: `http://localhost:11434`) |
+| `OLLAMA_BASE_URL` | For semantic judge: **origin only** (default `http://localhost:11434`). Allowed hosts: `localhost`, `127.0.0.1`, `::1`, plus comma-separated `OLLAMA_ALLOWED_HOSTS`. No path, query, or userinfo. HTTP redirects to another host are not followed. |
+| `OLLAMA_ALLOWED_HOSTS` | Optional extra hostnames/IPs (comma-separated, case-insensitive) allowed for `OLLAMA_BASE_URL` |
+| `OLLAMA_URL_STRICT` | Set to `1` to reject names that resolve to private or link-local addresses (mitigates some SSRF/DNS cases) |
 | `OLLAMA_MODEL` | For semantic judge (default: `llama3.2`) |
+| `OLLAMA_API_KEY` | Optional bearer token for Ollama (sent as `Authorization: Bearer …`; never put secrets in the URL) |
 | `SCP_SEMANTIC_JUDGE` | Set to `1` to enable semantic judge globally |
+
+**Trust:** Point Ollama only at hosts you control. On shared runners or CI, keep the semantic judge off unless required; use firewall rules so the process cannot reach sensitive internal subnets unless intended.
 
 ## Threat Registry
 

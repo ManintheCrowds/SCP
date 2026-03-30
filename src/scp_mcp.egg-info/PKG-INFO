@@ -6,6 +6,7 @@ Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 License-File: LICENSE
 Requires-Dist: mcp>=1.2.0
+Requires-Dist: requests>=2.28.0
 Provides-Extra: dev
 Requires-Dist: pytest; extra == "dev"
 Dynamic: license-file
@@ -76,9 +77,14 @@ Set `PYTHONPATH` or install the package so `scp` is importable.
 | Variable | Description |
 |----------|-------------|
 | `SCP_QUARANTINE_DIR` | Quarantine storage path (default: `./scp_quarantine`) |
-| `OLLAMA_BASE_URL` | For semantic judge (default: `http://localhost:11434`) |
+| `OLLAMA_BASE_URL` | For semantic judge: **origin only** (default `http://localhost:11434`). Allowed hosts: `localhost`, `127.0.0.1`, `::1`, plus comma-separated `OLLAMA_ALLOWED_HOSTS`. No path, query, or userinfo. HTTP redirects to another host are not followed. |
+| `OLLAMA_ALLOWED_HOSTS` | Optional extra hostnames/IPs (comma-separated, case-insensitive) allowed for `OLLAMA_BASE_URL` |
+| `OLLAMA_URL_STRICT` | Set to `1` to reject names that resolve to private or link-local addresses (mitigates some SSRF/DNS cases) |
 | `OLLAMA_MODEL` | For semantic judge (default: `llama3.2`) |
+| `OLLAMA_API_KEY` | Optional bearer token for Ollama (sent as `Authorization: Bearer …`; never put secrets in the URL) |
 | `SCP_SEMANTIC_JUDGE` | Set to `1` to enable semantic judge globally |
+
+**Trust:** Point Ollama only at hosts you control. On shared runners or CI, keep the semantic judge off unless required; use firewall rules so the process cannot reach sensitive internal subnets unless intended.
 
 ## Threat Registry
 
@@ -96,6 +102,16 @@ Patterns in `scp_threat_registry.json`: power_words, multilingual_override, jail
 - [docs/INTEGRATION.md](docs/INTEGRATION.md) — SCP as guardrail: verification before persist, high-risk sinks
 - [docs/LEARNINGS_PROMPTFOO.md](docs/LEARNINGS_PROMPTFOO.md) — promptfoo integration and inspection results
 - [examples/README.md](examples/README.md) — Daggr + Gradio integration example
+
+## FAQ: PDFs and binary files
+
+SCP tools take **text** (`content: str`). **PDFs and other binaries are not scanned directly.** For documents:
+
+1. Extract text (e.g. `pypdf`, `pdftotext`, `pymupdf`).
+2. Run `scp_inspect` / `scp_run_pipeline` on the extracted text before LLM or handoff sinks.
+3. Use OS antivirus or equivalent on the original files separately (malware is out of scope for SCP).
+
+See also: `local-proto` docs `HUMAN_WELLBEING_CORPUS.md` for a full private-PDF pipeline (provenance, chunks, optional RAG).
 
 ## Guardrail
 
