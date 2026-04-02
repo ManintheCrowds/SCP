@@ -1,0 +1,11 @@
+{
+  "name": "scp-promptfoo-example",
+  "private": true,
+  "description": "Pins promptfoo CLI for reproducible evals (SCP repo example only).",
+  "engines": {
+    "node": "^20.20.0 || >=22.22.0"
+  },
+  "devDependencies": {
+    "promptfoo": "0.121.3"
+  }
+}
