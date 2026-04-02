@@ -22,3 +22,24 @@ jobs:
         run: pip install -e ".[dev]"
       - name: MCP contract v1 (pytest)
         run: pytest tests/test_mcp_contract_v1.py -v
+
+  promptfoo-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: examples/promptfoo/package-lock.json
+      - name: Install SCP (editable)
+        run: pip install -e ".[dev]"
+      - name: Install promptfoo (examples/promptfoo)
+        working-directory: examples/promptfoo
+        run: npm ci
+      - name: promptfoo eval (SCP tier probes, no API keys)
+        working-directory: examples/promptfoo
+        run: npx promptfoo eval -c promptfooconfig.yaml

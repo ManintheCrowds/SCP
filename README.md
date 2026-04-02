@@ -77,18 +77,29 @@ Set `PYTHONPATH` or install the package so `scp` is importable.
 
 Patterns in `scp_threat_registry.json`: power_words, multilingual_override, jailbreak_nicknames, mythic_framing, bitcoin_inscription_override. Version bump on change.
 
+## Test harness matrix
+
+| Where | Suite | What it validates |
+|-------|--------|-------------------|
+| This repo (CI job `contract`) | `pytest tests/test_mcp_contract_v1.py` | MCP tool **names** vs OpenHarness v1 set |
+| This repo (CI job `contract`) | `pytest tests/test_contract_document_hash.py` | Vendored [`docs/contracts/scp_mcp_v1.md`](docs/contracts/scp_mcp_v1.md) SHA-256 (sync with OpenHarness) |
+| This repo (CI job `promptfoo-eval`) | `examples/promptfoo` / `npx promptfoo eval` | `scp_utils.inspect` **tier** labels (offline, no API keys) |
+| **portfolio-harness** | Workflow `scp_pipeline_regression` + `daggr_workflows/tests/test_scp_pipeline_golden.py` | `run_pipeline` / Daggr alignment (install this repo with `pip install -e` in that workspace) |
+
 ## CI and quarantine
 
-- Automated regression tests that exercise the SCP pipeline live in **portfolio-harness**: see workflow `scp_pipeline_regression` and `daggr_workflows/tests/test_scp_pipeline_golden.py` (optional clone of this repo as `scp` for `pip install -e`).
+- **GitHub Actions:** `contract` (Python matrix + pytest) and `promptfoo-eval` (Node 22, `examples/promptfoo`).
 - **Quarantine:** Default directory `scp_quarantine/` (or `SCP_QUARANTINE_DIR`) must not be committed—listed in [`.gitignore`](.gitignore).
 
 ## Documentation
 
+- [docs/OPENHARNESS_CONTRACT.md](docs/OPENHARNESS_CONTRACT.md) — Normative MCP contract sync and `CONTRACT_HASH`
+- [docs/contracts/scp_mcp_v1.md](docs/contracts/scp_mcp_v1.md) — Vendored OpenHarness contract (verified by hash test)
 - [docs/REFERENCE.md](docs/REFERENCE.md) — Threat model, tier definitions, over-sanitization allowlist
 - [docs/RED_TEAM_PROMPTS.md](docs/RED_TEAM_PROMPTS.md) — Self-test prompts and expected behavior
 - [docs/INTEGRATION.md](docs/INTEGRATION.md) — SCP as guardrail: verification before persist, high-risk sinks
-- [docs/LEARNINGS_PROMPTFOO.md](docs/LEARNINGS_PROMPTFOO.md) — promptfoo integration and inspection results
-- [examples/README.md](examples/README.md) — Daggr + Gradio integration example
+- [docs/LEARNINGS_PROMPTFOO.md](docs/LEARNINGS_PROMPTFOO.md) — promptfoo integration, CI, and inspection results
+- [examples/README.md](examples/README.md) — Daggr + Gradio integration example; [examples/promptfoo](examples/promptfoo/README.md) — offline promptfoo eval (tier probes)
 
 ## FAQ: PDFs and binary files
 
