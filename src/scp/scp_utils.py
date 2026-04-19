@@ -1,6 +1,8 @@
 # PURPOSE: SCP utilities - inspect, sanitize, contain, quarantine.
 # Standalone package; no harness dependency.
 
+import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -152,16 +154,52 @@ def mask_secrets(content: str) -> dict:
     return {"masked": masked, "redacted_count": count}
 
 
+def get_policy_provenance(registry_path: Path | None = None) -> dict:
+    """Version and optional threat-registry fingerprint for agent-visible policy provenance."""
+    out: dict = {
+        "scp_mcp_version": "unknown",
+        "scp_module_path": str(Path(__file__).resolve()),
+    }
+    try:
+        out["scp_mcp_version"] = importlib.metadata.version("scp-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    if registry_path is not None and registry_path.is_file():
+        try:
+            raw = registry_path.read_bytes()
+            out["registry_path"] = str(registry_path.resolve())
+            out["registry_sha256_16"] = hashlib.sha256(raw).hexdigest()[:16]
+            out["registry_size_bytes"] = len(raw)
+        except OSError:
+            out["registry_error"] = "unreadable"
+    return out
+
+
 def run_pipeline(content: str, sink: str, options: dict | None = None) -> dict:
     options = options or {}
+    steps: list[dict] = []
     report = inspect(content, context=sink)
     tier = report.get("tier", "clean")
     risk_score = report.get("risk_score", 0.0)
+    steps.append(
+        {
+            "name": "inspect",
+            "ok": True,
+            "detail": {"tier": tier},
+        }
+    )
 
     semantic_enabled = options.get("semantic_judge") or os.environ.get("SCP_SEMANTIC_JUDGE") == "1"
     if tier == "clean" and sink in ("handoff", "state") and semantic_enabled:
         judge_result = scp_semantic_judge.judge(content, sink)
         report["semantic_judge"] = judge_result
+        steps.append(
+            {
+                "name": "semantic_judge",
+                "ok": True,
+                "detail": {"suspicious": bool(judge_result.get("suspicious"))},
+            }
+        )
         if judge_result.get("suspicious"):
             tier = "reversal"
             risk_score = 0.7
@@ -173,12 +211,49 @@ def run_pipeline(content: str, sink: str, options: dict | None = None) -> dict:
         if options.get("quarantine_on_block"):
             q = quarantine(content, reason="injection", source=sink)
             report["quarantine_id"] = q.get("quarantine_id")
-        return {"result": None, "blocked": blocked, "report": report}
+            steps.append(
+                {
+                    "name": "quarantine",
+                    "ok": True,
+                    "detail": {"quarantine_id": q.get("quarantine_id")},
+                }
+            )
+        else:
+            steps.append(
+                {
+                    "name": "quarantine",
+                    "ok": False,
+                    "detail": "skipped",
+                }
+            )
+        steps.append(
+            {
+                "name": "contain",
+                "ok": False,
+                "detail": "skipped_injection_blocked",
+            }
+        )
+        return {"result": None, "blocked": blocked, "report": report, "steps": steps}
 
     if tier == "reversal":
         san = sanitize(content, mode="strip_unicode")
         content = san["sanitized"]
         report["sanitized"] = True
+        steps.append(
+            {
+                "name": "sanitize",
+                "ok": True,
+                "detail": {"changes": san["changes"]},
+            }
+        )
 
-    contained = contain(content, wrapper=options.get("wrapper", "markdown_fence"))
-    return {"result": contained, "blocked": False, "report": report}
+    wrapper = options.get("wrapper", "markdown_fence")
+    contained = contain(content, wrapper=wrapper)
+    steps.append(
+        {
+            "name": "contain",
+            "ok": True,
+            "detail": {"wrapper": wrapper},
+        }
+    )
+    return {"result": contained, "blocked": False, "report": report, "steps": steps}
