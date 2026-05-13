@@ -4,7 +4,9 @@ pyproject.toml
 src/scp/__init__.py
 src/scp/mask_secrets.py
 src/scp/ollama_url_guard.py
+src/scp/quarantine_limits.py
 src/scp/sanitize_input.py
+src/scp/scp_limits.py
 src/scp/scp_mcp.py
 src/scp/scp_semantic_judge.py
 src/scp/scp_structural.py
@@ -16,4 +18,5 @@ src/scp_mcp.egg-info/requires.txt
 src/scp_mcp.egg-info/top_level.txt
 tests/test_contract_document_hash.py
 tests/test_mcp_contract_v1.py
+tests/test_security_regressions.py
 tests/test_semantic_judge_ollama.py

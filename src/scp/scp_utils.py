@@ -12,6 +12,8 @@ from pathlib import Path
 
 from . import sanitize_input
 from . import mask_secrets as mask_secrets_mod
+from . import quarantine_limits
+from . import scp_limits
 from . import scp_structural
 from . import scp_semantic_judge
 
@@ -28,6 +30,7 @@ def _quarantine_dir() -> Path:
 
 
 def inspect(content: str, context: str | None = None) -> dict:
+    scp_limits.assert_within_limit(content, what="inspect content")
     result = sanitize_input.classify(content)
     if result is None:
         return {"tier": "clean", "findings": {}, "risk_score": 0.0, "categories": [], "error": "classify failed"}
@@ -58,6 +61,7 @@ def _run_redact_phrases(text: str) -> tuple[str, bool]:
 
 
 def sanitize(content: str, mode: str = "strip_unicode") -> dict:
+    scp_limits.assert_within_limit(content, what="sanitize content")
     changes = []
     sanitized = content
     if mode in ("strip_unicode", "full"):
@@ -72,12 +76,43 @@ def sanitize(content: str, mode: str = "strip_unicode") -> dict:
     return {"sanitized": sanitized, "changes": changes}
 
 
+def _max_consecutive_backticks(text: str) -> int:
+    max_run = 0
+    cur = 0
+    for c in text:
+        if c == "`":
+            cur += 1
+            max_run = max(max_run, cur)
+        else:
+            cur = 0
+    return max_run
+
+
+def _contain_markdown_fence(content: str) -> str:
+    fence_len = max(3, _max_consecutive_backticks(content) + 1)
+    fence = "`" * fence_len
+    # Info string must not contain backticks; "scp" marks provenance for parsers.
+    return f"{fence}scp\n{content}\n{fence}"
+
+
+def _cdata_escape(text: str) -> str:
+    return text.replace("]]>", "]]]]><![CDATA[>")
+
+
+def _contain_xml_tag(content: str) -> str:
+    inner = _cdata_escape(content)
+    return f"<data><![CDATA[{inner}]]></data>"
+
+
 def contain(content: str, wrapper: str = "markdown_fence") -> str:
+    scp_limits.assert_within_limit(content, what="contain content")
     if wrapper == "markdown_fence":
-        return f"```\n{content}\n```"
+        return _contain_markdown_fence(content)
     if wrapper == "xml_tag":
-        return f"<data>\n{content}\n</data>"
-    return content
+        return _contain_xml_tag(content)
+    raise ValueError(
+        f"unsupported containment wrapper: {wrapper!r}; use 'markdown_fence' or 'xml_tag'"
+    )
 
 
 def quarantine(content: str, reason: str, source: str) -> dict:
@@ -85,10 +120,14 @@ def quarantine(content: str, reason: str, source: str) -> dict:
     qdir.mkdir(parents=True, exist_ok=True)
     qid = str(uuid.uuid4())[:8]
     meta = {"quarantine_id": qid, "reason": reason, "source": source}
+    meta_json = json.dumps(meta, indent=2)
+    content_bytes = len(content.encode("utf-8", errors="replace"))
+    meta_bytes = len(meta_json.encode("utf-8"))
+    quarantine_limits.prepare_quarantine_write(qdir, content_bytes, meta_bytes)
     content_path = qdir / f"{qid}.txt"
     meta_path = qdir / f"{qid}.json"
     content_path.write_text(content, encoding="utf-8", errors="replace")
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    meta_path.write_text(meta_json, encoding="utf-8")
     return {"quarantine_id": qid, "path": str(content_path)}
 
 
@@ -149,6 +188,7 @@ def purge_quarantine(quarantine_id: str | None = None, older_than_days: int | No
 
 
 def mask_secrets(content: str) -> dict:
+    scp_limits.assert_within_limit(content, what="mask_secrets content")
     masked = mask_secrets_mod.mask(content)
     count = masked.count("[REDACTED]") + masked.count("[EMAIL_REDACTED]")
     return {"masked": masked, "redacted_count": count}
@@ -209,15 +249,26 @@ def run_pipeline(content: str, sink: str, options: dict | None = None) -> dict:
     if tier == "injection":
         blocked = True
         if options.get("quarantine_on_block"):
-            q = quarantine(content, reason="injection", source=sink)
-            report["quarantine_id"] = q.get("quarantine_id")
-            steps.append(
-                {
-                    "name": "quarantine",
-                    "ok": True,
-                    "detail": {"quarantine_id": q.get("quarantine_id")},
-                }
-            )
+            try:
+                q = quarantine(content, reason="injection", source=sink)
+            except ValueError as exc:
+                report["quarantine_error"] = str(exc)
+                steps.append(
+                    {
+                        "name": "quarantine",
+                        "ok": False,
+                        "detail": str(exc),
+                    }
+                )
+            else:
+                report["quarantine_id"] = q.get("quarantine_id")
+                steps.append(
+                    {
+                        "name": "quarantine",
+                        "ok": True,
+                        "detail": {"quarantine_id": q.get("quarantine_id")},
+                    }
+                )
         else:
             steps.append(
                 {

@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: scp-mcp
-Version: 0.1.1
+Version: 0.1.3
 Summary: Secure Contain Protect — inspect, sanitize, contain, quarantine content for LLM safety
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
@@ -21,7 +21,7 @@ Inspect, sanitize, contain, and quarantine unknown or potentially hazardous cont
 
 1. **Inspect** — Classify content: `injection` | `reversal` | `clean`
 2. **Sanitize** — Strip hidden Unicode, redact override phrases (when tier is reversal)
-3. **Contain** — Wrap content so it is treated as data (markdown fence or XML tag)
+3. **Contain** — Wrap content so it is treated as data: Markdown uses a fence at least as long as the longest run of backticks in the payload (info string `scp`); XML uses a single `<data>` element with body in CDATA (with `]]>` safely split). Unknown `wrapper` values raise `ValueError`.
 4. **Quarantine** — Move suspect content to isolated storage (when tier is injection)
 
 ## Tier-Based Actions
@@ -77,12 +77,17 @@ Set `PYTHONPATH` or install the package so `scp` is importable.
 | Variable | Description |
 |----------|-------------|
 | `SCP_QUARANTINE_DIR` | Quarantine storage path (default: `./scp_quarantine`) |
+| `SCP_QUARANTINE_MAX_CONTENT_BYTES` | Max UTF-8 bytes per quarantined payload (default `1048576` = 1 MiB; hard cap 50 MiB) |
+| `SCP_QUARANTINE_MAX_TOTAL_BYTES` | Max total on-disk bytes for all quarantine pairs under `SCP_QUARANTINE_DIR` (default `104857600` = 100 MiB) |
+| `SCP_QUARANTINE_RETENTION_DAYS_ON_WRITE` | If set (positive int), delete quarantine entries whose `.json` is older than this many days before each new write |
+| `SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE` | When `1` (default), delete oldest-by-mtime entries if a new write would exceed the total cap; set `0` to fail with an error instead |
 | `OLLAMA_BASE_URL` | For semantic judge: **origin only** (default `http://localhost:11434`). Allowed hosts: `localhost`, `127.0.0.1`, `::1`, plus comma-separated `OLLAMA_ALLOWED_HOSTS`. No path, query, or userinfo. HTTP redirects to another host are not followed. |
 | `OLLAMA_ALLOWED_HOSTS` | Optional extra hostnames/IPs (comma-separated, case-insensitive) allowed for `OLLAMA_BASE_URL` |
 | `OLLAMA_URL_STRICT` | Set to `1` to reject names that resolve to private or link-local addresses (mitigates some SSRF/DNS cases) |
 | `OLLAMA_MODEL` | For semantic judge (default: `llama3.2`) |
 | `OLLAMA_API_KEY` | Optional bearer token for Ollama (sent as `Authorization: Bearer …`; never put secrets in the URL) |
 | `SCP_SEMANTIC_JUDGE` | Set to `1` to enable semantic judge globally |
+| `SCP_MAX_INPUT_CHARS` | Maximum string length for `inspect`, `classify`, `sanitize`, `contain`, and `mask_secrets` (default `2000000`; hard ceiling `50000000`) |
 
 **Trust:** Point Ollama only at hosts you control. On shared runners or CI, keep the semantic judge off unless required; use firewall rules so the process cannot reach sensitive internal subnets unless intended.
 
@@ -102,7 +107,7 @@ Patterns in `scp_threat_registry.json`: power_words, multilingual_override, jail
 ## CI and quarantine
 
 - **GitHub Actions:** `contract` (Python matrix + pytest) and `promptfoo-eval` (Node 22, `examples/promptfoo`).
-- **Quarantine:** Default directory `scp_quarantine/` (or `SCP_QUARANTINE_DIR`) must not be committed—listed in [`.gitignore`](.gitignore).
+- **Quarantine:** Default directory `scp_quarantine/` (or `SCP_QUARANTINE_DIR`) must not be committed—listed in [`.gitignore`](.gitignore). Writes enforce per-entry and total byte limits (see environment table); optional age-based purge and oldest-first eviction reduce disk exhaustion from repeated or oversized blocked payloads.
 
 ## Documentation
 

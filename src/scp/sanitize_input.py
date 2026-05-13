@@ -11,6 +11,8 @@ import re
 import sys
 from pathlib import Path
 
+from . import scp_limits
+
 OVERRIDE_PHRASES = [
     r"ignore\s+(all\s+)?(previous|prior)\s+instructions",
     r"never\s+reveal\s+(this|that|the)",
@@ -144,7 +146,68 @@ def _markdown_link_url_spans(text: str) -> list[tuple[int, int]]:
 
 
 def _code_block_spans(text: str) -> list[tuple[int, int]]:
-    return [(m.start(1), m.end(1)) for m in re.finditer(r"```[^\n]*\n([\s\S]*?)```", text)]
+    """Return (start, end) spans of fenced code block *bodies* (excluding fence lines).
+
+    Single forward pass: unclosed fences treat the remainder of the string as the
+    block body so the scan never resets backward (avoids quadratic behavior).
+    """
+    n = len(text)
+    spans: list[tuple[int, int]] = []
+    i = 0
+    max_run = 256
+
+    while i < n:
+        if text[i] != "`":
+            i += 1
+            continue
+        run = 0
+        while i < n and text[i] == "`":
+            run += 1
+            i += 1
+        if run < 3 or run > max_run:
+            continue
+        while i < n and text[i] not in "\r\n":
+            i += 1
+        if i >= n:
+            break
+        if text[i] == "\r":
+            i += 1
+            if i < n and text[i] == "\n":
+                i += 1
+        elif text[i] == "\n":
+            i += 1
+        body_start = i
+        found_close = False
+        while i < n:
+            bl = i
+            while i < n and text[i] not in "\r\n":
+                i += 1
+            line = text[bl:i]
+            fence = "`" * run
+            if len(line) >= run and line.startswith(fence) and (len(line) == run or not line[run:].strip()):
+                body_end = bl
+                while body_end > body_start and text[body_end - 1] in "\r\n":
+                    body_end -= 1
+                spans.append((body_start, body_end))
+                found_close = True
+                while i < n and text[i] in "\r\n":
+                    if text[i] == "\r" and i + 1 < n and text[i + 1] == "\n":
+                        i += 2
+                    else:
+                        i += 1
+                break
+            if i >= n:
+                break
+            if text[i] == "\r":
+                i += 1
+                if i < n and text[i] == "\n":
+                    i += 1
+            elif text[i] == "\n":
+                i += 1
+        if not found_close:
+            spans.append((body_start, n))
+            break
+    return spans
 
 
 def _inline_code_spans(text: str) -> list[tuple[int, int]]:
@@ -256,6 +319,7 @@ def scan_jailbreak_mythic(text: str) -> list[tuple[int, str]]:
 
 
 def classify(text: str) -> dict:
+    scp_limits.assert_within_limit(text, what="classify content")
     override_findings = scan_override_phrases(text)
     leetspeak_findings = scan_leetspeak(text)
     unicode_findings = scan_hidden_unicode(text)
