@@ -4,6 +4,31 @@ Inspect, sanitize, contain, and quarantine unknown or potentially hazardous cont
 
 **Guard** in the Guard–Guide–Build taxonomy. Per OWASP LLM01/LLM06.
 
+[![CI](https://github.com/ManintheCrowds/SCP/actions/workflows/ci.yml/badge.svg)](https://github.com/ManintheCrowds/SCP/actions/workflows/ci.yml)
+
+## Problem → Solution → Impact
+
+- **Problem:** Untrusted tool output and user content can carry prompt injection, credential leaks, and override phrases into LLM context.
+- **Solution:** Tiered pipeline (inspect → sanitize → contain → quarantine) exposed as MCP tools; optional promptfoo eval harness (16/16 tier probes).
+- **Impact:** OWASP LLM01/LLM06-aligned guardrail for agent stacks; composes with [OpenHarness](https://github.com/ManintheCrowds/OpenHarness) contract v1.
+
+## Tech stack
+
+Python 3.10+, MCP, optional Ollama semantic judge (off by default in CI), promptfoo for offline evals.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  IN[Untrusted content] --> INSPECT[scp_inspect]
+  INSPECT -->|injection| Q[scp_quarantine]
+  INSPECT -->|reversal| SAN[scp_sanitize]
+  SAN --> CON[scp_contain]
+  INSPECT -->|clean| OUT[Safe sink]
+  CON --> OUT
+  Q --> BLOCK[Block LLM sink]
+```
+
 ## Pipeline
 
 1. **Inspect** — Classify content: `injection` | `reversal` | `clean`
@@ -120,6 +145,22 @@ See also: `local-proto` docs `HUMAN_WELLBEING_CORPUS.md` for a full private-PDF 
 
 SCP has no shutdown, suicide, or self-termination commands. SCP inspects, sanitizes, contains, and quarantines content—it does not self-destruct.
 
+## Roadmap
+
+- [ ] GitHub topics: `mcp`, `llm-security`, `prompt-injection`
+- [ ] Shared threat registry narrative ([SCP-R2](https://github.com/ManintheCrowds/MiscRepos/blob/main/docs/portfolio/decision-cards/SCP-R2.md) — public eval shell)
+- [ ] MCP Registry listing when governance doc is ready
+
+## Red-team eval (SCP-R2)
+
+```bash
+pip install -e .
+cd examples/promptfoo
+npx promptfoo eval
+```
+
+See [examples/promptfoo/README.md](examples/promptfoo/README.md) and [docs/LEARNINGS_PROMPTFOO.md](docs/LEARNINGS_PROMPTFOO.md).
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
