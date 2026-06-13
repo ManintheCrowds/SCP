@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 from unittest.mock import MagicMock, patch
 
-from scp.scp_semantic_judge import judge
+from scp.scp_semantic_judge import _post_ollama, judge
 
 
 class _ProxyCaptureHandler(BaseHTTPRequestHandler):
@@ -23,6 +23,23 @@ class _ProxyCaptureHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         return
+
+
+class _FakeSession:
+    def __init__(self, response: MagicMock) -> None:
+        self.response = response
+        self.trust_env = True
+        self.post_kwargs: dict | None = None
+
+    def __enter__(self) -> "_FakeSession":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+    def post(self, endpoint: str, **kwargs: object) -> MagicMock:
+        self.post_kwargs = kwargs
+        return self.response
 
 
 class TestSemanticJudgeOllamaUrl(unittest.TestCase):
@@ -46,6 +63,21 @@ class TestSemanticJudgeOllamaUrl(unittest.TestCase):
         self.assertFalse(out["suspicious"])
         self.assertIn("redirect", out["reason"].lower())
         m_post.assert_called_once()
+
+    def test_ollama_post_disables_redirects_and_proxy_environment(self) -> None:
+        resp = MagicMock()
+        fake_session = _FakeSession(resp)
+        with patch("scp.scp_semantic_judge.requests.Session", return_value=fake_session):
+            out = _post_ollama(
+                "http://127.0.0.1:11434/api/generate",
+                {"model": "m", "prompt": "p", "stream": False},
+                {"Content-Type": "application/json"},
+            )
+
+        self.assertIs(out, resp)
+        self.assertFalse(fake_session.trust_env)
+        self.assertIsNotNone(fake_session.post_kwargs)
+        self.assertIs(fake_session.post_kwargs["allow_redirects"], False)
 
     def test_ambient_proxy_is_not_used_for_ollama_requests(self) -> None:
         _ProxyCaptureHandler.requests_seen = 0
