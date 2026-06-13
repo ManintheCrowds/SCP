@@ -251,7 +251,7 @@ def run_pipeline(content: str, sink: str, options: dict | None = None) -> dict:
         if options.get("quarantine_on_block"):
             try:
                 q = quarantine(content, reason="injection", source=sink)
-            except ValueError as exc:
+            except (OSError, ValueError) as exc:
                 report["quarantine_error"] = str(exc)
                 steps.append(
                     {
