@@ -60,6 +60,11 @@ def test_mask_invalid_domain_no_hang() -> None:
     assert time.perf_counter() - t0 < 5.0
 
 
+def test_mask_email_before_sentence_period() -> None:
+    masked = mask_secrets.mask("Contact alice@example.com.")
+    assert masked == "Contact [EMAIL_REDACTED]."
+
+
 def test_quarantine_rejects_oversized_content(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
     monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "50")
