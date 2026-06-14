@@ -10,7 +10,7 @@ import pytest
 
 # Synced with OpenHarness docs/contracts/scp_mcp_v1.md (v1.0)
 EXPECTED_SCP_MCP_V1_SHA256 = (
-    "226f19b3cf237a2d7fe6793d4f7f4be5bee5631693f489662c48d126b4094f42"
+    "69a40c210d4a4999358ad1655c60ded39e442a8d451fe2f69a1e1a0f31a5ae4f"
 )
 
 
