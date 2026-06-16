@@ -1,0 +1,20 @@
+title = "Gitleaks configuration"
+
+[allowlist]
+description = "Docs, binaries, SCP redaction source, and intentional test hazard corpus."
+paths = [
+  '''.*\.md$''',
+  '''.*\.lock$''',
+  '''.*\.svg$''',
+  '''.*\.png$''',
+  '''.*\.jpg$''',
+  '''.*\.jpeg$''',
+  '''.*\.gif$''',
+  '''.*\.pdf$''',
+  '''.*\.min\.js$''',
+  '''.*\.map$''',
+  '''src/scp/mask_secrets\.py''',
+  '''tests/fixtures/''',
+  '''__pycache__/''',
+  '''.*\.pyc$'''
+]
