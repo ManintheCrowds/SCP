@@ -82,6 +82,21 @@ def _cmd_publish(args) -> dict:
     )
 
 
+def _cmd_fetch(args) -> dict:
+    bare = args.hash[7:] if args.hash.startswith("sha256:") else args.hash
+    token = args.l402_token or nostr.l402.l402_token_from_env()
+    try:
+        payload = nostr.fetch_payload(args.url, bare, l402_token=token)
+    except nostr.FetchError as exc:
+        out: dict = {"ok": False, "error": exc.reason}
+        if exc.status is not None:
+            out["status"] = exc.status
+        if exc.l402 is not None:
+            out["l402"] = exc.l402
+        return out
+    return {"ok": True, "payload": payload, "payload_hash": f"sha256:{bare}"}
+
+
 def _cmd_discover(args) -> dict | list[dict]:
     announcements = nostr.discover_announcements(
         allowlist=_split_allowlist(args.allowlist),
@@ -94,10 +109,13 @@ def _cmd_discover(args) -> dict | list[dict]:
         return [nostr.announcement_to_dict(a) for a in announcements]
 
     results = []
+    token = args.l402_token or nostr.l402.l402_token_from_env()
     for ann in announcements:
         results.append({
             "announcement": nostr.announcement_to_dict(ann),
-            "import": nostr.import_from_announcement(ann, allowlist=_split_allowlist(args.allowlist)),
+            "import": nostr.import_from_announcement(
+                ann, allowlist=_split_allowlist(args.allowlist), l402_token=token
+            ),
         })
     return results
 
@@ -153,7 +171,14 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--since", type=int)
     pd.add_argument("--until", type=int)
     pd.add_argument("--fetch", action="store_true", help="fetch+import to quarantine (no merge)")
+    pd.add_argument("--l402-token", help="operator-supplied L402 macaroon:preimage (or SCP_ANTIGEN_L402_TOKEN)")
     pd.set_defaults(func=_cmd_discover)
+
+    pf = sub.add_parser("fetch", help="fetch HTTPS payload with optional L402 token (no merge)")
+    pf.add_argument("url")
+    pf.add_argument("--hash", required=True, help="expected sha256 bare hex or sha256: prefix")
+    pf.add_argument("--l402-token", help="operator-supplied L402 macaroon:preimage (or SCP_ANTIGEN_L402_TOKEN)")
+    pf.set_defaults(func=_cmd_fetch)
     return p
 
 
@@ -176,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         return 0
     print(json.dumps(out, indent=2, ensure_ascii=False))
-    # Non-zero exit when a verify/import/merge did not succeed, for CI/scripts.
+    # Non-zero exit when a verify/import/merge/fetch did not succeed, for CI/scripts.
     if isinstance(out, dict) and (out.get("ok") is False or out.get("rejected") is True):
         return 2
     return 0

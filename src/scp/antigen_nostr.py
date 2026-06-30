@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import requests
 
 from . import antigen
+from . import antigen_l402 as l402
 
 # Parameterized-replaceable kind (30000–39999); ADR 2026-06-29 / operator lock 2026-06-30.
 ANTIGEN_NOSTR_KIND = 30078
@@ -540,50 +541,132 @@ def _extract_payload_obj(body: dict) -> dict:
     raise FetchError("unrecognized_payload_shape")
 
 
+def _build_l402_metadata(resp: requests.Response) -> dict:
+    www_auth = resp.headers.get("WWW-Authenticate")
+    parsed_challenge = l402.parse_www_authenticate_l402(www_auth)
+    meta: dict = {
+        "status": 402,
+        "www_authenticate": www_auth,
+    }
+    if parsed_challenge:
+        meta["macaroon"] = parsed_challenge.get("macaroon")
+        meta["invoice"] = parsed_challenge.get("invoice")
+        meta["invoice_hint"] = parsed_challenge.get("invoice_hint")
+    return meta
+
+
+def _fetch_response(
+    sess: requests.Session,
+    url: str,
+    *,
+    l402_token: str | None = None,
+) -> requests.Response:
+    if l402_token:
+        macaroon, preimage = l402.normalize_l402_token(l402_token)
+        headers = {"Authorization": l402.format_authorization_header(macaroon, preimage)}
+        return sess.get(url, timeout=30, headers=headers)
+    return sess.get(url, timeout=30)
+
+
+def _process_fetch_response(
+    resp: requests.Response,
+    *,
+    url_host: str,
+    expected_hash_bare_hex: str,
+    antigen_id: str | None = None,
+) -> dict:
+    expected = f"sha256:{expected_hash_bare_hex}"
+    if resp.status_code != 200:
+        antigen._audit(
+            "fetch_rejected",
+            url_host=url_host,
+            payload_hash=expected,
+            status=resp.status_code,
+            antigen_id=antigen_id,
+        )
+        raise FetchError("http_error", status=resp.status_code)
+
+    try:
+        body = resp.json()
+    except json.JSONDecodeError as exc:
+        antigen._audit(
+            "fetch_rejected",
+            url_host=url_host,
+            payload_hash=expected,
+            reason="invalid_json",
+            antigen_id=antigen_id,
+        )
+        raise FetchError("invalid_json") from exc
+
+    payload = _extract_payload_obj(body)
+    actual = antigen.compute_payload_hash(payload)
+    if actual != expected:
+        antigen._audit(
+            "fetch_rejected",
+            url_host=url_host,
+            payload_hash=expected,
+            reason="hash_mismatch",
+            antigen_id=antigen_id,
+        )
+        raise FetchError("hash_mismatch")
+
+    antigen._audit(
+        "fetch_ok",
+        url_host=url_host,
+        payload_hash=expected,
+        antigen_id=antigen_id,
+    )
+    return payload
+
+
 def fetch_payload(
     url: str,
     expected_hash_bare_hex: str,
     *,
+    l402_token: str | None = None,
+    antigen_id: str | None = None,
     session: requests.Session | None = None,
 ) -> dict:
-    """Fetch HTTPS payload, verify sha256 (bare hex). On 402, raise FetchError with l402 metadata."""
+    """Fetch HTTPS payload, verify sha256 (bare hex).
+
+    On 402 without l402_token, raise FetchError with parsed L402 challenge metadata.
+    When l402_token is supplied, send Authorization on the request (operator-paid retry).
+    """
     if not _HEX64.match(expected_hash_bare_hex):
         raise FetchError("bad_expected_hash")
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise FetchError("url_must_be_https")
 
+    token = l402_token or l402.l402_token_from_env()
     sess = session or requests.Session()
-    resp = sess.get(url, timeout=30)
+    resp = _fetch_response(sess, url, l402_token=token)
+
     if resp.status_code == 402:
-        l402 = {
-            "status": 402,
-            "headers": {k: v for k, v in resp.headers.items()},
-            "www_authenticate": resp.headers.get("WWW-Authenticate"),
-        }
-        antigen._audit("fetch_402", url_host=parsed.netloc, payload_hash=f"sha256:{expected_hash_bare_hex}")
-        raise FetchError("payment_required", status=402, l402=l402)
-    if resp.status_code != 200:
-        antigen._audit("fetch_rejected", url_host=parsed.netloc, payload_hash=f"sha256:{expected_hash_bare_hex}",
-                       status=resp.status_code)
-        raise FetchError("http_error", status=resp.status_code)
+        meta = _build_l402_metadata(resp)
+        antigen._audit(
+            "fetch_l402_challenge",
+            url_host=parsed.netloc,
+            payload_hash=f"sha256:{expected_hash_bare_hex}",
+            invoice_hint=meta.get("invoice_hint"),
+            antigen_id=antigen_id,
+        )
+        raise FetchError("payment_required", status=402, l402=meta)
 
-    try:
-        body = resp.json()
-    except json.JSONDecodeError as exc:
-        antigen._audit("fetch_rejected", url_host=parsed.netloc, payload_hash=f"sha256:{expected_hash_bare_hex}",
-                       reason="invalid_json")
-        raise FetchError("invalid_json") from exc
+    if token:
+        antigen._audit(
+            "fetch_l402_retry",
+            url_host=parsed.netloc,
+            payload_hash=f"sha256:{expected_hash_bare_hex}",
+            antigen_id=antigen_id,
+        )
 
-    payload = _extract_payload_obj(body)
-    actual = antigen.compute_payload_hash(payload)
-    expected = f"sha256:{expected_hash_bare_hex}"
-    if actual != expected:
-        antigen._audit("fetch_rejected", url_host=parsed.netloc, payload_hash=expected, reason="hash_mismatch")
-        raise FetchError("hash_mismatch")
-
-    antigen._audit("fetch_ok", url_host=parsed.netloc, payload_hash=expected)
-    return payload
+    return _process_fetch_response(
+        resp,
+        url_host=parsed.netloc,
+        expected_hash_bare_hex=expected_hash_bare_hex,
+        antigen_id=antigen_id,
+    )
 
 
 def bundle_from_announcement(announcement: AntigenAnnouncement, payload: dict) -> dict:
@@ -608,6 +691,7 @@ def import_from_announcement(
     announcement: AntigenAnnouncement,
     *,
     allowlist: list[str] | None = None,
+    l402_token: str | None = None,
     session: requests.Session | None = None,
 ) -> dict:
     """Fetch first URL, verify hash, assemble bundle, quarantine via import_bundle (no merge)."""
@@ -621,8 +705,15 @@ def import_from_announcement(
             "reasons": ["issuer_not_on_allowlist"],
             "payload_hash": f"sha256:{announcement.payload_hash_bare}",
         }
+    token = l402_token or l402.l402_token_from_env()
     try:
-        payload = fetch_payload(announcement.payload_urls[0], announcement.payload_hash_bare, session=session)
+        payload = fetch_payload(
+            announcement.payload_urls[0],
+            announcement.payload_hash_bare,
+            l402_token=token,
+            antigen_id=announcement.antigen_id,
+            session=session,
+        )
     except FetchError as exc:
         return {
             "accepted": False,
