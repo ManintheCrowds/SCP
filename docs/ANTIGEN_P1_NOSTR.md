@@ -1,6 +1,6 @@
 # SCP-ANT1 Antigen P1 — Nostr publish/subscribe
 
-**Version:** scp-mcp 0.1.5  
+**Version:** scp-mcp 0.1.6 (P1b adds L402 retry — see [ANTIGEN_P1B_L402_SPIKE.md](ANTIGEN_P1B_L402_SPIKE.md))
 **Kind:** `30078` (parameterized-replaceable antigen announcements)
 
 ## Overview
@@ -28,6 +28,7 @@ pip install -e ".[dev,antigen-nostr]"
 | `SCP_ANTIGEN_RELAYS` | Comma-separated WSS URLs (default: `wss://relay.damus.io`, `wss://nos.lol`) |
 | `SCP_ANTIGEN_ISSUER_ALLOWLIST` | Comma-separated issuer pubkeys (hex); **empty = reject all** |
 | `NOSTR_SECKEY` | Publisher seckey (64-hex or `nsec1…`); never commit or log |
+| `SCP_ANTIGEN_L402_TOKEN` | Operator-supplied L402 `macaroon:preimage` for paid HTTPS retry; never commit or log |
 | `SCP_ANTIGEN_NOSTR_INTEGRATION` | Set to `1` to run optional live-relay pytest smoke |
 
 ## CLI examples
@@ -47,6 +48,9 @@ python -m scp.antigen_cli discover --allowlist "$ISSUER_PUBKEY"
 
 # Discover + fetch + quarantine (still NO merge)
 python -m scp.antigen_cli discover --allowlist "$ISSUER_PUBKEY" --fetch
+
+# Fetch with operator-paid L402 token (after human pays 402 invoice)
+python -m scp.antigen_cli fetch "$PAYLOAD_URL" --hash "$BARE_SHA256" --l402-token "$MACAROON:$PREIMAGE"
 ```
 
 ## MCP tools (separate server)
@@ -57,7 +61,7 @@ Run: `python -m scp.antigen_mcp`
 |------|------|
 | `scp_antigen_publish` | Publish announcement |
 | `scp_antigen_discover` | Subscribe / list metadata |
-| `scp_antigen_fetch` | HTTPS fetch + hash verify; surfaces 402 metadata, does **not** pay |
+| `scp_antigen_fetch` | HTTPS fetch + hash verify; surfaces 402 metadata; optional `l402_token` for operator-paid retry — does **not** auto-spend |
 
 Merge still requires `scp_antigen_merge` with `approve=True`.
 
@@ -71,7 +75,7 @@ Merge still requires `scp_antigen_merge` with `approve=True`.
 ## Tests
 
 ```bash
-pytest tests/test_antigen_p0.py tests/test_antigen_p1_nostr.py
+pytest tests/test_antigen_p0.py tests/test_antigen_p1_nostr.py tests/test_antigen_p1b_l402.py
 pytest  # full suite
 SCP_ANTIGEN_NOSTR_INTEGRATION=1 pytest tests/test_antigen_p1_nostr.py -k live
 ```

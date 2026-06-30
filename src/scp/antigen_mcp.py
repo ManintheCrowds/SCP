@@ -11,6 +11,7 @@ import json
 from mcp.server.fastmcp import FastMCP
 
 from . import antigen as antigen_mod
+from . import antigen_l402 as l402_mod
 from . import antigen_nostr as nostr_mod
 
 mcp = FastMCP("SCP-Antigen")
@@ -135,12 +136,15 @@ def scp_antigen_discover(allowlist: str | None = None, relays: str | None = None
 
 
 @mcp.tool()
-def scp_antigen_fetch(url: str, expected_hash: str, allowlist: str | None = None) -> str:
+def scp_antigen_fetch(url: str, expected_hash: str, allowlist: str | None = None,
+                      l402_token: str | None = None) -> str:
     """Fetch HTTPS payload and verify sha256 (expected_hash is bare 64-hex or sha256: prefix).
-    Does NOT pay on 402 — surfaces l402 metadata. Does NOT auto-import; call scp_antigen_import after."""
+    Does NOT pay on 402 — surfaces l402 metadata. Optional l402_token is operator-supplied
+    macaroon:preimage for retry after human-paid invoice. Does NOT auto-import."""
     try:
         bare = expected_hash[7:] if expected_hash.startswith("sha256:") else expected_hash
-        payload = nostr_mod.fetch_payload(url, bare)
+        token = l402_token or l402_mod.l402_token_from_env()
+        payload = nostr_mod.fetch_payload(url, bare, l402_token=token)
         if allowlist is not None:
             allow = antigen_mod._load_allowlist(_parse_allowlist(allowlist))
             if not allow:
