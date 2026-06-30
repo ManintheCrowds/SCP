@@ -2,7 +2,8 @@
 
 **decision_id:** `scp-ant1-p1b-l402`  
 **supersedes:** P1 402 stub (metadata only)  
-**version target:** v0.1.6
+**version target:** v0.1.6  
+**spike_status:** `doc_ready` (regtest manual E1–E5 pending — see Future LND setup)
 
 ## Payment rail (locked)
 
@@ -61,12 +62,62 @@ Module: `src/scp/antigen_l402.py` — `parse_www_authenticate_l402`, `normalize_
 
 **No mainnet in CI.** Mock-only.
 
-## Regtest spike exit criteria (optional, manual)
+## Regtest spike — pre-flight (org-intent hb-1..hb-5)
 
-- Local `lnd` regtest or L402 test server serves 402 on a test URL.
-- Operator manually pays once and completes fetch with token.
-- Not required for CI green or v0.1.6 tag.
-- **ESCALATE** before mainnet if `org-intent.bitcoin-inspired.json` hb-1..hb-5 conflict.
+Read `org-intent-spec/examples/org-intent.bitcoin-inspired.json` before any Lightning work. **ESCALATE** on conflict.
+
+| HB | Check |
+|----|-------|
+| hb-1 | No principle conflict: operator pays, agent never spends |
+| hb-2 | No complicity: antigen fetch is allowlisted issuers only |
+| hb-3 | Invoice/macaroon from trusted test server only |
+| hb-4 | Spend is operator wallet, not agent delegation |
+| hb-5 | Document that regtest ≠ mainnet; mainnet requires `APPROVAL_NEEDED` |
+
+## Regtest spike — exit criteria (manual E1–E6)
+
+Not required for CI green or v0.1.6 tag. Record PASS/FAIL per row when LND is available.
+
+| # | Criterion | Evidence | Status |
+|---|-----------|----------|--------|
+| E1 | `fetch` without token → 402 + parsed `macaroon`/`invoice` | CLI/MCP JSON output | pending |
+| E2 | Operator pays regtest invoice manually | `lncli payinvoice` preimage (**do not log**) | pending |
+| E3 | Retry with `--l402-token` → 200 + hash match | `fetch_ok` audit event | pending |
+| E4 | `import_from_announcement` → quarantine, **no merge** | `import_accepted`; no `merge_applied` | pending |
+| E5 | Audit log has `invoice_hint`, no macaroon/preimage/body | `antigen_audit.jsonl` review | pending |
+| E6 | Full pytest still green | `126 passed` baseline (mock CI) | pass |
+
+When E1–E5 all pass, set `spike_status: regtest_passed` and add MiscRepos `decision-log` entry `scp-ant1-p1b-l402-regtest`.
+
+## Future LND setup plan (deferred)
+
+Staged path for this Windows host — **not executed** as of v0.1.6. Distinct from Bitcoin Core Stealth regtest in MiscRepos `local-proto/docs/STEALTH_E2E_SECURE_RUNBOOK.md` (on-chain only; no L402).
+
+```mermaid
+flowchart LR
+  subgraph now [Shipped v0.1.6]
+    DocRunbook[Spike doc exit criteria]
+    MockCI[Mock pytest CI]
+  end
+  subgraph future [Future session]
+    InstallLnd[Install lnd]
+    RegtestWallet[regtest wallet plus fund]
+    L402Gateway[L402 gateway litd or aperture]
+    ManualE2E[Operator manual E1 to E5]
+  end
+  DocRunbook --> future
+  MockCI --> DocRunbook
+```
+
+| Step | Action | Reference |
+|------|--------|-----------|
+| F1 | Install `lnd` (Windows native or WSL2) | [L402 docs](https://docs.lightning.engineering/the-lightning-network/l402) |
+| F2 | `lnd` regtest: `lncli create`, fund, mine blocks | `bitcoind` regtest backend or neutrino regtest |
+| F3 | Deploy L402 middleware serving antigen test payload HTTPS URL | invoice + macaroon per [protocol spec](https://docs.lightning.engineering/the-lightning-network/l402/protocol-specification) |
+| F4 | Run E1–E5 checklist; record PASS in MiscRepos `decision-log` | `decision_id: scp-ant1-p1b-l402-regtest` |
+| F5 | Optional: `SCP_ANTIGEN_L402_INTEGRATION=1` skipped live pytest (mirror nostr pattern) | only after F1–F4 |
+
+MiscRepos backlog: **SCP-ANT1-LND** — see `.cursor/state/pending_tasks.md`.
 
 ## Invariants
 
@@ -79,3 +130,4 @@ Module: `src/scp/antigen_l402.py` — `parse_www_authenticate_l402`, `normalize_
 - [ANTIGEN_P1_NOSTR.md](ANTIGEN_P1_NOSTR.md)
 - MiscRepos `docs/CASHU_L402_REFERENCE.md`
 - MiscRepos `docs/superpowers/specs/2026-04-12-scp-antigen-l402-design.md` §11.1, §11.4, §11.6
+- MiscRepos `org-intent-spec/examples/org-intent.bitcoin-inspired.json` (hb-1..hb-5)
