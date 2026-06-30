@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from scp import antigen, antigen_l402 as l402, antigen_nostr as nostr
+from scp import antigen, antigen_cli, antigen_l402 as l402, antigen_mcp, antigen_nostr as nostr
 
 SECKEY = "0000000000000000000000000000000000000000000000000000000000000003"
 PAYLOAD_URL = "https://example.com/antigens/inj.l402.001.json"
@@ -125,7 +125,41 @@ def test_fetch_l402_token_retry_200(issuer):
     assert payload == bundle["payload"]
 
 
-def test_fetch_l402_token_still_402():
+def test_parse_www_authenticate_l402_unquoted():
+    header = f"L402 macaroon={MACAROON}, invoice={INVOICE}"
+    parsed = l402.parse_www_authenticate_l402(header)
+    assert parsed is not None
+    assert parsed["macaroon"] == MACAROON
+    assert parsed["invoice"] == INVOICE
+
+
+def test_parse_www_authenticate_l402_non_l402_returns_none():
+    assert l402.parse_www_authenticate_l402("Bearer token123") is None
+    assert l402.parse_www_authenticate_l402("") is None
+    assert l402.parse_www_authenticate_l402("L402") is None
+
+
+def test_parse_www_authenticate_l402_partial_fields():
+    mac_only = l402.parse_www_authenticate_l402(f'L402 macaroon="{MACAROON}"')
+    assert mac_only is not None
+    assert mac_only["macaroon"] == MACAROON
+    assert mac_only["invoice"] is None
+
+
+def test_normalize_l402_token_invalid():
+    with pytest.raises(ValueError, match="empty_l402_token"):
+        l402.normalize_l402_token("")
+    with pytest.raises(ValueError, match="macaroon_colon_preimage"):
+        l402.normalize_l402_token("no-colon-here")
+
+
+def test_fetch_invalid_l402_token_raises_fetch_error():
+    bare = "a" * 64
+    with pytest.raises(nostr.FetchError, match="invalid_l402_token"):
+        nostr.fetch_payload(PAYLOAD_URL, bare, l402_token="bad-token")
+
+
+def test_fetch_l402_token_still_402_audits_retry_failed(tmp_path: Path):
     bare = "a" * 64
     mock_resp = MagicMock()
     mock_resp.status_code = 402
@@ -135,6 +169,50 @@ def test_fetch_l402_token_still_402():
         with pytest.raises(nostr.FetchError) as exc:
             nostr.fetch_payload(PAYLOAD_URL, bare, l402_token=TOKEN)
     assert exc.value.reason == "payment_required"
+    types = [e["event"] for e in _audit_events(tmp_path)]
+    assert "fetch_l402_retry_failed" in types
+    assert "fetch_l402_retry" not in types
+
+
+def test_mcp_antigen_fetch_402_json():
+    bare = "a" * 64
+    mock_resp = MagicMock()
+    mock_resp.status_code = 402
+    mock_resp.headers = {"WWW-Authenticate": WWW_AUTH}
+
+    with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
+        raw = antigen_mcp.scp_antigen_fetch(PAYLOAD_URL, bare)
+    out = json.loads(raw)
+    assert out["ok"] is False
+    assert out["status"] == 402
+    assert out["l402"]["macaroon"] == MACAROON
+    assert out["l402"]["invoice"] == INVOICE
+    assert PREIMAGE not in raw
+
+
+def test_mcp_antigen_fetch_invalid_token():
+    bare = "a" * 64
+    raw = antigen_mcp.scp_antigen_fetch(PAYLOAD_URL, bare, l402_token="not-valid")
+    out = json.loads(raw)
+    assert out["ok"] is False
+    assert out["error"] == "invalid_l402_token"
+
+
+def test_cli_fetch_402_json(capsys):
+    bare = "a" * 64
+    mock_resp = MagicMock()
+    mock_resp.status_code = 402
+    mock_resp.headers = {"WWW-Authenticate": WWW_AUTH}
+
+    with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
+        rc = antigen_cli.main(["fetch", PAYLOAD_URL, "--hash", bare])
+    assert rc == 2
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert out["ok"] is False
+    assert out["status"] == 402
+    assert out["l402"]["macaroon"] == MACAROON
+    assert PREIMAGE not in captured.out
 
 
 def test_import_from_announcement_paid_quarantine_only(issuer, tmp_path: Path):
@@ -153,6 +231,8 @@ def test_import_from_announcement_paid_quarantine_only(issuer, tmp_path: Path):
 
     assert result.get("accepted") is True
     assert result.get("rejected") is not True
+    assert result.get("merged") is False
+    assert result.get("merge_proposal", {}).get("auto_merge") is False
     assert "quarantine_id" in result
     events = _audit_events(tmp_path)
     event_types = [e["event"] for e in events]

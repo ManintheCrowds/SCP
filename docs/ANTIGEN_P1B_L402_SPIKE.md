@@ -24,6 +24,8 @@
 5. Operator retries with `SCP_ANTIGEN_L402_TOKEN` or `--l402-token` = `macaroon:preimage`.
 6. Client sends `Authorization: L402 <macaroon>:<preimage>` → **200** → sha256 verify → `import_bundle` quarantine only.
 
+**Logging:** 402 MCP/CLI JSON intentionally includes `macaroon` and `invoice` so the operator can pay. Do not log tool stdout or pipe 402 responses to git-tracked files.
+
 ## Header formats
 
 **Challenge (402):**

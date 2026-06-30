@@ -574,6 +574,7 @@ def _process_fetch_response(
     url_host: str,
     expected_hash_bare_hex: str,
     antigen_id: str | None = None,
+    l402_retry: bool = False,
 ) -> dict:
     expected = f"sha256:{expected_hash_bare_hex}"
     if resp.status_code != 200:
@@ -585,6 +586,14 @@ def _process_fetch_response(
             antigen_id=antigen_id,
         )
         raise FetchError("http_error", status=resp.status_code)
+
+    if l402_retry:
+        antigen._audit(
+            "fetch_l402_retry",
+            url_host=url_host,
+            payload_hash=expected,
+            antigen_id=antigen_id,
+        )
 
     try:
         body = resp.json()
@@ -640,7 +649,10 @@ def fetch_payload(
 
     token = l402_token or l402.l402_token_from_env()
     sess = session or requests.Session()
-    resp = _fetch_response(sess, url, l402_token=token)
+    try:
+        resp = _fetch_response(sess, url, l402_token=token)
+    except ValueError as exc:
+        raise FetchError("invalid_l402_token") from exc
 
     if resp.status_code == 402:
         meta = _build_l402_metadata(resp)
@@ -651,21 +663,22 @@ def fetch_payload(
             invoice_hint=meta.get("invoice_hint"),
             antigen_id=antigen_id,
         )
+        if token:
+            antigen._audit(
+                "fetch_l402_retry_failed",
+                url_host=parsed.netloc,
+                payload_hash=f"sha256:{expected_hash_bare_hex}",
+                invoice_hint=meta.get("invoice_hint"),
+                antigen_id=antigen_id,
+            )
         raise FetchError("payment_required", status=402, l402=meta)
-
-    if token:
-        antigen._audit(
-            "fetch_l402_retry",
-            url_host=parsed.netloc,
-            payload_hash=f"sha256:{expected_hash_bare_hex}",
-            antigen_id=antigen_id,
-        )
 
     return _process_fetch_response(
         resp,
         url_host=parsed.netloc,
         expected_hash_bare_hex=expected_hash_bare_hex,
         antigen_id=antigen_id,
+        l402_retry=bool(token),
     )
 
 
