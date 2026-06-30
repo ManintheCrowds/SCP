@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manithecrowds.dev/schemas/antigen-bundle.v0.schema.json",
+  "title": "scp.pattern_bundle.v0",
+  "description": "INTERIM antigen bundle format owned by SCP-ANT1 (design artifact, not runtime). A versioned, signed bundle of ABSTRACTED threat patterns for decentralized exchange over nostr announcements + content-addressed HTTPS payloads. Interim until SCP-R1 defines the semantic-field SSOT; on R1 landing, bump schema_revision and migrate inner payload fields.",
+  "type": "object",
+  "required": ["manifest", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "manifest": {
+      "type": "object",
+      "description": "Billable / signable unit. Safe for public free tier (hash + summary + taxonomy only). The issuer_pubkey is the publisher's nostr identity key (Schnorr/secp256k1); the same key signs the nostr announcement event.",
+      "required": [
+        "schema_revision",
+        "antigen_id",
+        "issuer_pubkey",
+        "issued_at",
+        "payload_content_hash",
+        "payload_format"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_revision": {
+          "type": "string",
+          "const": "scp.pattern_bundle.v0",
+          "description": "Interim revision tag. Bump when SCP-R1 semantic schema becomes SSOT."
+        },
+        "antigen_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$",
+          "description": "Stable identity; maps to the nostr addressable-event 'd' tag for versioned replacement."
+        },
+        "bundle_version": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Monotonic; bump on any pattern semantic change (spec 2.2)."
+        },
+        "issuer_pubkey": {
+          "type": "string",
+          "description": "Issuer nostr/secp256k1 public key (hex 64 chars or bech32 npub).",
+          "pattern": "^([0-9a-f]{64}|npub1[02-9ac-hj-np-z]{6,})$"
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339 UTC timestamp."
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Optional staleness/expiry hint for consumers (spec 0.3 outage row)."
+        },
+        "payload_content_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Content address of the full payload. Verified out-of-band against the HTTPS-fetched body. Its 64-hex digest (without the 'sha256:' prefix) equals the nostr announcement 'x' tag (NIP-94-style bare hex)."
+        },
+        "payload_format": {
+          "type": "string",
+          "enum": ["application/json", "application/jsonl", "application/gzip"],
+          "description": "Wire format of the fetched payload before parsing."
+        },
+        "payload_urls": {
+          "type": "array",
+          "description": "One or more content-addressed HTTPS locations (mirrors). A relay/mirror cannot forge content because payload_content_hash is verified independently. L402-gated URLs allowed (P1+).",
+          "items": { "type": "string", "format": "uri" },
+          "minItems": 0
+        },
+        "free_tier_summary": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Short, NON-EXECUTABLE human summary safe for public broadcast. No payloads, no raw incident text."
+        },
+        "risk_tags": {
+          "type": "array",
+          "description": "Low-cardinality taxonomy labels only (e.g. 'injection', 'reversal', 'jailbreak'). No attack specifics.",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,31}$" },
+          "uniqueItems": true,
+          "maxItems": 16
+        },
+        "signature": {
+          "type": "object",
+          "description": "OPTIONAL at-rest issuer signature over the canonicalized manifest (excluding this field), Schnorr/secp256k1 to reuse the nostr identity. Optional because the nostr announcement event signature already authenticates the issuer; recommended when bundles are exchanged off-relay. The §11.4 'invalid signature -> auto-reject' rule applies when a signature is present or required by operator policy.",
+          "required": ["alg", "sig"],
+          "additionalProperties": false,
+          "properties": {
+            "alg": { "type": "string", "const": "schnorr-secp256k1" },
+            "sig": { "type": "string", "pattern": "^[0-9a-f]{128}$" }
+          }
+        },
+        "cosignatures": {
+          "type": "array",
+          "description": "Optional reviewer/notary co-signatures (trust mechanism, spec 5). Each is an independent attestation; presence does NOT imply safety.",
+          "items": {
+            "type": "object",
+            "required": ["signer_pubkey", "alg", "sig"],
+            "additionalProperties": false,
+            "properties": {
+              "signer_pubkey": { "type": "string", "pattern": "^([0-9a-f]{64}|npub1[02-9ac-hj-np-z]{6,})$" },
+              "alg": { "type": "string", "const": "schnorr-secp256k1" },
+              "sig": { "type": "string", "pattern": "^[0-9a-f]{128}$" },
+              "note": { "type": "string", "maxLength": 200 }
+            }
+          }
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "description": "Full antigen body. ABSTRACTED, normalized threat patterns only. By default MUST NOT contain raw victim prompts, chat logs, PII, or reproducible cognitohazard bodies (spec 6.1, D invariant). Fetched over HTTPS, verified against manifest.payload_content_hash, then quarantined before any merge.",
+      "required": ["patterns"],
+      "additionalProperties": false,
+      "properties": {
+        "patterns": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Pattern entries aligned with the FUTURE SCP-R1 schema. Field names here are interim and owned by ANT1 until R1 lands.",
+          "items": {
+            "type": "object",
+            "required": ["pattern_id", "category", "detector"],
+            "additionalProperties": false,
+            "properties": {
+              "pattern_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$" },
+              "category": {
+                "type": "string",
+                "description": "SCP tier/category, e.g. injection, reversal, jailbreak, hostile_ux. Taxonomy, not a raw exploit."
+              },
+              "detector": {
+                "type": "object",
+                "description": "Normalized, non-executable detection descriptor (e.g. token/regex family, semantic-alias class). Must be a defensive signature, not a working attack string.",
+                "required": ["kind"],
+                "properties": {
+                  "kind": { "type": "string", "enum": ["token_family", "regex_family", "semantic_alias", "structural"] },
+                  "normalized": { "type": "string", "description": "Abstracted form (e.g. masked/normalized), never a literal reproducible payload." }
+                }
+              },
+              "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+              "containment": {
+                "type": "string",
+                "description": "Recommended SCP containment action (e.g. sanitize, quarantine, block). Advisory only; operator policy decides."
+              }
+            }
+          }
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Optional defensive notes. No raw hazardous bodies."
+        }
+      }
+    }
+  }
+}
