@@ -3,7 +3,7 @@
 **decision_id:** `scp-ant1-p1b-l402`  
 **supersedes:** P1 402 stub (metadata only)  
 **version target:** v0.1.6  
-**spike_status:** `doc_ready` (regtest manual E1–E5 pending — see Future LND setup)
+**spike_status:** `regtest_passed` (2026-07-02 — automated E1–E5 via [MiscRepos `antigen_l402_regtest_e2e.ps1`](../../../MiscRepos/local-proto/scripts/antigen_l402_regtest_e2e.ps1))
 
 ## Payment rail (locked)
 
@@ -82,18 +82,20 @@ Not required for CI green or v0.1.6 tag. Record PASS/FAIL per row when LND is av
 
 | # | Criterion | Evidence | Status |
 |---|-----------|----------|--------|
-| E1 | `fetch` without token → 402 + parsed `macaroon`/`invoice` | CLI/MCP JSON output | pending |
-| E2 | Operator pays regtest invoice manually | `lncli payinvoice` preimage (**do not log**) | pending |
-| E3 | Retry with `--l402-token` → 200 + hash match | `fetch_ok` audit event | pending |
-| E4 | `import_from_announcement` → quarantine, **no merge** | `import_accepted`; no `merge_applied` | pending |
-| E5 | Audit log has `invoice_hint`, no macaroon/preimage/body | `antigen_audit.jsonl` review | pending |
-| E6 | Full pytest still green | `126 passed` baseline (mock CI) | pass |
+| E1 | `fetch` without token → 402 + parsed `macaroon`/`invoice` | CLI/MCP JSON output | pass |
+| E2 | Operator pays regtest invoice manually | `lncli payinvoice` preimage (**do not log**) | pass |
+| E3 | Retry with `--l402-token` → 200 + hash match | `fetch_ok` audit event | pass |
+| E4 | `import_from_announcement` → quarantine, **no merge** | `import_accepted`; no `merge_applied` | pass |
+| E5 | Audit log has `invoice_hint`, no macaroon/preimage/body | `antigen_audit.jsonl` review | pass |
+| E6 | Full pytest still green | `136 passed`, 1 skipped (regtest closure) | pass |
 
 When E1–E5 all pass, set `spike_status: regtest_passed` and add MiscRepos `decision-log` entry `scp-ant1-p1b-l402-regtest`.
 
-## Future LND setup plan (deferred)
+## Future LND setup plan
 
-Staged path for this Windows host — **not executed** as of v0.1.6. Distinct from Bitcoin Core Stealth regtest in MiscRepos `local-proto/docs/STEALTH_E2E_SECURE_RUNBOOK.md` (on-chain only; no L402).
+**Implemented (v0.1.7+):** Docker Compose + runbook — [ANTIGEN_L402_REGTEST_RUNBOOK.md](../../../MiscRepos/local-proto/docs/ANTIGEN_L402_REGTEST_RUNBOOK.md). **Automated closure:** `.\local-proto\scripts\antigen_l402_regtest_e2e.ps1 -ConfirmRegtest` (E1–E5 + pytest). Recorded `scp-ant1-p1b-l402-regtest` 2026-07-02.
+
+Staged path for this Windows host. Distinct from Bitcoin Core Stealth regtest in MiscRepos `local-proto/docs/STEALTH_E2E_SECURE_RUNBOOK.md` (on-chain only; no L402).
 
 ```mermaid
 flowchart LR
@@ -113,9 +115,9 @@ flowchart LR
 
 | Step | Action | Reference |
 |------|--------|-----------|
-| F1 | Install `lnd` (Windows native or WSL2) | [L402 docs](https://docs.lightning.engineering/the-lightning-network/l402) |
-| F2 | `lnd` regtest: `lncli create`, fund, mine blocks | `bitcoind` regtest backend or neutrino regtest |
-| F3 | Deploy L402 middleware serving antigen test payload HTTPS URL | invoice + macaroon per [protocol spec](https://docs.lightning.engineering/the-lightning-network/l402/protocol-specification) |
+| F1 | Install stack via Docker Compose | [ANTIGEN_L402_REGTEST_RUNBOOK.md](../../../MiscRepos/local-proto/docs/ANTIGEN_L402_REGTEST_RUNBOOK.md) |
+| F2 | `run_antigen_l402_regtest.ps1` — regtest wallet + fund | same |
+| F3 | Aperture + backend serve fixture payload | `local-proto/docker/antigen-l402-regtest/` |
 | F4 | Run E1–E5 checklist; record PASS in MiscRepos `decision-log` | `decision_id: scp-ant1-p1b-l402-regtest` |
 | F5 | Optional: `SCP_ANTIGEN_L402_INTEGRATION=1` skipped live pytest (mirror nostr pattern) | only after F1–F4 |
 

@@ -1,0 +1,33 @@
+{
+  "manifest": {
+    "schema_revision": "scp.pattern_bundle.v0",
+    "antigen_id": "inj.l402.regtest",
+    "bundle_version": 0,
+    "issued_at": "2026-07-02T17:03:30Z",
+    "payload_content_hash": "sha256:7366bd92cb1f63c56f125c3d3e8fca004358e99267d78fea6d2b3ab99aca9e17",
+    "payload_format": "application/json",
+    "free_tier_summary": "Regtest L402 antigen fixture (abstract patterns only).",
+    "payload_urls": [
+      "https://localhost:18081/antigens/inj.l402.regtest.json"
+    ],
+    "issuer_pubkey": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+    "signature": {
+      "alg": "schnorr-secp256k1",
+      "sig": "4c234e9a9668facebaa1d4b1a5d716108bbbab6b93a50bded3e2857ca392721e1ed163eeee9f1316e91a9b5d96dd80863f923cefbc43a67265d0e4c9dab13d32"
+    }
+  },
+  "payload": {
+    "patterns": [
+      {
+        "pattern_id": "inj.override.regtest.001",
+        "category": "injection",
+        "detector": {
+          "kind": "token_family",
+          "normalized": "authorized-override-family"
+        },
+        "severity": "high",
+        "containment": "sanitize"
+      }
+    ]
+  }
+}

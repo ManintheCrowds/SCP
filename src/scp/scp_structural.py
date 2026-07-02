@@ -8,7 +8,10 @@ HIDDEN_UNICODE = {0x200B, 0x200C, 0x200D, 0x202E, 0x2060, 0xFEFF}
 DELIMITER_PATTERNS = [
     (re.compile(r"^---\s*$", re.MULTILINE), "horizontal_rule"),
     (re.compile(r"^===\s*$", re.MULTILINE), "horizontal_rule"),
-    (re.compile(r"^(?:SYSTEM|ASSISTANT|USER|HUMAN):\s*", re.MULTILINE | re.IGNORECASE), "role_prefix"),
+    (re.compile(r"^SYSTEM:\s*", re.MULTILINE | re.IGNORECASE), "role_prefix"),
+    # ALL-CAPS only — omit USER: (benign "User:") and title-case "Assistant:" dialogue (w3-s15-safe-dialogue).
+    (re.compile(r"^ASSISTANT:\s*", re.MULTILINE), "role_prefix"),
+    (re.compile(r"^HUMAN:\s*", re.MULTILINE), "role_prefix"),
 ]
 
 NON_ASCII_RATIO_THRESHOLD = 0.3
@@ -26,8 +29,11 @@ def scan_unicode_density(text: str) -> dict:
     ratio_non_ascii = non_ascii / n
     ratio_control = control / n
     ratio_hidden = hidden / n
+    stripped = text.strip()
+    unique_chars = set(stripped)
+    homogeneous_repeat = len(unique_chars) <= 2 and n >= 10
     anomaly = (
-        ratio_non_ascii > NON_ASCII_RATIO_THRESHOLD
+        (ratio_non_ascii > NON_ASCII_RATIO_THRESHOLD and not homogeneous_repeat)
         or ratio_hidden > HIDDEN_RATIO_THRESHOLD
         or ratio_control > CONTROL_RATIO_THRESHOLD
     )
@@ -77,6 +83,10 @@ def run_all(text: str) -> dict:
     anomalies = []
     risk_boost = 0.0
 
+    stripped = text.strip()
+    unique_chars = set(stripped)
+    homogeneous_repeat = len(unique_chars) <= 2 and len(stripped) >= 10
+
     density = scan_unicode_density(text)
     if density["anomaly"]:
         anomalies.append({
@@ -84,6 +94,9 @@ def run_all(text: str) -> dict:
             "detail": f"non_ascii={density['ratio_non_ascii']}, hidden={density['ratio_hidden']}",
         })
         risk_boost += 0.2
+
+    if homogeneous_repeat:
+        return {"anomalies": [], "risk_boost": 0.0}
 
     script_result = scan_script_mixing(text)
     if script_result["mixed_words"]:

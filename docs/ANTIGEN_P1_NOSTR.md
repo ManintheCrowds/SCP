@@ -29,6 +29,7 @@ pip install -e ".[dev,antigen-nostr]"
 | `SCP_ANTIGEN_ISSUER_ALLOWLIST` | Comma-separated issuer pubkeys (hex); **empty = reject all** |
 | `NOSTR_SECKEY` | Publisher seckey (64-hex or `nsec1…`); never commit or log |
 | `SCP_ANTIGEN_L402_TOKEN` | Operator-supplied L402 `macaroon:preimage` for paid HTTPS retry; never commit or log |
+| `SCP_ANTIGEN_TLS_VERIFY` | Set to `0` to skip TLS certificate verification on HTTPS fetch (**regtest/self-signed only**; default `1`) |
 | `SCP_ANTIGEN_NOSTR_INTEGRATION` | Set to `1` to run optional live-relay pytest smoke |
 
 ## CLI examples

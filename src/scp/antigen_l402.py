@@ -16,7 +16,11 @@ def parse_www_authenticate_l402(header: str | None) -> dict | None:
     if not header:
         return None
     text = header.strip()
-    if not _L402_SCHEME.match(text):
+    # Aperture may prefix LSAT before L402 in the same WWW-Authenticate value.
+    l402_match = re.search(r"L402\s+macaroon", text, re.IGNORECASE)
+    if l402_match:
+        text = text[l402_match.start() :]
+    elif not _L402_SCHEME.match(text):
         return None
     text = _L402_SCHEME.sub("", text, count=1).strip()
     macaroon: str | None = None

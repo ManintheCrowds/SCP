@@ -115,7 +115,7 @@ def test_fetch_l402_token_retry_200(issuer):
     mock_200.status_code = 200
     mock_200.json.return_value = body
 
-    def _get(url, timeout=30, headers=None):
+    def _get(url, timeout=30, headers=None, **kwargs):
         if headers and headers.get("Authorization", "").startswith("L402 "):
             return mock_200
         return mock_402
@@ -260,3 +260,27 @@ def test_audit_challenge_no_secrets(tmp_path: Path):
     assert len(challenge) == 1
     assert challenge[0].get("invoice_hint") == INVOICE[:16]
     assert MACAROON not in json.dumps(challenge[0])
+
+
+def test_parse_www_authenticate_l402_lsat_prefix():
+    header = (
+        f'LSAT macaroon="lsatmac", invoice="lsatinv", '
+        f'L402 macaroon="{MACAROON}", invoice="{INVOICE}"'
+    )
+    parsed = l402.parse_www_authenticate_l402(header)
+    assert parsed is not None
+    assert parsed["macaroon"] == MACAROON
+    assert parsed["invoice"] == INVOICE
+
+
+def test_fetch_tls_verify_disabled(monkeypatch):
+    bare = "a" * 64
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"patterns": _patterns()}
+
+    monkeypatch.setenv("SCP_ANTIGEN_TLS_VERIFY", "0")
+    with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp) as mock_get:
+        with patch("scp.antigen_nostr.antigen.compute_payload_hash", return_value=f"sha256:{bare}"):
+            nostr.fetch_payload(PAYLOAD_URL, bare)
+    assert mock_get.call_args.kwargs.get("verify") is False
