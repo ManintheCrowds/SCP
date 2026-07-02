@@ -119,7 +119,7 @@ flowchart LR
 | F2 | `run_antigen_l402_regtest.ps1` — regtest wallet + fund | same |
 | F3 | Aperture + backend serve fixture payload | `local-proto/docker/antigen-l402-regtest/` |
 | F4 | Run E1–E5 checklist; record PASS in MiscRepos `decision-log` | `decision_id: scp-ant1-p1b-l402-regtest` |
-| F5 | Optional: `SCP_ANTIGEN_L402_INTEGRATION=1` skipped live pytest (mirror nostr pattern) | only after F1–F4 |
+| F5 | **Implemented (skipif):** `SCP_ANTIGEN_L402_INTEGRATION=1` + `SCP_ANTIGEN_L402_TOKEN` pytest against localhost regtest | `tests/test_antigen_p1b_l402.py::test_live_regtest_l402_fetch_integration` |
 
 MiscRepos backlog: **SCP-ANT1-LND** — see `.cursor/state/pending_tasks.md`.
 

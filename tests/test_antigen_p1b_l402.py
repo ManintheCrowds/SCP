@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +19,22 @@ PREIMAGE = "b" * 64
 INVOICE = "lnbc100n1pjexample"
 WWW_AUTH = f'L402 macaroon="{MACAROON}", invoice="{INVOICE}"'
 TOKEN = f"{MACAROON}:{PREIMAGE}"
+
+_REGTEST_MANIFEST = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "antigen_l402_regtest" / "manifest.env"
+)
+
+
+def _read_regtest_manifest() -> dict[str, str]:
+    if not _REGTEST_MANIFEST.is_file():
+        return {}
+    out: dict[str, str] = {}
+    for line in _REGTEST_MANIFEST.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        out[key.strip()] = val.strip()
+    return out
 
 
 def _patterns() -> list[dict]:
@@ -284,3 +301,31 @@ def test_fetch_tls_verify_disabled(monkeypatch):
         with patch("scp.antigen_nostr.antigen.compute_payload_hash", return_value=f"sha256:{bare}"):
             nostr.fetch_payload(PAYLOAD_URL, bare)
     assert mock_get.call_args.kwargs.get("verify") is False
+
+
+@pytest.mark.skipif(
+    not os.getenv("SCP_ANTIGEN_L402_INTEGRATION"),
+    reason="set SCP_ANTIGEN_L402_INTEGRATION=1; requires regtest stack + SCP_ANTIGEN_L402_TOKEN",
+)
+def test_live_regtest_l402_fetch_integration(monkeypatch):
+    """F5: live localhost regtest aperture — operator must supply paid token (hb-1)."""
+    manifest = _read_regtest_manifest()
+    url = manifest.get("PAYLOAD_URL")
+    bare = manifest.get("EXPECTED_HASH_BARE")
+    if not url or not bare:
+        pytest.skip("regtest manifest.env missing PAYLOAD_URL or EXPECTED_HASH_BARE")
+    tls = manifest.get("SCP_ANTIGEN_TLS_VERIFY", "0")
+    monkeypatch.setenv("SCP_ANTIGEN_TLS_VERIFY", tls)
+
+    with pytest.raises(nostr.FetchError) as exc_info:
+        nostr.fetch_payload(url, bare)
+    assert exc_info.value.reason == "payment_required"
+    assert exc_info.value.l402 is not None
+
+    token = os.environ.get("SCP_ANTIGEN_L402_TOKEN")
+    if not token:
+        pytest.skip("SCP_ANTIGEN_L402_TOKEN required after operator/regtest pay (never auto-spend)")
+
+    payload = nostr.fetch_payload(url, bare, l402_token=token)
+    assert isinstance(payload.get("patterns"), list)
+    assert len(payload["patterns"]) >= 1
