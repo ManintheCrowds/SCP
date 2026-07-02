@@ -84,6 +84,15 @@ REDACT_PATTERNS = [
     (re.compile(r'(?i)\b(api_key|apikey|secret)\b\s*[:=]\s*["\']?[^\s"\']+["\']?', re.IGNORECASE), r"\1=[REDACTED]"),
     (re.compile(r"(?i)bearer\s+[a-zA-Z0-9._-]{20,}"), "Bearer [REDACTED]"),
     (re.compile(r'(?i)(token|key)\s*[:=]\s*["\']?[a-zA-Z0-9._-]{16,}["\']?', re.IGNORECASE), r"\1=[REDACTED]"),
+    (re.compile(r"(?i)AWS_ACCESS_KEY_ID\s*=\s*\S+"), "AWS_ACCESS_KEY_ID=[REDACTED]"),
+    (re.compile(r"(?i)AWS_SECRET_ACCESS_KEY\s*=\s*\S+"), "AWS_SECRET_ACCESS_KEY=[REDACTED]"),
+    (re.compile(r"postgres://[^\s\"']+"), "postgres://[REDACTED]"),
+    (
+        re.compile(r"-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----"),
+        "-----BEGIN PRIVATE KEY-----\n[REDACTED]\n-----END PRIVATE KEY-----",
+    ),
+    (re.compile(r"\bsk-[a-zA-Z0-9]{20,}\b"), "sk-[REDACTED]"),
+    (re.compile(r"\bSSN:\s*\d{3}-\d{2}-\d{4}\b"), "SSN: [REDACTED]"),
 ]
 
 

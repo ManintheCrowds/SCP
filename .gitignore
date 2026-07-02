@@ -6,6 +6,9 @@
 # Runtime quarantine storage (see SCP_QUARANTINE_DIR)
 scp_quarantine/
 
+# Runtime antigen audit (regtest e2e; never commit)
+antigen_audit.jsonl
+
 # Python bytecode and caches
 __pycache__/
 *.py[cod]

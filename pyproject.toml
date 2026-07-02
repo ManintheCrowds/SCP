@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scp-mcp"
-version = "0.1.3"
+version = "0.1.7"
 description = "Secure Contain Protect — inspect, sanitize, contain, quarantine content for LLM safety"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,6 +15,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+# Antigen P0 (SCP-ANT1): stronger schnorr + schema validation. Both are OPTIONAL —
+# antigen.py falls back to a bundled pure-Python BIP-340 impl and manual validation
+# when these are absent, so a bare install still passes the antigen test suite.
+antigen = ["coincurve>=18.0.0", "jsonschema>=4.0.0"]
+antigen-nostr = ["websocket-client>=1.6.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+scp = ["schemas/*.json", "scp_threat_registry.json"]

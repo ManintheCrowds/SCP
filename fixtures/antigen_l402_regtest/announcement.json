@@ -1,0 +1,30 @@
+{
+  "kind": 30078,
+  "tags": [
+    [
+      "d",
+      "inj.l402.regtest"
+    ],
+    [
+      "x",
+      "7366bd92cb1f63c56f125c3d3e8fca004358e99267d78fea6d2b3ab99aca9e17"
+    ],
+    [
+      "url",
+      "https://localhost:18081/antigens/inj.l402.regtest.json"
+    ],
+    [
+      "m",
+      "application/json"
+    ],
+    [
+      "size",
+      "199"
+    ]
+  ],
+  "content": "{\"schema_revision\":\"scp.pattern_bundle.v0\",\"bundle_version\":0,\"free_tier_summary\":\"Regtest L402 antigen fixture (abstract patterns only).\"}",
+  "created_at": 1700000000,
+  "pubkey": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+  "id": "4fe215263e8a11339a44e8f19472dbae99948892bfd4b9618ef275e8ae277986",
+  "sig": "bbda81d76c72f77df113cd2911c5928e76935bf28ff344ab6404817365d2a15c1fdc91a8315563827b9bc47cb0abeb9a3737f321b1bd7e9ef96a136e0eb60c03"
+}

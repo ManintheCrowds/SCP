@@ -1,0 +1,14 @@
+{
+  "patterns": [
+    {
+      "pattern_id": "inj.override.regtest.001",
+      "category": "injection",
+      "detector": {
+        "kind": "token_family",
+        "normalized": "authorized-override-family"
+      },
+      "severity": "high",
+      "containment": "sanitize"
+    }
+  ]
+}
