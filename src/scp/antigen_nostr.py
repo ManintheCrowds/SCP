@@ -651,6 +651,11 @@ def fetch_payload(
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise FetchError("url_must_be_https")
+    if l402.regtest_fetch_hardening_enabled():
+        try:
+            l402.assert_localhost_fetch_url(url)
+        except ValueError:
+            raise FetchError("fetch_url_not_localhost")
 
     token = l402_token or l402.l402_token_from_env()
     sess = session or requests.Session()

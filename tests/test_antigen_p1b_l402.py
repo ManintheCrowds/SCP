@@ -58,7 +58,7 @@ def issuer() -> str:
 @pytest.fixture
 def operator_l402_token(request) -> str | None:
     """Capture hb-1 operator token before autouse isolated_env delenv (F5 only)."""
-    if request.node.name != "test_live_regtest_l402_fetch_integration":
+    if "l402_integration" not in request.node.keywords:
         return None
     return os.environ.get("SCP_ANTIGEN_L402_TOKEN")
 
@@ -312,6 +312,27 @@ def test_fetch_tls_verify_disabled(monkeypatch):
     assert mock_get.call_args.kwargs.get("verify") is False
 
 
+def test_fetch_localhost_guard_blocks_when_integration_env(monkeypatch):
+    bare = "a" * 64
+    monkeypatch.setenv("SCP_ANTIGEN_L402_INTEGRATION", "1")
+    with pytest.raises(nostr.FetchError, match="fetch_url_not_localhost"):
+        nostr.fetch_payload(PAYLOAD_URL, bare)
+
+
+def test_fetch_localhost_guard_off_by_default(monkeypatch):
+    bare = "a" * 64
+    monkeypatch.delenv("SCP_ANTIGEN_L402_INTEGRATION", raising=False)
+    monkeypatch.delenv("SCP_ANTIGEN_REGTEST_E2E", raising=False)
+    mock_resp = MagicMock()
+    mock_resp.status_code = 402
+    mock_resp.headers = {"WWW-Authenticate": WWW_AUTH}
+    with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
+        with pytest.raises(nostr.FetchError) as exc_info:
+            nostr.fetch_payload(PAYLOAD_URL, bare)
+    assert exc_info.value.reason == "payment_required"
+
+
+@pytest.mark.l402_integration
 @pytest.mark.skipif(
     not os.getenv("SCP_ANTIGEN_L402_INTEGRATION"),
     reason="set SCP_ANTIGEN_L402_INTEGRATION=1; requires regtest stack + SCP_ANTIGEN_L402_TOKEN",
@@ -324,8 +345,8 @@ def test_live_regtest_l402_fetch_integration(monkeypatch, operator_l402_token):
     if not url or not bare:
         pytest.skip("regtest manifest.env missing PAYLOAD_URL or EXPECTED_HASH_BARE")
     host = urlparse(url).hostname
-    if host not in ("localhost", "127.0.0.1"):
-        pytest.skip(f"PAYLOAD_URL must be localhost for F5 (got {host})")
+    if host not in ("localhost", "127.0.0.1", "::1"):
+        pytest.fail(f"PAYLOAD_URL must be localhost for F5 (got {host})")
     tls = manifest.get("SCP_ANTIGEN_TLS_VERIFY", "0")
     monkeypatch.setenv("SCP_ANTIGEN_TLS_VERIFY", tls)
 

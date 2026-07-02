@@ -26,3 +26,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 scp = ["schemas/*.json", "scp_threat_registry.json"]
+
+[tool.pytest.ini_options]
+markers = [
+    "l402_integration: live regtest L402 fetch (requires SCP_ANTIGEN_L402_INTEGRATION + token)",
+]

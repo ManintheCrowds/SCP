@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import os
 import re
+from urllib.parse import urlparse
+
+_LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 _L402_SCHEME = re.compile(r"^L402\s+", re.IGNORECASE)
 _KV_QUOTED = re.compile(r'(\w+)=("([^"]*)"|([^,\s]+))')
@@ -68,6 +71,18 @@ def l402_token_from_env() -> str | None:
     """Read operator-supplied L402 token from SCP_ANTIGEN_L402_TOKEN (never log)."""
     env = os.environ.get("SCP_ANTIGEN_L402_TOKEN")
     return env.strip() if env else None
+
+
+def regtest_fetch_hardening_enabled() -> bool:
+    """True when operator opted into regtest/integration fetch (localhost guard active)."""
+    return os.getenv("SCP_ANTIGEN_L402_INTEGRATION") == "1" or os.getenv("SCP_ANTIGEN_REGTEST_E2E") == "1"
+
+
+def assert_localhost_fetch_url(url: str) -> None:
+    """Require localhost/loopback host when regtest hardening is enabled."""
+    host = urlparse(url).hostname
+    if host not in _LOCALHOST_HOSTS:
+        raise ValueError("fetch_url_not_localhost")
 
 
 def _invoice_correlation_hint(invoice: str | None) -> str | None:
