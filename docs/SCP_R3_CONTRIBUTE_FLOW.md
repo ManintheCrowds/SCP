@@ -1,7 +1,7 @@
 # SCP-R3 — Contribute pattern flow
 
 **decision_id:** `scp-r3-contribute-flow-2026-07-03`  
-**Status:** Spec locked (spike — no runtime)  
+**Status:** Implemented (spike) — [`registry_contribute.py`](../src/scp/registry_contribute.py), MCP `scp_contribute_pattern`, CLI `contribute`  
 **Depends on:** [SCP_R1_THREAT_PATTERN_SCHEMA.md](SCP_R1_THREAT_PATTERN_SCHEMA.md), [SCP_R4_FETCH_REGISTRY.md](SCP_R4_FETCH_REGISTRY.md)
 
 ## Purpose

@@ -13,6 +13,7 @@ from mcp.server.fastmcp import FastMCP
 from . import antigen as antigen_mod
 from . import antigen_l402 as l402_mod
 from . import antigen_nostr as nostr_mod
+from . import registry_contribute as registry_contribute_mod
 from . import registry_fetch as registry_fetch_mod
 from . import registry_ssot as registry_ssot_mod
 
@@ -180,6 +181,41 @@ def scp_fetch_registry(
             if_none_match=if_none_match,
             tls_verify=tls_verify,
             relays=_parse_allowlist(relays),
+        ))
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def scp_contribute_pattern(
+    transport: str,
+    patterns_json: str | None = None,
+    raw_content: str | None = None,
+    category: str | None = None,
+    risk_tier: str = "medium",
+    https_url: str | None = None,
+    relays: str | None = None,
+    approve: bool = False,
+    dry_run: bool | None = None,
+    seckey_hex: str | None = None,
+    tls_verify: bool = True,
+) -> str:
+    """Prepare or publish anonymized threat patterns (R3 contribute). approve=false returns proposal
+    only with zero network I/O. transport: nostr | https | both. Exactly one of patterns_json or
+    raw_content required."""
+    try:
+        return json.dumps(registry_contribute_mod.submit_contribution(
+            patterns_json=patterns_json,
+            raw_content=raw_content,
+            category=category,
+            risk_tier=risk_tier,
+            transport=transport,
+            https_url=https_url,
+            relays=_parse_allowlist(relays),
+            approve=approve,
+            dry_run=dry_run,
+            seckey_hex=seckey_hex,
+            tls_verify=tls_verify,
         ))
     except Exception as e:
         return _err(e)

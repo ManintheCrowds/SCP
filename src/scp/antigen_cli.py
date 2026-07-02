@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import antigen
 from . import antigen_nostr as nostr
+from . import registry_contribute
 from . import registry_fetch
 from . import registry_ssot
 
@@ -136,6 +137,28 @@ def _cmd_registry_apply(args) -> dict:
     return registry_ssot.apply_merge(args.quarantine_path, approve=args.approve)
 
 
+def _cmd_contribute(args) -> dict:
+    raw_content = None
+    patterns_json = None
+    if args.raw_file:
+        raw_content = Path(args.raw_file).read_text(encoding="utf-8")
+    if args.patterns_file:
+        patterns_json = Path(args.patterns_file).read_text(encoding="utf-8")
+    return registry_contribute.submit_contribution(
+        patterns_json=patterns_json,
+        raw_content=raw_content,
+        category=args.category,
+        risk_tier=args.risk_tier,
+        transport=args.transport,
+        https_url=args.https_url,
+        relays=_split_allowlist(args.relays),
+        approve=args.approve,
+        dry_run=args.dry_run,
+        seckey_hex=args.seckey_hex,
+        tls_verify=args.tls_verify,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="scp.antigen_cli", description="SCP-ANT1 antigen P0 tool")
     sub = p.add_subparsers(dest="command", required=True)
@@ -211,6 +234,20 @@ def build_parser() -> argparse.ArgumentParser:
     pra.add_argument("quarantine_path")
     pra.add_argument("--approve", action="store_true")
     pra.set_defaults(func=_cmd_registry_apply)
+
+    pc = sub.add_parser("contribute", help="R3 contribute patterns (proposal or publish)")
+    pc.add_argument("--raw-file", help="flagged text for anonymization pipeline")
+    pc.add_argument("--patterns-file", help="JSON list or {patterns:[]} of pattern_record")
+    pc.add_argument("--category", help="taxonomy hint when using --raw-file")
+    pc.add_argument("--risk-tier", default="medium", choices=["low", "medium", "high", "critical"])
+    pc.add_argument("--transport", required=True, choices=["nostr", "https", "both"])
+    pc.add_argument("--https-url", help="HTTPS POST target (required for https/both; payload URL for nostr)")
+    pc.add_argument("--relays")
+    pc.add_argument("--approve", action="store_true", help="operator gate: publish to network")
+    pc.add_argument("--dry-run", action="store_true")
+    pc.add_argument("--seckey-hex")
+    pc.add_argument("--no-tls-verify", dest="tls_verify", action="store_false", default=True)
+    pc.set_defaults(func=_cmd_contribute)
 
     return p
 

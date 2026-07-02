@@ -1,0 +1,492 @@
+# PURPOSE: SCP-R3 outbound contribute flow — anonymize, stage, operator-gated publish.
+# DEPENDENCIES: pattern_record, antigen, antigen_nostr, antigen_l402, scp_utils, sanitize_input
+# MODIFICATION NOTES: Antigen reuse track; see SCP_R3_CONTRIBUTE_FLOW.md
+#
+# Nostr transport requires HTTPS payload_urls in the signed bundle (fail-closed payload_url_required)
+# even when transport=nostr only — minimal spec extension for build_announcement_event.
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from datetime import datetime, timezone
+from typing import Any
+from urllib.parse import urlparse
+
+import requests
+
+from . import antigen
+from . import antigen_l402 as l402
+from . import antigen_nostr as nostr
+from . import pattern_record as pr
+from . import sanitize_input
+from . import scp_utils
+
+_CATEGORY_ABBREV: dict[str, str] = {
+    "injection": "inj",
+    "jailbreak": "jb",
+    "hostile_ux": "hux",
+    "reversal": "rev",
+}
+
+_VALID_CATEGORIES = frozenset(pr._CATEGORY_DEFAULT_BUCKET.keys())
+_DEFAULT_ISSUER = antigen._pubkey_hex(
+    bytes.fromhex("0000000000000000000000000000000000000000000000000000000000000003")
+)
+
+
+class ContributeError(Exception):
+    def __init__(self, reason: str, *, reasons: list[str] | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.reasons = reasons or []
+
+
+def _category_abbrev(category: str) -> str:
+    return _CATEGORY_ABBREV.get(category, category[:3].lower())
+
+
+def _finding_types(classification: dict) -> list[str]:
+    findings = classification.get("findings") or {}
+    types: list[str] = []
+    for name, items in findings.items():
+        if items:
+            types.append(name)
+    for cat in classification.get("categories") or []:
+        if cat not in types:
+            types.append(cat)
+    return sorted(set(types))
+
+
+def _hash8(category: str, risk_tier: str, finding_types: list[str]) -> str:
+    material = f"{category}:{risk_tier}:{','.join(finding_types)}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+
+
+def _strip_raw(raw: str) -> list[str]:
+    reasons: list[str] = []
+    if pr._EMAIL_RE.search(raw):
+        reasons.append("pii_email_detected")
+    if pr._CREDENTIAL_URL_RE.search(raw):
+        reasons.append("credential_url_detected")
+    try:
+        obj = json.loads(raw)
+        for key_path in pr._walk_keys(obj):
+            leaf = key_path.split(".")[-1].split("[")[0]
+            if leaf.lower() in pr._PROHIBITED_KEYS:
+                reasons.append(f"prohibited_key:{leaf}")
+    except json.JSONDecodeError:
+        pass
+    return reasons
+
+
+def _resolve_category(raw: str, category: str | None, classification: dict) -> str:
+    if category and category in _VALID_CATEGORIES:
+        return category
+    cats = classification.get("categories") or []
+    for preferred in ("injection", "jailbreak", "reversal", "hostile_ux"):
+        if preferred in cats:
+            return preferred
+    tier = classification.get("tier")
+    if tier in _VALID_CATEGORIES:
+        return tier
+    if category and category in _VALID_CATEGORIES:
+        return category
+    return "injection"
+
+
+def anonymize_raw_content(
+    raw: str,
+    *,
+    category: str,
+    risk_tier: str = "medium",
+) -> dict:
+    """Rule-only pipeline: classify, strip, abstract, validate → pattern_record."""
+    if risk_tier not in pr.RISK_TIERS:
+        raise ContributeError("invalid_risk_tier", reasons=["invalid_risk_tier"])
+
+    strip_reasons = _strip_raw(raw)
+    if strip_reasons:
+        antigen._audit(
+            "pattern_rejected_anonymization",
+            pattern_count=0,
+            error_count=len(strip_reasons),
+        )
+        raise ContributeError("anonymization_failed", reasons=strip_reasons)
+
+    classification = sanitize_input.classify(raw)
+    resolved_category = _resolve_category(raw, category, classification)
+    finding_types = _finding_types(classification)
+    digest8 = _hash8(resolved_category, risk_tier, finding_types)
+    abbrev = _category_abbrev(resolved_category)
+
+    record: dict[str, Any] = {
+        "pattern_id": f"contrib.{abbrev}.{digest8}",
+        "category": resolved_category,
+        "detector": {
+            "kind": "token_family",
+            "normalized": f"{resolved_category}-family-{digest8}",
+        },
+        "risk_tier": risk_tier,
+        "drift_score": 0.0,
+        "registry_bucket": pr._CATEGORY_DEFAULT_BUCKET.get(resolved_category, "power_words"),
+    }
+
+    v = pr.validate_pattern_record(record)
+    if not v["valid"]:
+        antigen._audit(
+            "pattern_rejected_anonymization",
+            pattern_ids=[record.get("pattern_id", "")],
+            error_count=len(v["errors"]),
+        )
+        raise ContributeError("anonymization_failed", reasons=v["errors"])
+
+    a = pr.validate_anonymization(record)
+    if not a["ok"]:
+        antigen._audit(
+            "pattern_rejected_anonymization",
+            pattern_ids=[record["pattern_id"]],
+            error_count=len(a["reasons"]),
+        )
+        raise ContributeError("anonymization_failed", reasons=a["reasons"])
+
+    return record
+
+
+def _parse_patterns_json(patterns_json: str) -> list[dict]:
+    data = json.loads(patterns_json)
+    if isinstance(data, dict) and "patterns" in data:
+        data = data["patterns"]
+    if not isinstance(data, list) or not data:
+        raise ContributeError("invalid_patterns_json", reasons=["patterns_must_be_non_empty_list"])
+    return data
+
+
+def _validate_structured_records(records: list[dict]) -> None:
+    reasons: list[str] = []
+    for i, rec in enumerate(records):
+        v = pr.validate_pattern_record(rec)
+        if not v["valid"]:
+            reasons.extend([f"patterns[{i}].{e}" for e in v["errors"]])
+        a = pr.validate_anonymization(rec)
+        if not a["ok"]:
+            reasons.extend([f"patterns[{i}].{r}" for r in a["reasons"]])
+    if reasons:
+        ids = [str(r.get("pattern_id", "")) for r in records if isinstance(r, dict)]
+        antigen._audit(
+            "pattern_rejected_anonymization",
+            pattern_ids=[i for i in ids if i],
+            error_count=len(reasons),
+        )
+        raise ContributeError("anonymization_failed", reasons=reasons)
+
+
+def _canonical_patterns_hash(records: list[dict]) -> str:
+    canonical = json.dumps(records, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
+
+def _build_snapshot(records: list[dict]) -> dict:
+    registry_version = (
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    return {
+        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
+        "registry_version": registry_version,
+        "etag": _canonical_patterns_hash(records),
+        "patterns": records,
+    }
+
+
+def _stage_contribution(
+    bundle: dict,
+    snapshot: dict,
+    *,
+    pattern_ids: list[str],
+    bundle_preview_hash: str,
+) -> dict:
+    meta = {
+        "reason": "registry_contribute",
+        "schema_revision": snapshot.get("schema_revision"),
+        "registry_version": snapshot.get("registry_version"),
+        "etag": snapshot.get("etag"),
+        "pattern_count": len(pattern_ids),
+        "pattern_ids": pattern_ids,
+        "bundle_preview_hash": bundle_preview_hash,
+    }
+    envelope = {"bundle": bundle, "snapshot": snapshot, "meta": meta}
+    content = json.dumps(envelope, indent=2, ensure_ascii=False)
+    q = scp_utils.quarantine(content, reason="registry_contribute", source="registry_contribute")
+    antigen._audit(
+        "registry_contribute_quarantine",
+        quarantine_id=q["quarantine_id"],
+        pattern_count=len(pattern_ids),
+        bundle_preview_hash=bundle_preview_hash,
+    )
+    return q
+
+
+def _to_bundle_patterns(records: list[dict]) -> list[dict]:
+    """Map pattern_record SSOT fields to scp.pattern_bundle.v0 pattern shape."""
+    out: list[dict] = []
+    for rec in records:
+        pat: dict[str, Any] = {
+            "pattern_id": rec["pattern_id"],
+            "category": rec["category"],
+            "detector": dict(rec.get("detector") or {}),
+            "severity": rec.get("risk_tier", rec.get("severity", "medium")),
+        }
+        if rec.get("containment"):
+            pat["containment"] = rec["containment"]
+        out.append(pat)
+    return out
+
+
+def prepare_contribution(
+    *,
+    patterns_json: str | None = None,
+    raw_content: str | None = None,
+    category: str | None = None,
+    risk_tier: str = "medium",
+    https_url: str | None = None,
+    issuer_pubkey: str | None = None,
+) -> dict:
+    """Build bundle, snapshot, and staging quarantine (no network I/O)."""
+    has_patterns = patterns_json is not None and patterns_json.strip() != ""
+    has_raw = raw_content is not None and raw_content.strip() != ""
+    if has_patterns and has_raw:
+        raise ContributeError("invalid_input", reasons=["patterns_json_and_raw_content_mutually_exclusive"])
+    if not has_patterns and not has_raw:
+        raise ContributeError("invalid_input", reasons=["patterns_json_or_raw_content_required"])
+    if has_raw and not category:
+        raise ContributeError("invalid_input", reasons=["category_required_for_raw_content"])
+
+    warnings: list[str] = []
+    if has_raw:
+        records = [anonymize_raw_content(raw_content or "", category=category or "", risk_tier=risk_tier)]
+    else:
+        records = _parse_patterns_json(patterns_json or "")
+        _validate_structured_records(records)
+
+    pattern_ids = [str(r["pattern_id"]) for r in records]
+    digest8 = pattern_ids[0].rsplit(".", 1)[-1] if pattern_ids else "00000000"
+    antigen_id = f"contrib.{digest8}"
+    pubkey = issuer_pubkey or os.environ.get("SCP_CONTRIBUTE_ISSUER_PUBKEY") or _DEFAULT_ISSUER
+
+    payload_urls = [https_url] if https_url else None
+    bundle_patterns = _to_bundle_patterns(records)
+    bundle = antigen.export_bundle(
+        bundle_patterns,
+        antigen_id=antigen_id,
+        issuer_pubkey=pubkey,
+        sign=False,
+        bundle_version=0,
+        payload_urls=payload_urls,
+    )
+    verify = antigen.verify_bundle(
+        bundle,
+        allowlist=[pubkey.lower()],
+        require_signature=False,
+    )
+    if not verify["ok"]:
+        raise ContributeError("bundle_verification_failed", reasons=verify["errors"])
+
+    snapshot = _build_snapshot(records)
+    bundle_preview_hash = bundle["manifest"]["payload_content_hash"]
+    q = _stage_contribution(
+        bundle,
+        snapshot,
+        pattern_ids=pattern_ids,
+        bundle_preview_hash=bundle_preview_hash,
+    )
+
+    proposal = {
+        "pattern_count": len(records),
+        "pattern_ids": pattern_ids,
+        "anonymization_warnings": warnings,
+        "bundle_preview_hash": bundle_preview_hash,
+        "quarantine_path": q["path"],
+    }
+    return {
+        "proposal": proposal,
+        "quarantine_path": q["path"],
+        "bundle": bundle,
+        "snapshot": snapshot,
+        "bundle_preview_hash": bundle_preview_hash,
+    }
+
+
+def post_registry_snapshot(
+    url: str,
+    snapshot: dict,
+    *,
+    tls_verify: bool = True,
+    session: requests.Session | None = None,
+) -> dict:
+    """POST registry_snapshot.v1 JSON to operator-supplied HTTPS endpoint."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https" and not (
+        parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")
+    ):
+        raise ContributeError("url_must_be_https")
+
+    if l402.regtest_fetch_hardening_enabled():
+        try:
+            l402.assert_localhost_fetch_url(url)
+        except ValueError:
+            raise ContributeError("fetch_url_not_localhost")
+
+    sess = session or requests.Session()
+    headers = {"Content-Type": "application/json"}
+    try:
+        resp = sess.post(
+            url,
+            data=json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False),
+            headers=headers,
+            timeout=30,
+            verify=tls_verify,
+        )
+    except requests.RequestException:
+        raise ContributeError("https_post_failed")
+
+    etag = resp.headers.get("ETag") or snapshot.get("etag")
+    if etag and not str(etag).startswith("sha256:"):
+        etag = f"sha256:{etag}"
+    antigen._audit(
+        "registry_contribute_https_post",
+        status=resp.status_code,
+        etag=etag,
+    )
+    return {"status": resp.status_code, "etag": etag}
+
+
+def _proposal_response(prepared: dict) -> dict:
+    return {
+        "ok": True,
+        "submitted": False,
+        "proposal": prepared["proposal"],
+    }
+
+
+def _publish_failure(error: str, *, quarantine_path: str | None) -> dict:
+    out: dict[str, Any] = {
+        "ok": False,
+        "error": error,
+        "submitted": False,
+        "local_staging_preserved": True,
+    }
+    if quarantine_path:
+        out["quarantine_path"] = quarantine_path
+    return out
+
+
+def submit_contribution(
+    *,
+    patterns_json: str | None = None,
+    raw_content: str | None = None,
+    category: str | None = None,
+    risk_tier: str = "medium",
+    transport: str,
+    https_url: str | None = None,
+    relays: list[str] | None = None,
+    approve: bool = False,
+    dry_run: bool | None = None,
+    seckey_hex: str | None = None,
+    tls_verify: bool = True,
+    issuer_pubkey: str | None = None,
+    session: requests.Session | None = None,
+    relay_transport: nostr.RelayTransport | None = None,
+) -> dict:
+    """Public entry: proposal (approve=false) or operator-gated publish."""
+    if transport not in ("nostr", "https", "both"):
+        return {"ok": False, "error": "invalid_transport", "submitted": False}
+
+    if transport in ("https", "both") and not https_url:
+        return {"ok": False, "error": "https_url_required", "submitted": False}
+
+    if transport in ("nostr", "both") and not https_url:
+        return {"ok": False, "error": "payload_url_required", "submitted": False}
+
+    effective_dry_run = dry_run if dry_run is not None else (not approve)
+
+    try:
+        prepared = prepare_contribution(
+            patterns_json=patterns_json,
+            raw_content=raw_content,
+            category=category,
+            risk_tier=risk_tier,
+            https_url=https_url,
+            issuer_pubkey=issuer_pubkey,
+        )
+    except ContributeError as exc:
+        return {
+            "ok": False,
+            "error": exc.reason,
+            "reasons": exc.reasons,
+            "submitted": False,
+        }
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "invalid_patterns_json", "submitted": False}
+
+    quarantine_path = prepared["quarantine_path"]
+
+    if not approve or effective_dry_run:
+        return _proposal_response(prepared)
+
+    bundle = prepared["bundle"]
+    snapshot = prepared["snapshot"]
+    bundle_hash = bundle["manifest"]["payload_content_hash"]
+    result: dict[str, Any] = {
+        "ok": True,
+        "submitted": True,
+        "bundle_hash": bundle_hash,
+    }
+
+    if transport in ("https", "both"):
+        try:
+            https_out = post_registry_snapshot(
+                https_url or "",
+                snapshot,
+                tls_verify=tls_verify,
+                session=session,
+            )
+        except ContributeError as exc:
+            return _publish_failure(
+                "https_post_failed" if exc.reason == "https_post_failed" else exc.reason,
+                quarantine_path=quarantine_path,
+            )
+        if https_out["status"] not in (200, 201, 204):
+            return _publish_failure("https_post_failed", quarantine_path=quarantine_path)
+        result["https"] = {"status": https_out["status"], "etag": https_out.get("etag")}
+
+    if transport in ("nostr", "both"):
+        key = seckey_hex or nostr.seckey_from_env()
+        if not key:
+            return _publish_failure("seckey_required", quarantine_path=quarantine_path)
+        records = snapshot["patterns"]
+        digest8 = prepared["proposal"]["pattern_ids"][0].rsplit(".", 1)[-1]
+        signed = antigen.export_bundle(
+            _to_bundle_patterns(records),
+            antigen_id=f"contrib.{digest8}",
+            seckey_hex=key,
+            sign=True,
+            bundle_version=0,
+            payload_urls=[https_url],
+        )
+        try:
+            nostr_out = nostr.publish_announcement(
+                signed,
+                seckey_hex=key,
+                relays=relays,
+                transport=relay_transport,
+                dry_run=False,
+            )
+        except (ValueError, RuntimeError):
+            return _publish_failure("publish_failed", quarantine_path=quarantine_path)
+        result["nostr"] = {
+            "event_id": nostr_out.get("event_id", ""),
+            "relays": nostr_out.get("relays", []),
+        }
+
+    return result
