@@ -149,6 +149,8 @@ Future: operator `merge_policy.json` (custom rules) — documented as R6 follow-
 
 ## API sketch (design only — R3 implements contribute)
 
+See [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md) for the full `scp_contribute_pattern` tool contract.
+
 | Operation | Input | Output |
 |-----------|-------|--------|
 | `validate_pattern_record` | record JSON | `{ "valid": bool, "errors": [] }` |
@@ -157,6 +159,7 @@ Future: operator `merge_policy.json` (custom rules) — documented as R6 follow-
 
 ## References
 
+- [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md)
 - [SCP_R4_FETCH_REGISTRY.md](SCP_R4_FETCH_REGISTRY.md)
 - [SCP_R1_R4_SPIKE_KICKOFF.md](SCP_R1_R4_SPIKE_KICKOFF.md)
 - MiscRepos [antigen L402 design](https://github.com/ManintheCrowds/MiscRepos/blob/main/docs/superpowers/specs/2026-04-12-scp-antigen-l402-design.md)

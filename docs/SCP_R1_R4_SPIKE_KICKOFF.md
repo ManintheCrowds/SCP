@@ -1,8 +1,8 @@
 # SCP-R1 + SCP-R4 design spike — operator kickoff
 
 **Status:** Decisions locked · spec docs written  
-**Updated:** 2026-07-02  
-**Handoff:** MiscRepos #171 · **Tags:** SCP `v0.1.9`
+**Updated:** 2026-07-03  
+**Handoff:** MiscRepos #173 · **Tags:** SCP `v0.1.9`
 
 ## Why now
 
@@ -18,9 +18,10 @@ SCP-ANT1 **transport is closed** (P0–P1b, LND regtest, P1.5 hardening pushed).
 | Doc | Status |
 |-----|--------|
 | [SCP_R1_THREAT_PATTERN_SCHEMA.md](SCP_R1_THREAT_PATTERN_SCHEMA.md) | **Done** — pattern_record SSOT, Option C hybrid |
-| [SCP_R4_FETCH_REGISTRY.md](SCP_R4_FETCH_REGISTRY.md) | **Done** — parallel paths, tool contract, merge tiers |
+| [SCP_R4_FETCH_REGISTRY.md](SCP_R4_FETCH_REGISTRY.md) | **Done** — parallel paths, tool contract, merge tiers; runtime landed |
+| [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md) | **Done** — antigen reuse, `scp_contribute_pattern`, human gate |
 
-**Out of scope:** R2 central repo, R3 contribute impl, R5 `scp_mcp.py`, production fetch allowlist, mainnet L402.
+**Out of scope:** R2 central repo, R3 contribute **runtime**, R5 `scp_mcp.py`, production fetch allowlist, mainnet L402.
 
 ## Decision forks — locked (operator 2026-07-02)
 
@@ -31,6 +32,8 @@ SCP-ANT1 **transport is closed** (P0–P1b, LND regtest, P1.5 hardening pushed).
 | 3 | **Shared registry transport** | **Both** (nostr + HTTPS, same inner schema) |
 | 4 | **Merge policy** | **Production:** operator approve always · **Dev:** optional auto-merge low-risk + low drift (`SCP_REGISTRY_MERGE_DEV_AUTO=1`) |
 | 5 | **Regtest preflight** | **Mandatory** default path; auto-mine recovery + 120s poll |
+| 6 | **R3 contribute track** | **Antigen reuse** (`export_bundle` + `publish_announcement`); input: `raw_content` or `patterns_json`; outbound: nostr + HTTPS |
+| 7 | **R3 consent** | Two-phase; `approve=false` default; full R6 deferred |
 
 ## Architecture (fork #1 = B)
 
@@ -58,4 +61,4 @@ flowchart TB
 
 ## Next step
 
-R3 contribute flow or R1/R4 implementation spike (after human review of spec docs).
+R3 implementation spike (after human review of [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md)) or R5 `scp_mcp.py` contract review.
