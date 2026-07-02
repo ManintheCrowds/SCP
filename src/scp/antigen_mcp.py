@@ -200,9 +200,8 @@ def scp_contribute_pattern(
     seckey_hex: str | None = None,
     tls_verify: bool = True,
 ) -> str:
-    """Prepare or publish anonymized threat patterns (R3 contribute). approve=false returns proposal
-    only with zero network I/O. transport: nostr | https | both. Exactly one of patterns_json or
-    raw_content required."""
+    """Prepare or publish anonymized threat patterns (R3 contribute). approve=false → proposal only,
+    zero network I/O. transport: nostr | https | both. raw_content requires category."""
     try:
         return json.dumps(registry_contribute_mod.submit_contribution(
             patterns_json=patterns_json,

@@ -311,7 +311,6 @@ Must match R4 + antigen invariants:
 - R2 central GitHub registry repo hosting
 - R5 `scp_mcp.py` wiring
 - R6 full privacy and consent spec (pointer only above)
-- Runtime implementation (`registry_contribute.py`, MCP wiring, tests)
 - SSOT auto-merge on contribute (operator uses `scp_apply_registry_quarantine` separately if desired)
 - Mainnet L402 in contribute path
 

@@ -12,7 +12,7 @@ import json
 import os
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import requests
 
@@ -317,6 +317,14 @@ def prepare_contribution(
     }
 
 
+def _nostr_payload_url(https_url: str) -> str:
+    """Map localhost HTTP POST targets to HTTPS for kind-30078 payload_urls."""
+    parsed = urlparse(https_url)
+    if parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost"):
+        return urlunparse(parsed._replace(scheme="https"))
+    return https_url
+
+
 def post_registry_snapshot(
     url: str,
     snapshot: dict,
@@ -472,7 +480,7 @@ def submit_contribution(
             seckey_hex=key,
             sign=True,
             bundle_version=0,
-            payload_urls=[https_url],
+            payload_urls=[_nostr_payload_url(https_url or "")],
         )
         try:
             nostr_out = nostr.publish_announcement(

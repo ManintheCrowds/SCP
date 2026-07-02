@@ -19,7 +19,7 @@ SCP-ANT1 **transport is closed** (P0–P1b, LND regtest, P1.5 hardening pushed).
 |-----|--------|
 | [SCP_R1_THREAT_PATTERN_SCHEMA.md](SCP_R1_THREAT_PATTERN_SCHEMA.md) | **Done** — pattern_record SSOT, Option C hybrid |
 | [SCP_R4_FETCH_REGISTRY.md](SCP_R4_FETCH_REGISTRY.md) | **Done** — parallel paths, tool contract, merge tiers; runtime landed |
-| [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md) | **Done** — runtime landed; `registry_contribute.py`, MCP/CLI |
+| [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md) | **Implemented (spike)** — `registry_contribute.py`, MCP/CLI, 16 tests |
 
 **Out of scope:** R2 central repo, R5 `scp_mcp.py`, production fetch allowlist, mainnet L402.
 
