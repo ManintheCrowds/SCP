@@ -1,0 +1,90 @@
+# PURPOSE: Tests for SCP-R4 SSOT store, diff, and merge gates.
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from scp import pattern_record as pr
+from scp import registry_ssot
+
+
+def _rec(pid: str, *, tier: str = "low", drift: float = 0.05, norm: str = "token-a") -> dict:
+    return {
+        "pattern_id": pid,
+        "category": "injection",
+        "detector": {"kind": "token_family", "normalized": norm},
+        "risk_tier": tier,
+        "drift_score": drift,
+    }
+
+
+@pytest.fixture(autouse=True)
+def isolated_ssot(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SCP_PATTERN_SSOT_PATH", str(tmp_path / "ssot.json"))
+    monkeypatch.setenv("SCP_THREAT_REGISTRY_PATH", str(tmp_path / "projection.json"))
+    monkeypatch.setenv("SCP_ANTIGEN_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "quarantine"))
+    monkeypatch.delenv("SCP_REGISTRY_MERGE_DEV_AUTO", raising=False)
+    return tmp_path
+
+
+def test_diff_add_and_conflict():
+    registry_ssot.save_ssot([_rec("existing.001", norm="local-token")])
+    remote = [_rec("existing.001", norm="remote-token"), _rec("new.001")]
+    d = registry_ssot.diff_snapshot(remote)
+    assert d["add_count"] == 1
+    assert d["conflict_count"] == 1
+
+
+def test_apply_merge_requires_approve(isolated_ssot):
+    snap = {
+        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
+        "registry_version": "2026-07-02T00:00:00Z",
+        "patterns": [_rec("merge.001")],
+    }
+    root = isolated_ssot
+    qfile = root / "q.json"
+    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+
+    res = registry_ssot.apply_merge(qfile, approve=False)
+    assert res["merged"] is False
+    assert res["reason"] == "approval_required"
+
+
+def test_apply_merge_operator_approved(isolated_ssot):
+    snap = {
+        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
+        "registry_version": "2026-07-02T00:00:00Z",
+        "patterns": [_rec("merge.approved.001")],
+    }
+    qfile = isolated_ssot / "q2.json"
+    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+
+    res = registry_ssot.apply_merge(qfile, approve=True)
+    assert res["merged"] is True
+    assert res["applied"] == 1
+    ssot = registry_ssot.load_ssot()
+    assert any(p["pattern_id"] == "merge.approved.001" for p in ssot)
+
+
+def test_dev_auto_low_risk_only(isolated_ssot, monkeypatch):
+    monkeypatch.setenv("SCP_REGISTRY_MERGE_DEV_AUTO", "1")
+    monkeypatch.setenv("SCP_REGISTRY_MAX_DRIFT", "0.15")
+
+    snap = {
+        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
+        "registry_version": "2026-07-02T00:00:00Z",
+        "patterns": [
+            _rec("auto.low.001", tier="low", drift=0.1),
+            _rec("auto.high.001", tier="high", drift=0.0),
+        ],
+    }
+    qfile = isolated_ssot / "q3.json"
+    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+
+    res = registry_ssot.apply_merge(qfile, approve=False)
+    assert res["merged"] is True
+    assert res["auto_applied"] == 1
+    assert res["skipped"] == 1

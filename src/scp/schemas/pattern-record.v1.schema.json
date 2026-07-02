@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manithecrowds.dev/schemas/pattern-record.v1.schema.json",
+  "title": "scp.pattern_record.v1",
+  "description": "Authoritative interchange record for anonymized threat patterns (SCP-R1 Option C SSOT).",
+  "type": "object",
+  "required": ["pattern_id", "category", "detector", "risk_tier"],
+  "additionalProperties": false,
+  "properties": {
+    "pattern_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "category": {
+      "type": "string",
+      "minLength": 1
+    },
+    "detector": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["token_family", "regex_family", "semantic_alias", "structural"]
+        },
+        "normalized": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      }
+    },
+    "risk_tier": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "drift_score": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "containment": {
+      "type": "string",
+      "enum": ["sanitize", "quarantine", "block"]
+    },
+    "source_ref": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "registry_bucket": {
+      "type": "string"
+    }
+  }
+}

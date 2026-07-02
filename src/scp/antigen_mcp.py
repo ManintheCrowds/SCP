@@ -13,6 +13,8 @@ from mcp.server.fastmcp import FastMCP
 from . import antigen as antigen_mod
 from . import antigen_l402 as l402_mod
 from . import antigen_nostr as nostr_mod
+from . import registry_fetch as registry_fetch_mod
+from . import registry_ssot as registry_ssot_mod
 
 mcp = FastMCP("SCP-Antigen")
 
@@ -157,6 +159,38 @@ def scp_antigen_fetch(url: str, expected_hash: str, allowlist: str | None = None
         if e.l402 is not None:
             out["l402"] = e.l402
         return json.dumps(out)
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def scp_fetch_registry(
+    source: str,
+    allowlist: str,
+    if_none_match: str | None = None,
+    tls_verify: bool = True,
+    relays: str | None = None,
+) -> str:
+    """Fetch shared threat registry snapshot (HTTPS URL or nostr event id). Quarantines only;
+    merged is always false. allowlist is comma-separated hosts and/or issuer pubkeys (fail closed)."""
+    try:
+        return json.dumps(registry_fetch_mod.fetch_registry(
+            source,
+            _parse_allowlist(allowlist),
+            if_none_match=if_none_match,
+            tls_verify=tls_verify,
+            relays=_parse_allowlist(relays),
+        ))
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def scp_apply_registry_quarantine(quarantine_path: str, approve: bool = False) -> str:
+    """Operator-gated merge of a quarantined registry snapshot into local SSOT + projection.
+    approve defaults False (proposal only). Dev auto-low-risk via SCP_REGISTRY_MERGE_DEV_AUTO=1."""
+    try:
+        return json.dumps(registry_ssot_mod.apply_merge(quarantine_path, approve=approve))
     except Exception as e:
         return _err(e)
 

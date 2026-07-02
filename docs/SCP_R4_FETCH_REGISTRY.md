@@ -1,7 +1,7 @@
 # SCP-R4 — Fetch registry flow
 
 **decision_id:** `scp-r4-fetch-registry-2026-07-02`  
-**Status:** Design spec (no runtime implementation in this spike)  
+**Status:** Implemented (spike) — `registry_fetch.py`, `registry_ssot.py`, `pattern_record.py`; MCP tools in `antigen_mcp.py`  
 **Depends on:** [SCP_R1_THREAT_PATTERN_SCHEMA.md](SCP_R1_THREAT_PATTERN_SCHEMA.md)
 
 ## Purpose

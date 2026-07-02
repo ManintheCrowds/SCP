@@ -10,6 +10,8 @@ from pathlib import Path
 
 from . import antigen
 from . import antigen_nostr as nostr
+from . import registry_fetch
+from . import registry_ssot
 
 
 def _read_patterns(path: str) -> list[dict]:
@@ -120,6 +122,20 @@ def _cmd_discover(args) -> dict | list[dict]:
     return results
 
 
+def _cmd_registry_fetch(args) -> dict:
+    return registry_fetch.fetch_registry(
+        args.source,
+        _split_allowlist(args.allowlist),
+        if_none_match=args.if_none_match,
+        tls_verify=args.tls_verify,
+        relays=_split_allowlist(args.relays),
+    )
+
+
+def _cmd_registry_apply(args) -> dict:
+    return registry_ssot.apply_merge(args.quarantine_path, approve=args.approve)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="scp.antigen_cli", description="SCP-ANT1 antigen P0 tool")
     sub = p.add_subparsers(dest="command", required=True)
@@ -179,6 +195,23 @@ def build_parser() -> argparse.ArgumentParser:
     pf.add_argument("--hash", required=True, help="expected sha256 bare hex or sha256: prefix")
     pf.add_argument("--l402-token", help="operator-supplied L402 macaroon:preimage (or SCP_ANTIGEN_L402_TOKEN)")
     pf.set_defaults(func=_cmd_fetch)
+
+    prg = sub.add_parser("registry", help="R4 shared registry fetch/merge")
+    prg_sub = prg.add_subparsers(dest="registry_command", required=True)
+
+    prf = prg_sub.add_parser("fetch", help="fetch registry snapshot to quarantine (no merge)")
+    prf.add_argument("source", help="HTTPS URL or nostr event id (64-hex)")
+    prf.add_argument("--allowlist", required=True)
+    prf.add_argument("--if-none-match")
+    prf.add_argument("--no-tls-verify", dest="tls_verify", action="store_false", default=True)
+    prf.add_argument("--relays")
+    prf.set_defaults(func=_cmd_registry_fetch)
+
+    pra = prg_sub.add_parser("apply", help="merge quarantined registry snapshot (requires --approve)")
+    pra.add_argument("quarantine_path")
+    pra.add_argument("--approve", action="store_true")
+    pra.set_defaults(func=_cmd_registry_apply)
+
     return p
 
 
@@ -202,7 +235,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     print(json.dumps(out, indent=2, ensure_ascii=False))
     # Non-zero exit when a verify/import/merge/fetch did not succeed, for CI/scripts.
-    if isinstance(out, dict) and (out.get("ok") is False or out.get("rejected") is True):
+    if isinstance(out, dict) and (
+        out.get("ok") is False or out.get("rejected") is True
+        or (out.get("merged") is False and out.get("reason"))
+    ):
         return 2
     return 0
 

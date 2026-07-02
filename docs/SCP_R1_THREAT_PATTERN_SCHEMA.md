@@ -1,7 +1,7 @@
 # SCP-R1 — Threat pattern schema (SSOT)
 
 **decision_id:** `scp-r1-pattern-record-ssot-2026-07-02`  
-**Status:** Design spec (no runtime implementation in this spike)  
+**Status:** Design spec + R1 runtime core (`pattern_record.py`) implemented in R4 spike  
 **Operator choice:** Option **C — Hybrid** (structured SSOT + legacy registry projection)
 
 ## Purpose

@@ -1,0 +1,23 @@
+{
+  "schema_revision": "scp.registry_snapshot.v1",
+  "registry_version": "2026-07-02T00:00:00Z",
+  "etag": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "patterns": [
+    {
+      "pattern_id": "inj.fetch.001",
+      "category": "injection",
+      "detector": {"kind": "token_family", "normalized": "authorized-override-family"},
+      "risk_tier": "low",
+      "drift_score": 0.05,
+      "registry_bucket": "power_words"
+    },
+    {
+      "pattern_id": "inj.fetch.002",
+      "category": "injection",
+      "detector": {"kind": "token_family", "normalized": "system-update-family"},
+      "risk_tier": "medium",
+      "drift_score": 0.2,
+      "registry_bucket": "power_words"
+    }
+  ]
+}

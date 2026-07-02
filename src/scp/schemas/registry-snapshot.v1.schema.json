@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manithecrowds.dev/schemas/registry-snapshot.v1.schema.json",
+  "title": "scp.registry_snapshot.v1",
+  "description": "HTTPS/nostr registry aggregate envelope (SCP-R4). Inner patterns use pattern_record SSOT.",
+  "type": "object",
+  "required": ["schema_revision", "registry_version", "patterns"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_revision": {
+      "type": "string",
+      "const": "scp.registry_snapshot.v1"
+    },
+    "registry_version": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "etag": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "patterns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "pattern-record.v1.schema.json"
+      }
+    }
+  }
+}
