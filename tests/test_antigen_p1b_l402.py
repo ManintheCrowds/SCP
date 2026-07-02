@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -54,8 +55,16 @@ def issuer() -> str:
     return antigen._pubkey_hex(bytes.fromhex(SECKEY))
 
 
+@pytest.fixture
+def operator_l402_token(request) -> str | None:
+    """Capture hb-1 operator token before autouse isolated_env delenv (F5 only)."""
+    if request.node.name != "test_live_regtest_l402_fetch_integration":
+        return None
+    return os.environ.get("SCP_ANTIGEN_L402_TOKEN")
+
+
 @pytest.fixture(autouse=True)
-def isolated_env(tmp_path: Path, monkeypatch) -> Path:
+def isolated_env(tmp_path: Path, monkeypatch, operator_l402_token) -> Path:
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "quarantine"))
     monkeypatch.setenv("SCP_ANTIGEN_AUDIT_LOG", str(tmp_path / "antigen_audit.jsonl"))
     monkeypatch.setenv("SCP_THREAT_REGISTRY_PATH", str(tmp_path / "registry.json"))
@@ -307,13 +316,16 @@ def test_fetch_tls_verify_disabled(monkeypatch):
     not os.getenv("SCP_ANTIGEN_L402_INTEGRATION"),
     reason="set SCP_ANTIGEN_L402_INTEGRATION=1; requires regtest stack + SCP_ANTIGEN_L402_TOKEN",
 )
-def test_live_regtest_l402_fetch_integration(monkeypatch):
+def test_live_regtest_l402_fetch_integration(monkeypatch, operator_l402_token):
     """F5: live localhost regtest aperture — operator must supply paid token (hb-1)."""
     manifest = _read_regtest_manifest()
     url = manifest.get("PAYLOAD_URL")
     bare = manifest.get("EXPECTED_HASH_BARE")
     if not url or not bare:
         pytest.skip("regtest manifest.env missing PAYLOAD_URL or EXPECTED_HASH_BARE")
+    host = urlparse(url).hostname
+    if host not in ("localhost", "127.0.0.1"):
+        pytest.skip(f"PAYLOAD_URL must be localhost for F5 (got {host})")
     tls = manifest.get("SCP_ANTIGEN_TLS_VERIFY", "0")
     monkeypatch.setenv("SCP_ANTIGEN_TLS_VERIFY", tls)
 
@@ -322,10 +334,9 @@ def test_live_regtest_l402_fetch_integration(monkeypatch):
     assert exc_info.value.reason == "payment_required"
     assert exc_info.value.l402 is not None
 
-    token = os.environ.get("SCP_ANTIGEN_L402_TOKEN")
-    if not token:
+    if not operator_l402_token:
         pytest.skip("SCP_ANTIGEN_L402_TOKEN required after operator/regtest pay (never auto-spend)")
 
-    payload = nostr.fetch_payload(url, bare, l402_token=token)
+    payload = nostr.fetch_payload(url, bare, l402_token=operator_l402_token)
     assert isinstance(payload.get("patterns"), list)
     assert len(payload["patterns"]) >= 1
