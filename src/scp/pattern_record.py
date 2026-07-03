@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,107 @@ _CATEGORY_DEFAULT_BUCKET: dict[str, str] = {
     "hostile_ux": "hostile_ux",
     "reversal": "power_words",
 }
+
+_LEGACY_REGISTRY_META_KEYS = frozenset({"version", "updated", "_comment"})
+
+_LEGACY_BUCKET_CATEGORY: dict[str, str] = {
+    "power_words": "injection",
+    "semantic_aliases": "injection",
+    "bitcoin_inscription_override": "injection",
+    "bitcoin_tx_mempool_override": "injection",
+    "jailbreak_nicknames": "jailbreak",
+    "mythic_framing": "jailbreak",
+    "hostile_ux": "hostile_ux",
+    "multilingual_override": "injection",
+}
+
+
+class RegistrySnapshotError(ValueError):
+    """Raised when snapshot validation fails during build."""
+
+
+def canonical_patterns_etag(records: list[dict]) -> str:
+    """Content address of patterns[] — matches registry_contribute._canonical_patterns_hash."""
+    canonical = json.dumps(records, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
+
+def build_registry_snapshot(
+    records: list[dict],
+    *,
+    registry_version: str | None = None,
+) -> dict:
+    """Build scp.registry_snapshot.v1 envelope; fail closed if invalid."""
+    version = registry_version or (
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    snapshot = {
+        "schema_revision": REGISTRY_SNAPSHOT_REVISION,
+        "registry_version": version,
+        "etag": canonical_patterns_etag(records),
+        "patterns": records,
+    }
+    env = validate_snapshot(snapshot)
+    if not env["valid"]:
+        raise RegistrySnapshotError(f"invalid snapshot envelope: {env['errors']}")
+    pat = validate_snapshot_patterns(records)
+    if not pat["valid"]:
+        raise RegistrySnapshotError(f"invalid snapshot patterns: {pat['errors']}")
+    return snapshot
+
+
+def records_from_legacy_registry(registry: dict) -> list[dict]:
+    """Import packaged scp_threat_registry.json buckets into pattern_record list."""
+    records: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for bucket, value in registry.items():
+        if bucket in _LEGACY_REGISTRY_META_KEYS:
+            continue
+        category = _LEGACY_BUCKET_CATEGORY.get(bucket)
+        if category is None:
+            continue
+
+        if bucket == "multilingual_override":
+            if not isinstance(value, dict):
+                continue
+            for lang, tokens in value.items():
+                if not isinstance(tokens, list):
+                    continue
+                for token in tokens:
+                    if not isinstance(token, str) or not token.strip():
+                        continue
+                    rec = legacy_token_record(token.strip(), bucket=bucket)
+                    rec["category"] = category
+                    rec["source_ref"] = {"lang": str(lang)}
+                    pid = rec["pattern_id"]
+                    if pid in seen_ids:
+                        continue
+                    seen_ids.add(pid)
+                    records.append(rec)
+            continue
+
+        if not isinstance(value, list):
+            continue
+        for token in value:
+            if not isinstance(token, str) or not token.strip():
+                continue
+            rec = legacy_token_record(token.strip(), bucket=bucket)
+            rec["category"] = category
+            pid = rec["pattern_id"]
+            if pid in seen_ids:
+                continue
+            seen_ids.add(pid)
+            records.append(rec)
+
+    records.sort(key=lambda r: r.get("pattern_id", ""))
+    return records
+
+
+def load_packaged_threat_registry() -> dict:
+    """Load default packaged scp_threat_registry.json."""
+    path = _pkg_dir / "scp_threat_registry.json"
+    return json.loads(path.read_text(encoding="utf-8"))
 
 _PROHIBITED_KEYS = {
     "raw_prompt", "raw_log", "raw_logs", "chat_log", "chatlog", "transcript",

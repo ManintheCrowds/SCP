@@ -206,7 +206,7 @@ Harness wrapper remains thin launcher delegating to package modules after conver
 
 ## Out of scope
 
-- R2 central open-source repo hosting
+- R2 central data repo — **bootstrapped** @ [scp-mycelium-registry](https://github.com/ManintheCrowds/scp-mycelium-registry) v0.1.0
 - Mainnet L402 in contribute/fetch paths
 - Auto-merge on fetch (merge always separate apply step)
 - LLM normalize for contribute (R6)
@@ -229,5 +229,6 @@ Harness wrapper remains thin launcher delegating to package modules after conver
 - [OPENHARNESS_CONTRACT.md](OPENHARNESS_CONTRACT.md)
 - [SCP_R4_FETCH_REGISTRY.md](SCP_R4_FETCH_REGISTRY.md)
 - [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md)
+- [SCP_R2_REGISTRY_HOSTING.md](SCP_R2_REGISTRY_HOSTING.md)
 - MiscRepos [MCP_TOOL_LAYERS.md](../../MiscRepos/local-proto/docs/MCP_TOOL_LAYERS.md)
 - Mycelium design: [2026-03-12-scp-saas-mycelium-design.md](../../MiscRepos/docs/plans/2026-03-12-scp-saas-mycelium-design.md)

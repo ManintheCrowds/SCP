@@ -88,6 +88,15 @@ Environment seams (regtest/integration only):
 
 Network/TLS/allowlist/hash mismatch → local `scp_threat_registry.json` **unchanged** (mycelium Recovery pattern).
 
+### Example sources (R2 central repo)
+
+When [SCP_R2_REGISTRY_HOSTING.md](SCP_R2_REGISTRY_HOSTING.md) is bootstrapped:
+
+```
+https://raw.githubusercontent.com/ManintheCrowds/scp-mycelium-registry/v0.1.0/snapshots/v0.1.0/registry.json
+https://raw.githubusercontent.com/ManintheCrowds/scp-mycelium-registry/main/latest.json
+```
+
 ## Fetch algorithm (normative sketch)
 
 1. Resolve `source` to HTTPS GET or nostr payload retrieval
@@ -155,5 +164,6 @@ Audit events: `merge_operator_approved`, `merge_auto_applied` (dev only).
 
 - [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md)
 - [SCP_R1_THREAT_PATTERN_SCHEMA.md](SCP_R1_THREAT_PATTERN_SCHEMA.md)
+- [SCP_R2_REGISTRY_HOSTING.md](SCP_R2_REGISTRY_HOSTING.md)
 - [SCP_R1_R4_SPIKE_KICKOFF.md](SCP_R1_R4_SPIKE_KICKOFF.md)
 - MiscRepos [mycelium design §Recovery](https://github.com/ManintheCrowds/MiscRepos/blob/main/docs/plans/2026-03-12-scp-saas-mycelium-design.md)

@@ -161,5 +161,6 @@ See [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md) for the full `scp_con
 
 - [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md)
 - [SCP_R4_FETCH_REGISTRY.md](SCP_R4_FETCH_REGISTRY.md)
+- [SCP_R2_REGISTRY_HOSTING.md](SCP_R2_REGISTRY_HOSTING.md)
 - [SCP_R1_R4_SPIKE_KICKOFF.md](SCP_R1_R4_SPIKE_KICKOFF.md)
 - MiscRepos [antigen L402 design](https://github.com/ManintheCrowds/MiscRepos/blob/main/docs/superpowers/specs/2026-04-12-scp-antigen-l402-design.md)

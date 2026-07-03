@@ -148,7 +148,7 @@ SCP has no shutdown, suicide, or self-termination commands. SCP inspects, saniti
 ## Roadmap
 
 - [ ] GitHub topics: `mcp`, `llm-security`, `prompt-injection`
-- [ ] Shared threat registry narrative ([SCP-R2](https://github.com/ManintheCrowds/MiscRepos/blob/main/docs/portfolio/decision-cards/SCP-R2.md) — public eval shell)
+- [x] Shared threat registry — [scp-mycelium-registry](https://github.com/ManintheCrowds/scp-mycelium-registry) @ v0.1.0 ([R2 spec](docs/SCP_R2_REGISTRY_HOSTING.md))
 - [ ] MCP Registry listing when governance doc is ready
 
 ## Red-team eval (SCP-R2)

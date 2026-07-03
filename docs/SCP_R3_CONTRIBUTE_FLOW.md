@@ -340,7 +340,7 @@ Must match R4 + antigen invariants:
 
 ## Out of scope
 
-- R2 central GitHub registry repo hosting
+- R2 **bootstrap** (GitHub repo creation, first snapshot publish) — spec locked; gate `proceed R2-bootstrap`
 - R5 `scp_mcp.py` wiring
 - R6 full privacy and consent spec (pointer only above)
 - SSOT auto-merge on contribute (operator uses `scp_apply_registry_quarantine` separately if desired)
@@ -350,6 +350,7 @@ Must match R4 + antigen invariants:
 
 - [SCP_R1_THREAT_PATTERN_SCHEMA.md](SCP_R1_THREAT_PATTERN_SCHEMA.md)
 - [SCP_R4_FETCH_REGISTRY.md](SCP_R4_FETCH_REGISTRY.md)
+- [SCP_R2_REGISTRY_HOSTING.md](SCP_R2_REGISTRY_HOSTING.md)
 - [SCP_R1_R4_SPIKE_KICKOFF.md](SCP_R1_R4_SPIKE_KICKOFF.md)
 - [ANTIGEN_P1_NOSTR.md](ANTIGEN_P1_NOSTR.md)
 - MiscRepos [mycelium design §Collective Learning](https://github.com/ManintheCrowds/MiscRepos/blob/main/docs/plans/2026-03-12-scp-saas-mycelium-design.md)

@@ -19,10 +19,11 @@ SCP-ANT1 **transport is closed** (P0–P1b, LND regtest, P1.5 hardening pushed).
 |-----|--------|
 | [SCP_R1_THREAT_PATTERN_SCHEMA.md](SCP_R1_THREAT_PATTERN_SCHEMA.md) | **Done** — pattern_record SSOT, Option C hybrid |
 | [SCP_R4_FETCH_REGISTRY.md](SCP_R4_FETCH_REGISTRY.md) | **Done** — parallel paths, tool contract, merge tiers; runtime landed |
-| [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md) | **Implemented (spike)** — hardening @ `6280540`; 20 R3 tests, 174 pytest pass |
+| [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md) | **Implemented (spike)** — critic polish @ `2eaae53`; 24 R3 tests, 178 pytest pass |
 | [SCP_R5_MCP_INTEGRATION.md](SCP_R5_MCP_INTEGRATION.md) | **Spec locked** — dual-server; v1.1 optional read-only; inspect loop |
+| [SCP_R2_REGISTRY_HOSTING.md](SCP_R2_REGISTRY_HOSTING.md) | **Bootstrapped** — [scp-mycelium-registry](https://github.com/ManintheCrowds/scp-mycelium-registry) @ v0.1.0 |
 
-**Out of scope:** R2 central repo, production fetch allowlist, mainnet L402, R5 **runtime** until `proceed R5`.
+**Out of scope:** R2 **bootstrap** (repo creation, first snapshot), production fetch allowlist, mainnet L402, R5 **runtime** until `proceed R5`.
 
 ## Decision forks — locked (operator 2026-07-02)
 
@@ -62,4 +63,4 @@ flowchart TB
 
 ## Next step
 
-R5 spec locked — await operator `proceed R5` for implementation slices (registry load, v1.1 tools, OpenHarness contracts). Parallel: R6 privacy spec.
+R5 spec locked — await operator `proceed R5` for implementation slices (registry load, v1.1 tools, OpenHarness contracts). R2 spec locked — await `proceed R2-bootstrap` for data repo. Parallel: R6 privacy spec.
