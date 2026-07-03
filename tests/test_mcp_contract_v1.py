@@ -47,7 +47,8 @@ def scp_mcp_path() -> Path:
 def test_scp_mcp_exposes_contract_v1_tools(scp_mcp_path: Path) -> None:
     assert scp_mcp_path.is_file(), f"Missing {scp_mcp_path}"
     implemented = _mcp_tool_functions(scp_mcp_path)
-    assert implemented == CONTRACT_V1_TOOLS, (
-        f"Tool set drift. contract={sorted(CONTRACT_V1_TOOLS)} "
+    missing = CONTRACT_V1_TOOLS - implemented
+    assert not missing, (
+        f"v1.0 tools missing from implementation. missing={sorted(missing)} "
         f"implemented={sorted(implemented)}"
     )

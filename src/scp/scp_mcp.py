@@ -3,15 +3,60 @@
 
 """
 SCP MCP Server. Exposes inspect, sanitize, contain, quarantine, validate_output, mask_secrets, run_pipeline.
+v1.1 optional: scp_registry_summary, scp_registry_section (read-only).
 """
 
 import json
+import os
+import re
 
 from mcp.server.fastmcp import FastMCP
 
+from . import registry_paths
 from . import scp_utils
 
 mcp = FastMCP("SCP")
+
+_DEBUG_META_ENV = "SCP_DEBUG_META"
+_REGISTRY_SECTION_ALLOWLIST_ENV = "SCP_REGISTRY_SECTION_ALLOWLIST"
+_MAX_REGISTRY_SECTION_CHARS = 4096
+_DEFAULT_REGISTRY_SECTION_MAX_CHARS = 2048
+_REGISTRY_SECTION_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]{0,63}$")
+_DEFAULT_REGISTRY_SECTION_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "version",
+        "updated",
+        "power_words",
+        "multilingual_override",
+        "jailbreak_nicknames",
+        "mythic_framing",
+        "hostile_ux",
+        "bitcoin_inscription_override",
+        "bitcoin_tx_mempool_override",
+    }
+)
+
+
+def _registry_section_allowlist() -> frozenset[str]:
+    raw = os.environ.get(_REGISTRY_SECTION_ALLOWLIST_ENV)
+    if raw is not None and raw.strip():
+        return frozenset(p.strip() for p in raw.split(",") if p.strip())
+    return _DEFAULT_REGISTRY_SECTION_ALLOWLIST
+
+
+def _bounded_allowlist_keys_for_error() -> list[str]:
+    return sorted(_registry_section_allowlist())[:32]
+
+
+def _debug_meta_enabled() -> bool:
+    return os.environ.get(_DEBUG_META_ENV, "0") == "1"
+
+
+def _error(code: str, message: str, details: dict | None = None) -> str:
+    payload: dict = {"error": {"code": code, "message": message}}
+    if details:
+        payload["error"]["details"] = details
+    return json.dumps(payload)
 
 
 def _err(e: Exception) -> str:
@@ -103,6 +148,71 @@ def scp_run_pipeline(content: str, sink: str = "handoff", options: str | None = 
         return json.dumps(scp_utils.run_pipeline(content, sink=sink, options=opts))
     except json.JSONDecodeError:
         return _err(ValueError("options must be valid JSON"))
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def scp_registry_summary() -> str:
+    """Read-only: threat registry file path, fingerprint, and per-section entry counts (if present)."""
+    try:
+        p = registry_paths.resolve_threat_registry_path()
+        if not p:
+            return _error(
+                "not_found",
+                "Threat registry file not found",
+                {"hint": "Set SCP_THREAT_REGISTRY_PATH or apply a registry merge projection"},
+            )
+        data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        summary: dict = {}
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(v, list):
+                    summary[k] = len(v)
+                elif isinstance(v, dict):
+                    summary[k] = len(v)
+                else:
+                    summary[k] = 1
+        path_out = str(p.resolve()) if _debug_meta_enabled() else "redacted"
+        return json.dumps({"registry_path": path_out, "sections": summary})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def scp_registry_section(section: str, max_chars: int = _DEFAULT_REGISTRY_SECTION_MAX_CHARS) -> str:
+    """Read-only: one allowlisted section of the threat registry as JSON text (strict cap)."""
+    try:
+        if not isinstance(section, str) or not _REGISTRY_SECTION_NAME_RE.match(section):
+            return _error("invalid_input", "Invalid registry section identifier")
+        allow = _registry_section_allowlist()
+        if section not in allow:
+            return _error(
+                "invalid_input",
+                "Threat registry section not allowlisted for excerpt",
+                {"section": section, "allowlisted_sections": _bounded_allowlist_keys_for_error()},
+            )
+        p = registry_paths.resolve_threat_registry_path()
+        if not p:
+            return _error("not_found", "Threat registry file not found")
+        data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        if not isinstance(data, dict) or section not in data:
+            return _error(
+                "invalid_input",
+                "Threat registry section not found or empty",
+                {"section": section},
+            )
+        try:
+            mc = int(max_chars)
+        except (TypeError, ValueError):
+            return _error("invalid_input", "max_chars must be an integer")
+        if mc < 1:
+            return _error("invalid_input", "max_chars must be at least 1")
+        safe_chars = min(mc, _MAX_REGISTRY_SECTION_CHARS)
+        full = json.dumps({section: data[section]}, ensure_ascii=False)
+        truncated = len(full) > safe_chars
+        excerpt = full if not truncated else full[:safe_chars] + "…"
+        return json.dumps({"section": section, "excerpt": excerpt, "truncated": truncated})
     except Exception as e:
         return _err(e)
 
