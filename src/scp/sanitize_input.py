@@ -14,6 +14,7 @@ import sys
 import unicodedata
 from pathlib import Path
 
+from . import registry_paths
 from . import scp_limits
 
 OVERRIDE_PHRASES = [
@@ -192,24 +193,9 @@ _SCRIPT_LATIN_EXT = range(0x00C0, 0x0250)
 _SCRIPT_CYRILLIC = range(0x0400, 0x0500)
 _SCRIPT_GREEK = range(0x0370, 0x0400)
 
-_THREAT_REGISTRY: dict | None = None
-
-
 def _load_threat_registry() -> dict | None:
-    global _THREAT_REGISTRY
-    if _THREAT_REGISTRY is not None:
-        return _THREAT_REGISTRY
-    try:
-        _dir = Path(__file__).resolve().parent
-        p = _dir / "scp_threat_registry.json"
-        if p.exists():
-            with open(p, encoding="utf-8") as f:
-                _THREAT_REGISTRY = json.load(f)
-        else:
-            _THREAT_REGISTRY = {}
-    except (json.JSONDecodeError, OSError):
-        _THREAT_REGISTRY = {}
-    return _THREAT_REGISTRY
+    reg = registry_paths.load_threat_registry()
+    return reg if reg else None
 
 
 def _get_script(cp: int) -> str:

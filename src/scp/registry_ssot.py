@@ -12,6 +12,7 @@ from typing import Any
 
 from . import antigen
 from . import pattern_record as pr
+from . import registry_paths
 
 DEFAULT_MAX_DRIFT = 0.15
 DEFAULT_DEV_AUTO_CATEGORIES = frozenset({"injection"})
@@ -25,10 +26,7 @@ def _ssot_path() -> Path:
 
 
 def _projection_path() -> Path:
-    env = os.environ.get("SCP_THREAT_REGISTRY_PATH")
-    if env:
-        return Path(env)
-    return Path.home() / ".scp" / "threat_registry_projection.json"
+    return registry_paths.default_projection_path()
 
 
 def _audit(event: str, **fields: Any) -> None:
