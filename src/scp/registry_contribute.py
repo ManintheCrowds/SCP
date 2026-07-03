@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -31,6 +32,7 @@ _CATEGORY_ABBREV: dict[str, str] = {
 }
 
 _VALID_CATEGORIES = frozenset(pr._CATEGORY_DEFAULT_BUCKET.keys())
+_CONTRIB_PATTERN_ID_RE = re.compile(r"^contrib\.([a-z0-9._-]+)\.([0-9a-f]{8})$")
 _DEFAULT_ISSUER = antigen._pubkey_hex(
     bytes.fromhex("0000000000000000000000000000000000000000000000000000000000000003")
 )
@@ -163,6 +165,33 @@ def _parse_patterns_json(patterns_json: str) -> list[dict]:
     return data
 
 
+def _validate_contribute_abstraction(rec: dict) -> list[str]:
+    """Contribute-outbound gate: patterns_json must match raw-path abstracted shape."""
+    reasons: list[str] = []
+    pid = rec.get("pattern_id", "")
+    if not isinstance(pid, str):
+        return ["pattern_id_not_contrib_abstract"]
+    match = _CONTRIB_PATTERN_ID_RE.match(pid)
+    if not match:
+        return ["pattern_id_not_contrib_abstract"]
+
+    abbrev, hash8 = match.group(1), match.group(2)
+    category = rec.get("category")
+    if not isinstance(category, str) or category not in _VALID_CATEGORIES:
+        reasons.append("invalid_category_for_contribute")
+    elif _category_abbrev(category) != abbrev:
+        reasons.append("pattern_id_category_mismatch")
+
+    detector = rec.get("detector")
+    if not isinstance(detector, dict) or detector.get("kind") != "token_family":
+        reasons.append("detector_must_be_token_family")
+    elif isinstance(category, str) and category in _VALID_CATEGORIES:
+        expected_norm = f"{category}-family-{hash8}"
+        if detector.get("normalized") != expected_norm:
+            reasons.append("normalized_not_abstracted")
+    return reasons
+
+
 def _validate_structured_records(records: list[dict]) -> None:
     reasons: list[str] = []
     for i, rec in enumerate(records):
@@ -172,6 +201,8 @@ def _validate_structured_records(records: list[dict]) -> None:
         a = pr.validate_anonymization(rec)
         if not a["ok"]:
             reasons.extend([f"patterns[{i}].{r}" for r in a["reasons"]])
+        for reason in _validate_contribute_abstraction(rec):
+            reasons.append(f"patterns[{i}].{reason}")
     if reasons:
         ids = [str(r.get("pattern_id", "")) for r in records if isinstance(r, dict)]
         antigen._audit(
@@ -389,6 +420,53 @@ def _publish_failure(error: str, *, quarantine_path: str | None) -> dict:
     return out
 
 
+def _partial_publish_failure(*, quarantine_path: str | None, https_out: dict) -> dict:
+    out: dict[str, Any] = {
+        "ok": False,
+        "error": "partial_publish",
+        "submitted": False,
+        "partial_publish": True,
+        "https": {"status": https_out["status"], "etag": https_out.get("etag")},
+        "local_staging_preserved": True,
+    }
+    if quarantine_path:
+        out["quarantine_path"] = quarantine_path
+    return out
+
+
+def _build_and_publish_nostr(
+    *,
+    records: list[dict],
+    digest8: str,
+    https_url: str,
+    seckey_hex: str | None,
+    relays: list[str] | None,
+    relay_transport: nostr.RelayTransport | None,
+    dry_run: bool,
+) -> dict:
+    key = seckey_hex or nostr.seckey_from_env()
+    if not key:
+        raise ContributeError("seckey_required")
+    signed = antigen.export_bundle(
+        _to_bundle_patterns(records),
+        antigen_id=f"contrib.{digest8}",
+        seckey_hex=key,
+        sign=True,
+        bundle_version=0,
+        payload_urls=[_nostr_payload_url(https_url)],
+    )
+    try:
+        return nostr.publish_announcement(
+            signed,
+            seckey_hex=key,
+            relays=relays,
+            transport=relay_transport,
+            dry_run=dry_run,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise ContributeError("publish_failed") from exc
+
+
 def submit_contribution(
     *,
     patterns_json: str | None = None,
@@ -451,10 +529,29 @@ def submit_contribution(
         "bundle_hash": bundle_hash,
     }
 
+    records = snapshot["patterns"]
+    digest8 = prepared["proposal"]["pattern_ids"][0].rsplit(".", 1)[-1]
+    nostr_url = https_url or ""
+
+    if transport == "both":
+        try:
+            _build_and_publish_nostr(
+                records=records,
+                digest8=digest8,
+                https_url=nostr_url,
+                seckey_hex=seckey_hex,
+                relays=relays,
+                relay_transport=relay_transport,
+                dry_run=True,
+            )
+        except ContributeError as exc:
+            return _publish_failure(exc.reason, quarantine_path=quarantine_path)
+
+    https_out: dict | None = None
     if transport in ("https", "both"):
         try:
             https_out = post_registry_snapshot(
-                https_url or "",
+                nostr_url,
                 snapshot,
                 tls_verify=tls_verify,
                 session=session,
@@ -469,29 +566,23 @@ def submit_contribution(
         result["https"] = {"status": https_out["status"], "etag": https_out.get("etag")}
 
     if transport in ("nostr", "both"):
-        key = seckey_hex or nostr.seckey_from_env()
-        if not key:
-            return _publish_failure("seckey_required", quarantine_path=quarantine_path)
-        records = snapshot["patterns"]
-        digest8 = prepared["proposal"]["pattern_ids"][0].rsplit(".", 1)[-1]
-        signed = antigen.export_bundle(
-            _to_bundle_patterns(records),
-            antigen_id=f"contrib.{digest8}",
-            seckey_hex=key,
-            sign=True,
-            bundle_version=0,
-            payload_urls=[_nostr_payload_url(https_url or "")],
-        )
         try:
-            nostr_out = nostr.publish_announcement(
-                signed,
-                seckey_hex=key,
+            nostr_out = _build_and_publish_nostr(
+                records=records,
+                digest8=digest8,
+                https_url=nostr_url,
+                seckey_hex=seckey_hex,
                 relays=relays,
-                transport=relay_transport,
+                relay_transport=relay_transport,
                 dry_run=False,
             )
-        except (ValueError, RuntimeError):
-            return _publish_failure("publish_failed", quarantine_path=quarantine_path)
+        except ContributeError as exc:
+            if transport == "both" and https_out is not None:
+                return _partial_publish_failure(
+                    quarantine_path=quarantine_path,
+                    https_out=https_out,
+                )
+            return _publish_failure(exc.reason, quarantine_path=quarantine_path)
         result["nostr"] = {
             "event_id": nostr_out.get("event_id", ""),
             "relays": nostr_out.get("relays", []),

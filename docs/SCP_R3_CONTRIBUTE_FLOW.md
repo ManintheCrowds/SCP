@@ -149,6 +149,33 @@ When `transport` is `nostr` only, `https` is omitted. When `transport` is `https
 
 Network/TLS/relay/signing failure after staging → local quarantine file **unchanged** (mycelium Recovery pattern).
 
+### Outputs (partial publish — `transport=both` only)
+
+When HTTPS POST succeeds (2xx) but live nostr publish fails, return an explicit partial state (not generic `publish_failed`):
+
+```json
+{
+  "ok": false,
+  "error": "partial_publish",
+  "submitted": false,
+  "partial_publish": true,
+  "https": { "status": 201, "etag": "sha256:…" },
+  "local_staging_preserved": true,
+  "quarantine_path": "…"
+}
+```
+
+Operator uses `https.etag` / status for manual remote reconciliation or takedown. Atomic HTTPS rollback is out of scope (no registry DELETE API in this spike).
+
+### Preflight (`transport=both`)
+
+Before any HTTPS I/O when `transport=both`:
+
+1. Resolve `seckey_hex` / `NOSTR_SECKEY` — fail with `seckey_required` without POST
+2. Nostr `publish_announcement(..., dry_run=True)` — fail fast on signing/build errors
+
+Live publish order remains **HTTPS POST → nostr live** (payload URL must be live before announcement).
+
 ## Pipeline (normative)
 
 ```mermaid
@@ -169,16 +196,17 @@ flowchart LR
 
 1. **Input resolution** — parse `patterns_json` as list or `{patterns:[]}` wrapper (same as `scp_antigen_export`)
 2. **Raw path** — if `raw_content`: run anonymization pipeline (below) → emit `pattern_record[]`
-3. **Validate** — [`validate_pattern_record`](../src/scp/pattern_record.py) + [`validate_anonymization`](../src/scp/pattern_record.py) per record; fail closed on any reject
+3. **Validate** — [`validate_pattern_record`](../src/scp/pattern_record.py) + [`validate_anonymization`](../src/scp/pattern_record.py) + **contribute abstraction gate** per record (`patterns_json` must match raw-path shape: `pattern_id=contrib.{abbrev}.{hash8}`, `detector.kind=token_family`, `detector.normalized={category}-family-{hash8}`); fail closed on any reject
 4. **Bundle** — [`export_bundle`](../src/scp/antigen.py) with `bundle_version` migration v0→v1 (inner records conform to R1 SSOT)
 5. **Verify** — [`verify_bundle`](../src/scp/antigen.py) before staging
 6. **Stage** — write to local contribute quarantine (reuse quarantine primitive; **no SSOT merge** unless operator opts in via separate R4 merge tool)
 7. **Proposal** — if `approve=false`, return proposal JSON; emit audit with hash-only fields
 8. **Publish** — if `approve=true`:
+   - **`transport=both` preflight:** seckey check + nostr dry-run before HTTPS POST (see Preflight above)
    - **nostr:** [`publish_announcement`](../src/scp/antigen_nostr.py) (requires `seckey_hex` or `NOSTR_SECKEY`)
    - **https:** `post_registry_snapshot` helper (spec-only; see HTTPS outbound)
 
-Reject policy: **fail closed**; no partial publish.
+Reject policy: **fail closed**; no silent partial success. When `transport=both` and HTTPS succeeds but nostr fails, return explicit `partial_publish` (see above).
 
 ## Anonymization pipeline (outbound)
 
