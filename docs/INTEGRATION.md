@@ -74,6 +74,8 @@ Before feeding fetched content (URLs, API responses, tool output) to an LLM or s
 
 ## MCP Integration
 
+### Core server (v1.0 + v1.1 optional)
+
 Add SCP to `mcp.json`:
 
 ```json
@@ -87,9 +89,51 @@ Add SCP to `mcp.json`:
 }
 ```
 
-Tools: `scp_inspect`, `scp_sanitize`, `scp_contain`, `scp_quarantine`, `scp_validate_output`, `scp_run_pipeline`.
+**v1.0 tools:** `scp_inspect`, `scp_sanitize`, `scp_contain`, `scp_quarantine`, `scp_list_quarantine`, `scp_purge_quarantine`, `scp_validate_output`, `scp_mask_secrets`, `scp_run_pipeline`.
 
-See [README.md](../README.md) for full tool reference.
+**v1.1 optional (read-only):** `scp_registry_summary`, `scp_registry_section`.
+
+### Dual-server mycelium (SCP-R5)
+
+Enable mesh extension alongside core:
+
+```json
+{
+  "mcpServers": {
+    "scp": {
+      "command": "python",
+      "args": ["-m", "scp.scp_mcp"]
+    },
+    "scp-antigen": {
+      "command": "python",
+      "args": ["-m", "scp.antigen_mcp"]
+    }
+  }
+}
+```
+
+**Operator flow:**
+
+```text
+scp_fetch_registry(source, allowlist)              [scp-antigen] → quarantine_path
+scp_apply_registry_quarantine(path, approve=true)  [scp-antigen] → SSOT + projection
+scp_registry_summary()                             [scp] → confirm section counts
+scp_inspect(content) / scp_run_pipeline            [scp] → uses updated registry
+```
+
+### Registry environment
+
+| Variable | Purpose |
+|----------|---------|
+| `SCP_THREAT_REGISTRY_PATH` | Override registry JSON for inspect + v1.1 read tools (and merge projection write target) |
+| `SCP_PATTERN_SSOT_PATH` | pattern_record SSOT store (`~/.scp/pattern_records.json` default) |
+| `SCP_REGISTRY_SECTION_ALLOWLIST` | Comma-separated allowlist for `scp_registry_section` |
+| `SCP_REGISTRY_MERGE_DEV_AUTO` | Dev-only auto-merge low-risk patterns on apply |
+| `SCP_DEBUG_META` | `1` to expose resolved registry path in summary responses |
+
+**Load order (inspect + v1.1):** env path (if exists) → `~/.scp/threat_registry_projection.json` → packaged `scp_threat_registry.json`.
+
+See [SCP_R5_MCP_INTEGRATION.md](SCP_R5_MCP_INTEGRATION.md) and [README.md](../README.md) for full tool reference.
 
 ---
 

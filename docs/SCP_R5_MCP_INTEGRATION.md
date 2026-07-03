@@ -1,7 +1,7 @@
 # SCP-R5 — MCP integration (dual-server)
 
 **decision_id:** `scp-r5-mcp-integration-2026-07-03`  
-**Status:** Spec locked (spike) — no runtime until operator `proceed R5`  
+**Status:** Implemented (SCP-R5 slices A–D)  
 **Depends on:** [SCP_R1_THREAT_PATTERN_SCHEMA.md](SCP_R1_THREAT_PATTERN_SCHEMA.md), [SCP_R4_FETCH_REGISTRY.md](SCP_R4_FETCH_REGISTRY.md), [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md)
 
 ## Purpose
@@ -200,7 +200,7 @@ Harness wrapper remains thin launcher delegating to package modules after conver
 | **C** | OpenHarness `scp_mcp_v1.1.md` + `scp_antigen_mcp_v1.md`; vendor + hash tests | `test_contract_document_hash.py` |
 | **D** | Update [`INTEGRATION.md`](INTEGRATION.md), demo cheatsheet Block 5 | Docs review |
 
-**Do not start slices until operator sends `proceed R5`.**
+**Do not start slices until operator sends `proceed R5`.** *(Completed 2026-07-03.)*
 
 ---
 
