@@ -44,7 +44,7 @@ Optional future gate: promptfoo eval smoke on SCP repo (not required for v0).
 
 | Transport | Endpoint / allowlist |
 |-----------|---------------------|
-| Nostr kind 30078 discovery | Issuer pubkey: `REPLACE_AFTER_ANNOUNCE_DRY_RUN` |
+| Nostr kind 30078 discovery | Issuer pubkey: `57468039034ddf64be2e940af23f389af90c63eb3059d1d4062b76813cef9562` |
 | HTTPS snapshot POST | _None for v0.1.0_ — use Path A Git PR for canonical writes; discovery via tag-scoped raw URL + nostr |
 
 Community operators may publish anonymized patterns via R3 `scp_contribute_pattern` when consent and anonymization gates pass. Maintainer review via Path A remains required for inclusion in tagged releases.

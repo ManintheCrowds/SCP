@@ -154,16 +154,23 @@ See [SCP_R6_PRIVACY_CONSENT.md](SCP_R6_PRIVACY_CONSENT.md) — Path B publish re
 
 ### Nostr discovery announce (R2 step 7)
 
-Operator-gated kind 30078 announcement for a tagged snapshot (dry-run default):
+**One-time key setup** (writes `~/.scp/nostr_maintainer.sec`, prints pubkey only):
 
 ```powershell
 cd C:\Users\Dell\Documents\GitHub\SCP
-$env:NOSTR_SECKEY = "<operator-hex>"
-python scripts/announce_registry_snapshot.py --version 0.1.0 --dry-run --json
-python scripts/announce_registry_snapshot.py --version 0.1.0 --publish
+pip install -e ".[dev,antigen-nostr]"
+python scripts/setup_mycelium_nostr_key.py --json
 ```
 
-Paste `issuer_pubkey` from dry-run output into [scp-mycelium-registry GOVERNANCE](https://github.com/ManintheCrowds/scp-mycelium-registry/blob/main/GOVERNANCE.md) §Path B before relying on fetch allowlists.
+Load seckey into session (never commit):
+
+```powershell
+$env:NOSTR_SECKEY = (Get-Content $env:USERPROFILE\.scp\nostr_maintainer.sec -Raw).Trim()
+python scripts/announce_registry_snapshot.py --version 0.1.0 --json
+python scripts/announce_registry_snapshot.py --version 0.1.0 --publish --json
+```
+
+Paste `issuer_pubkey` into [scp-mycelium-registry GOVERNANCE](https://github.com/ManintheCrowds/scp-mycelium-registry/blob/main/GOVERNANCE.md) §Path B before relying on fetch allowlists.
 
 See [SCP_R5_MCP_INTEGRATION.md](SCP_R5_MCP_INTEGRATION.md) and [README.md](../README.md) for full tool reference.
 
