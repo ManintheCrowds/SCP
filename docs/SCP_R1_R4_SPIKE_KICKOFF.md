@@ -22,8 +22,9 @@ SCP-ANT1 **transport is closed** (P0–P1b, LND regtest, P1.5 hardening pushed).
 | [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md) | **Implemented (spike)** — critic polish @ `2eaae53`; 24 R3 tests, 178 pytest pass |
 | [SCP_R5_MCP_INTEGRATION.md](SCP_R5_MCP_INTEGRATION.md) | **Implemented** — dual-server; v1.1 read-only; inspect loop wired |
 | [SCP_R2_REGISTRY_HOSTING.md](SCP_R2_REGISTRY_HOSTING.md) | **Bootstrapped** — [scp-mycelium-registry](https://github.com/ManintheCrowds/scp-mycelium-registry) @ v0.1.0 |
+| [SCP_R6_PRIVACY_CONSENT.md](SCP_R6_PRIVACY_CONSENT.md) | **Spec locked** — privacy, consent, Path B gate |
 
-**Out of scope:** production fetch allowlist hardening, mainnet L402 in contribute/fetch paths, R6 privacy/consent spec.
+**Out of scope:** production fetch allowlist hardening, mainnet L402 in contribute/fetch paths, R6 **runtime** until `proceed R6-runtime`.
 
 ## Decision forks — locked (operator 2026-07-02)
 
@@ -63,4 +64,4 @@ flowchart TB
 
 ## Next step
 
-R5 **implemented** (registry load order, v1.1 tools, OpenHarness contracts). **Next:** R6 privacy/consent spec (parallel). Optional: live e2e fetch against [scp-mycelium-registry](https://github.com/ManintheCrowds/scp-mycelium-registry) v0.1.0.
+R5 **implemented**; R6 **spec locked**. **Next:** `proceed R6-runtime` or live mycelium e2e smoke (`scripts/mycelium_live_smoke.py`). Optional: promptfoo YAML.

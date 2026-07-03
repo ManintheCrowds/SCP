@@ -35,7 +35,7 @@ Optional future gate: promptfoo eval smoke on SCP repo (not required for v0).
 ## Community contributions
 
 **v0:** Maintainer-only writes (Git PR Path A).  
-**Opens after:** SCP-R6 privacy and consent spec is published and linked here.
+**Path B opens when:** [SCP_R6_PRIVACY_CONSENT.md](https://github.com/ManintheCrowds/SCP/blob/main/docs/SCP_R6_PRIVACY_CONSENT.md) is published and linked here (spec locked 2026-07-03).
 
 **Path B** (R3 `scp_contribute_pattern` direct publish) opens when maintainers document allowed issuer pubkeys and POST endpoints in this file.
 

@@ -34,7 +34,17 @@ By opening a pull request, you confirm that your contributions are licensed unde
 
 ## Consent and operator gates
 
-Publishing to the live network uses SCP R3 two-phase flow (`approve=false` default). Full privacy/consent spec (R6) governs when community Path B (tool-based publish) opens — until then, maintainer PRs only.
+Publishing to the live network uses SCP R3 two-phase flow (`approve=false` default). Full privacy/consent spec: **[SCP_R6_PRIVACY_CONSENT.md](https://github.com/ManintheCrowds/SCP/blob/main/docs/SCP_R6_PRIVACY_CONSENT.md)**.
+
+### Consent before publish (Path B)
+
+Before calling `scp_contribute_pattern` with `approve=true`:
+
+1. Read [SCP_R6_PRIVACY_CONSENT.md](https://github.com/ManintheCrowds/SCP/blob/main/docs/SCP_R6_PRIVACY_CONSENT.md) and this checklist
+2. Confirm patterns pass `validate_anonymization` (no PII, raw prompts, or prohibited keys)
+3. When R6 runtime lands: set `SCP_CONTRIBUTE_CONSENT=1` in the operator environment (not agent-default)
+
+**v0:** Maintainer PRs only (Path A). Community Path B opens when [GOVERNANCE.md](GOVERNANCE.md) links R6 and documents allowed issuer pubkeys.
 
 ## Review
 

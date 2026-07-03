@@ -314,11 +314,9 @@ When `SCP_ANTIGEN_REGTEST_E2E=1`, apply [`assert_localhost_fetch_url`](../src/sc
 
 Production default: **no dev auto-submit**. There is no env gate that bypasses `approve=true` for network publish (unlike R4 dev auto-merge, which applies only to inbound merge).
 
-### Future R6 (pointer only)
+### R6 privacy and consent (spec locked)
 
-- `SCP_CONTRIBUTE_CONSENT=1` — operator attestation that contribution guidelines were read
-- Contribution guidelines doc (opt-in log, attribution policy)
-- Full privacy spec: anonymization guarantees, retention, takedown
+See [SCP_R6_PRIVACY_CONSENT.md](SCP_R6_PRIVACY_CONSENT.md) for anonymization guarantees, attestation (`SCP_CONTRIBUTE_CONSENT=1` at runtime), opt-in log, retention/takedown, and Path B gates.
 
 Cross-ref: mycelium design §Collective Learning; frontier-ops human gate for shared registry writes.
 
@@ -342,7 +340,7 @@ Must match R4 + antigen invariants:
 
 - R2 **bootstrap** (GitHub repo creation, first snapshot publish) — spec locked; gate `proceed R2-bootstrap`
 - R5 `scp_mcp.py` wiring
-- R6 full privacy and consent spec (pointer only above)
+- R6 full privacy and consent spec — **[SCP_R6_PRIVACY_CONSENT.md](SCP_R6_PRIVACY_CONSENT.md)** (runtime gated `proceed R6-runtime`)
 - SSOT auto-merge on contribute (operator uses `scp_apply_registry_quarantine` separately if desired)
 - Mainnet L402 in contribute path
 
