@@ -160,10 +160,14 @@ When HTTPS POST succeeds (2xx) but live nostr publish fails, return an explicit 
   "submitted": false,
   "partial_publish": true,
   "https": { "status": 201, "etag": "sha256:…" },
+  "nostr_failure_reason": "publish_failed",
+  "nostr_failure_detail": "relay unreachable",
   "local_staging_preserved": true,
   "quarantine_path": "…"
 }
 ```
+
+(`nostr_failure_detail` omitted when empty.)
 
 Operator uses `https.etag` / status for manual remote reconciliation or takedown. Atomic HTTPS rollback is out of scope (no registry DELETE API in this spike).
 
@@ -172,7 +176,7 @@ Operator uses `https.etag` / status for manual remote reconciliation or takedown
 Before any HTTPS I/O when `transport=both`:
 
 1. Resolve `seckey_hex` / `NOSTR_SECKEY` — fail with `seckey_required` without POST
-2. Nostr `publish_announcement(..., dry_run=True)` — fail fast on signing/build errors
+2. Nostr `publish_announcement(..., dry_run=True)` — fail fast on signing/build errors; returns `publish_failed` without HTTPS POST
 
 Live publish order remains **HTTPS POST → nostr live** (payload URL must be live before announcement).
 

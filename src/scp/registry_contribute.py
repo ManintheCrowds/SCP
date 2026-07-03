@@ -420,15 +420,24 @@ def _publish_failure(error: str, *, quarantine_path: str | None) -> dict:
     return out
 
 
-def _partial_publish_failure(*, quarantine_path: str | None, https_out: dict) -> dict:
+def _partial_publish_failure(
+    *,
+    quarantine_path: str | None,
+    https_out: dict,
+    nostr_failure_reason: str,
+    nostr_failure_detail: str | None = None,
+) -> dict:
     out: dict[str, Any] = {
         "ok": False,
         "error": "partial_publish",
         "submitted": False,
         "partial_publish": True,
         "https": {"status": https_out["status"], "etag": https_out.get("etag")},
+        "nostr_failure_reason": nostr_failure_reason,
         "local_staging_preserved": True,
     }
+    if nostr_failure_detail:
+        out["nostr_failure_detail"] = nostr_failure_detail[:200]
     if quarantine_path:
         out["quarantine_path"] = quarantine_path
     return out
@@ -464,7 +473,11 @@ def _build_and_publish_nostr(
             dry_run=dry_run,
         )
     except (ValueError, RuntimeError) as exc:
-        raise ContributeError("publish_failed") from exc
+        detail = str(exc)[:200] if str(exc) else None
+        raise ContributeError(
+            "publish_failed",
+            reasons=[detail] if detail else [],
+        ) from exc
 
 
 def submit_contribution(
@@ -578,9 +591,12 @@ def submit_contribution(
             )
         except ContributeError as exc:
             if transport == "both" and https_out is not None:
+                detail = exc.reasons[0] if exc.reasons else None
                 return _partial_publish_failure(
                     quarantine_path=quarantine_path,
                     https_out=https_out,
+                    nostr_failure_reason=exc.reason,
+                    nostr_failure_detail=detail,
                 )
             return _publish_failure(exc.reason, quarantine_path=quarantine_path)
         result["nostr"] = {

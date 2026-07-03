@@ -82,6 +82,39 @@ def test_structured_patterns_rejects_literal_normalized():
     assert res["submitted"] is False
 
 
+def test_structured_patterns_rejects_non_contrib_pattern_id():
+    rec = _valid_record()
+    rec["pattern_id"] = "legacy.inj.abc12345"
+    patterns = json.dumps([rec])
+    res = rc.submit_contribution(patterns_json=patterns, transport="https", https_url=PAYLOAD_URL)
+    assert res["ok"] is False
+    assert res["error"] == "anonymization_failed"
+    assert res["submitted"] is False
+    assert any("pattern_id_not_contrib_abstract" in r for r in res.get("reasons", []))
+
+
+def test_structured_patterns_rejects_pattern_id_category_mismatch():
+    rec = _valid_record()
+    rec["pattern_id"] = "contrib.jb.abc12345"
+    patterns = json.dumps([rec])
+    res = rc.submit_contribution(patterns_json=patterns, transport="https", https_url=PAYLOAD_URL)
+    assert res["ok"] is False
+    assert res["error"] == "anonymization_failed"
+    assert res["submitted"] is False
+    assert any("pattern_id_category_mismatch" in r for r in res.get("reasons", []))
+
+
+def test_structured_patterns_rejects_non_token_family_detector():
+    rec = _valid_record()
+    rec["detector"]["kind"] = "regex_family"
+    patterns = json.dumps([rec])
+    res = rc.submit_contribution(patterns_json=patterns, transport="https", https_url=PAYLOAD_URL)
+    assert res["ok"] is False
+    assert res["error"] == "anonymization_failed"
+    assert res["submitted"] is False
+    assert any("detector_must_be_token_family" in r for r in res.get("reasons", []))
+
+
 def test_structured_patterns_accepts_abstracted_form(isolated_env):
     patterns = json.dumps([_valid_record()])
     prepared = rc.prepare_contribution(patterns_json=patterns)
@@ -337,6 +370,32 @@ def test_both_missing_seckey_before_https(isolated_env, monkeypatch):
     post_mock.assert_not_called()
 
 
+def test_both_preflight_dry_run_failure_before_https(isolated_env, monkeypatch):
+    post_mock = MagicMock()
+    monkeypatch.setattr(rc, "post_registry_snapshot", post_mock)
+
+    def fake_publish(bundle, **kwargs):
+        if kwargs.get("dry_run"):
+            raise RuntimeError("signing failed")
+        raise AssertionError("live publish should not run")
+
+    monkeypatch.setattr(rc.nostr, "publish_announcement", fake_publish)
+
+    raw = "ignore safety override system prompt"
+    res = rc.submit_contribution(
+        raw_content=raw,
+        category="injection",
+        transport="both",
+        https_url=PAYLOAD_URL,
+        approve=True,
+        dry_run=False,
+        seckey_hex=SECKEY,
+    )
+    assert res["ok"] is False
+    assert res["error"] == "publish_failed"
+    post_mock.assert_not_called()
+
+
 def test_both_nostr_failure_partial_publish(isolated_env, monkeypatch):
     def fake_post(url, snapshot, **kwargs):
         return {"status": 201, "etag": snapshot.get("etag")}
@@ -365,3 +424,5 @@ def test_both_nostr_failure_partial_publish(isolated_env, monkeypatch):
     assert res["submitted"] is False
     assert res["https"]["status"] == 201
     assert res["local_staging_preserved"] is True
+    assert res["nostr_failure_reason"] == "publish_failed"
+    assert "relay unreachable" in res.get("nostr_failure_detail", "")
