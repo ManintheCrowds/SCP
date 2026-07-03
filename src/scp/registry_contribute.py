@@ -12,6 +12,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -400,6 +401,38 @@ def post_registry_snapshot(
     return {"status": resp.status_code, "etag": etag}
 
 
+def _consent_attested() -> bool:
+    return os.environ.get("SCP_CONTRIBUTE_CONSENT") == "1"
+
+
+def _opt_in_log_path() -> Path:
+    override = os.environ.get("SCP_CONTRIBUTE_OPT_IN_LOG", "").strip()
+    if override:
+        return Path(override)
+    return Path.home() / ".scp" / "contribute_opt_in.jsonl"
+
+
+def append_contribute_opt_in_log(
+    *,
+    pattern_ids: list[str],
+    transport: str,
+    operator_note: str | None = None,
+) -> None:
+    """Append operator-local opt-in record (R6); no payload bodies or PII."""
+    entry: dict[str, Any] = {
+        "schema_revision": "scp.contribute_opt_in.v1",
+        "at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "pattern_ids": list(pattern_ids),
+        "transport": transport,
+    }
+    if operator_note:
+        entry["operator_note"] = operator_note[:500]
+    log_path = _opt_in_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
 def _proposal_response(prepared: dict) -> dict:
     return {
         "ok": True,
@@ -533,6 +566,9 @@ def submit_contribution(
     if not approve or effective_dry_run:
         return _proposal_response(prepared)
 
+    if not _consent_attested():
+        return _publish_failure("consent_required", quarantine_path=quarantine_path)
+
     bundle = prepared["bundle"]
     snapshot = prepared["snapshot"]
     bundle_hash = bundle["manifest"]["payload_content_hash"]
@@ -604,4 +640,8 @@ def submit_contribution(
             "relays": nostr_out.get("relays", []),
         }
 
+    append_contribute_opt_in_log(
+        pattern_ids=prepared["proposal"]["pattern_ids"],
+        transport=transport,
+    )
     return result

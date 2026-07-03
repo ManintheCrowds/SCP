@@ -1,7 +1,7 @@
 # SCP-R6 — Privacy and consent
 
 **decision_id:** `scp-r6-privacy-consent-2026-07-03`  
-**Status:** Spec locked (spike) — no runtime until operator `proceed R6-runtime`  
+**Status:** Implemented (runtime slices A–D; operator `proceed R6-runtime` 2026-07-03)  
 **Depends on:** [SCP_R1_THREAT_PATTERN_SCHEMA.md](SCP_R1_THREAT_PATTERN_SCHEMA.md), [SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW.md), [SCP_R2_REGISTRY_HOSTING.md](SCP_R2_REGISTRY_HOSTING.md)
 
 ## Purpose
@@ -11,9 +11,9 @@ Define **privacy guarantees**, **operator consent**, and **governance prerequisi
 | Path | Who | Gate |
 |------|-----|------|
 | **Path A** | Maintainers | Git PR to [scp-mycelium-registry](https://github.com/ManintheCrowds/scp-mycelium-registry) — **unchanged** |
-| **Path B** | Community operators | Opens only after this spec is published **and** maintainers link it in [GOVERNANCE.md](registry-repo-templates/GOVERNANCE.md) |
+| **Path B** | Community operators | Open — GOVERNANCE links R6; `SCP_CONTRIBUTE_CONSENT=1` required at publish |
 
-**Operator lock (2026-07-03):** Spec-first; runtime enforcement (`SCP_CONTRIBUTE_CONSENT`) deferred to `proceed R6-runtime`.
+**Operator lock (2026-07-03):** Runtime enforcement (`SCP_CONTRIBUTE_CONSENT`) live in `registry_contribute.submit_contribution`.
 
 ---
 
@@ -24,8 +24,8 @@ Extends R3 two-phase consent ([SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW
 | Phase | Gate | Behavior |
 |-------|------|----------|
 | **Proposal (default)** | `approve=false` | Stage locally; return proposal; **zero network I/O** |
-| **Attestation (R6 runtime)** | `SCP_CONTRIBUTE_CONSENT=1` | Operator confirms contribution guidelines read (env, not agent-settable default) |
-| **Publish** | `approve=true` + attestation when runtime lands | nostr and/or HTTPS submit |
+| **Attestation (R6)** | `SCP_CONTRIBUTE_CONSENT=1` | Operator confirms contribution guidelines read (env, not agent-settable default) |
+| **Publish** | `approve=true` + attestation | nostr and/or HTTPS submit |
 
 Production default: **no dev auto-submit**. No env bypasses `approve=true` for network publish (unlike R4 `SCP_REGISTRY_MERGE_DEV_AUTO`, which applies only to **inbound** merge).
 
@@ -79,7 +79,7 @@ Normative enforcement today: [`validate_anonymization()`](../src/scp/pattern_rec
 }
 ```
 
-Default path: `~/.scp/contribute_opt_in.jsonl` (one JSON object per line). **Future runtime** may append on successful publish when `SCP_CONTRIBUTE_CONSENT=1`.
+Default path: `~/.scp/contribute_opt_in.jsonl` (one JSON object per line). Appended on successful publish when `SCP_CONTRIBUTE_CONSENT=1`.
 
 Attribution policy: patterns are **collective defense** — no individual user attribution in public registry; maintainer PR authors identified via Git history only.
 
@@ -150,16 +150,14 @@ Aligned with R3 hb-1..hb-5:
 
 ---
 
-## Implementation slices (gate: `proceed R6-runtime`)
+## Implementation slices (completed: `proceed R6-runtime`)
 
 | Slice | Deliverable | Verification |
 |-------|-------------|--------------|
-| **A** | `SCP_CONTRIBUTE_CONSENT` check in `registry_contribute.submit_contribution` before network I/O | Test: publish without consent → rejected |
-| **B** | Append opt-in log on successful publish | Test: log line written, no PII |
-| **C** | Link R6 in live scp-mycelium-registry GOVERNANCE/CONTRIBUTING | Maintainer PR on data repo |
-| **D** | Open Path B in GOVERNANCE when operator approves | Docs review |
-
-**Do not start slices until operator sends `proceed R6-runtime`.**
+| **A** | `SCP_CONTRIBUTE_CONSENT` check in `registry_contribute.submit_contribution` before network I/O | `test_registry_contribute_r6.py` |
+| **B** | Append opt-in log on successful publish | `test_registry_contribute_r6.py` |
+| **C** | Link R6 in live scp-mycelium-registry GOVERNANCE/CONTRIBUTING | Data repo PR |
+| **D** | Open Path B in GOVERNANCE | Docs review |
 
 ---
 
@@ -168,7 +166,7 @@ Aligned with R3 hb-1..hb-5:
 - Mainnet L402 in contribute/fetch
 - Auto-merge on fetch
 - Changing OpenHarness scp_mcp v1.0 required tools
-- Community Path B **runtime** until maintainers open GOVERNANCE §Path B
+- Community Path B **runtime** — open per GOVERNANCE; maintainer pubkey via `scripts/announce_registry_snapshot.py`
 
 ---
 

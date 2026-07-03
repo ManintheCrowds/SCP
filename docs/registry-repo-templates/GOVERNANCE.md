@@ -34,10 +34,20 @@ Optional future gate: promptfoo eval smoke on SCP repo (not required for v0).
 
 ## Community contributions
 
-**v0:** Maintainer-only writes (Git PR Path A).  
-**Path B opens when:** [SCP_R6_PRIVACY_CONSENT.md](https://github.com/ManintheCrowds/SCP/blob/main/docs/SCP_R6_PRIVACY_CONSENT.md) is published and linked here (spec locked 2026-07-03).
+**Path A (maintainers):** Git PR to this repo — unchanged; canonical snapshot writes for v0.1.0.
 
-**Path B** (R3 `scp_contribute_pattern` direct publish) opens when maintainers document allowed issuer pubkeys and POST endpoints in this file.
+### Path B — direct publish (OPEN)
+
+**Spec:** [SCP_R6_PRIVACY_CONSENT.md](https://github.com/ManintheCrowds/SCP/blob/main/docs/SCP_R6_PRIVACY_CONSENT.md) (runtime implemented).
+
+**Attestation:** Operators MUST set `SCP_CONTRIBUTE_CONSENT=1` in the environment before `scp_contribute_pattern` with `approve=true` (not agent-default).
+
+| Transport | Endpoint / allowlist |
+|-----------|---------------------|
+| Nostr kind 30078 discovery | Issuer pubkey: `REPLACE_AFTER_ANNOUNCE_DRY_RUN` |
+| HTTPS snapshot POST | _None for v0.1.0_ — use Path A Git PR for canonical writes; discovery via tag-scoped raw URL + nostr |
+
+Community operators may publish anonymized patterns via R3 `scp_contribute_pattern` when consent and anonymization gates pass. Maintainer review via Path A remains required for inclusion in tagged releases.
 
 ## Security disclosure
 

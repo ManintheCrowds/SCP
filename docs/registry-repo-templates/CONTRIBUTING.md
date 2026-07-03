@@ -42,9 +42,9 @@ Before calling `scp_contribute_pattern` with `approve=true`:
 
 1. Read [SCP_R6_PRIVACY_CONSENT.md](https://github.com/ManintheCrowds/SCP/blob/main/docs/SCP_R6_PRIVACY_CONSENT.md) and this checklist
 2. Confirm patterns pass `validate_anonymization` (no PII, raw prompts, or prohibited keys)
-3. When R6 runtime lands: set `SCP_CONTRIBUTE_CONSENT=1` in the operator environment (not agent-default)
+3. Set `SCP_CONTRIBUTE_CONSENT=1` in the operator environment (not agent-default)
 
-**v0:** Maintainer PRs only (Path A). Community Path B opens when [GOVERNANCE.md](GOVERNANCE.md) links R6 and documents allowed issuer pubkeys.
+**Path A:** Maintainer PRs to this repo. **Path B:** Community direct publish is open per [GOVERNANCE.md](GOVERNANCE.md) §Path B when issuer pubkeys are documented.
 
 ## Review
 

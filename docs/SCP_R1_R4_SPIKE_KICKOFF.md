@@ -64,4 +64,4 @@ flowchart TB
 
 ## Next step
 
-R5 **implemented**; R6 **spec locked**. **Next:** `proceed R6-runtime` or live mycelium e2e smoke (`scripts/mycelium_live_smoke.py`). Optional: promptfoo YAML.
+R5 **implemented**; R6 **runtime implemented**. **Next:** operator push; live nostr v0.1.0 announce (`scripts/announce_registry_snapshot.py --publish`); paste `issuer_pubkey` into data-repo GOVERNANCE.

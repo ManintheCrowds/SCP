@@ -8,7 +8,17 @@ Minimal [promptfoo](https://github.com/promptfoo/promptfoo) setup that runs **`s
 - **Node.js:** 20.20+ or 22.22+ (matches [promptfoo engine requirements](https://www.npmjs.com/package/promptfoo)).
 - **promptfoo:** Pinned in [package.json](package.json) (currently **0.121.3+**). Older 0.119.x builds could mis-handle Windows paths in the Python worker (`C:` vs `:` delimiters); use the pinned version or newer.
 
-## Copy-paste (repo root = parent of `examples/`)
+## Copy-paste (repo root)
+
+```bash
+pip install -e ".[dev]"
+cd examples/promptfoo && npm ci && cd ../..
+npx promptfoo eval -c promptfoo-scp.yaml
+```
+
+Canonical config also lives in this directory as `promptfooconfig.yaml`.
+
+## Copy-paste (this directory)
 
 ```bash
 # From repository root (D:\scp or your clone)

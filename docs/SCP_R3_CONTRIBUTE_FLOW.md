@@ -316,7 +316,7 @@ Production default: **no dev auto-submit**. There is no env gate that bypasses `
 
 ### R6 privacy and consent (spec locked)
 
-See [SCP_R6_PRIVACY_CONSENT.md](SCP_R6_PRIVACY_CONSENT.md) for anonymization guarantees, attestation (`SCP_CONTRIBUTE_CONSENT=1` at runtime), opt-in log, retention/takedown, and Path B gates.
+See [SCP_R6_PRIVACY_CONSENT.md](SCP_R6_PRIVACY_CONSENT.md) for anonymization guarantees, live attestation (`SCP_CONTRIBUTE_CONSENT=1`), opt-in log, retention/takedown, and Path B gates.
 
 Cross-ref: mycelium design §Collective Learning; frontier-ops human gate for shared registry writes.
 

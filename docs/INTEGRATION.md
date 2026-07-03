@@ -150,7 +150,20 @@ $env:SCP_MYCELIUM_LIVE_E2E = "1"
 python -m pytest tests/test_mycelium_live_e2e.py -v
 ```
 
-See [SCP_R6_PRIVACY_CONSENT.md](SCP_R6_PRIVACY_CONSENT.md) before enabling community Path B publish.
+See [SCP_R6_PRIVACY_CONSENT.md](SCP_R6_PRIVACY_CONSENT.md) — Path B publish requires `SCP_CONTRIBUTE_CONSENT=1`.
+
+### Nostr discovery announce (R2 step 7)
+
+Operator-gated kind 30078 announcement for a tagged snapshot (dry-run default):
+
+```powershell
+cd C:\Users\Dell\Documents\GitHub\SCP
+$env:NOSTR_SECKEY = "<operator-hex>"
+python scripts/announce_registry_snapshot.py --version 0.1.0 --dry-run --json
+python scripts/announce_registry_snapshot.py --version 0.1.0 --publish
+```
+
+Paste `issuer_pubkey` from dry-run output into [scp-mycelium-registry GOVERNANCE](https://github.com/ManintheCrowds/scp-mycelium-registry/blob/main/GOVERNANCE.md) §Path B before relying on fetch allowlists.
 
 See [SCP_R5_MCP_INTEGRATION.md](SCP_R5_MCP_INTEGRATION.md) and [README.md](../README.md) for full tool reference.
 

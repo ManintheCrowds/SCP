@@ -155,9 +155,11 @@ SCP has no shutdown, suicide, or self-termination commands. SCP inspects, saniti
 
 ```bash
 pip install -e .
-cd examples/promptfoo
-npx promptfoo eval
+cd examples/promptfoo && npm ci && cd ../..
+npx promptfoo eval -c promptfoo-scp.yaml
 ```
+
+Or from `examples/promptfoo`: `npx promptfoo eval -c promptfooconfig.yaml`
 
 See [examples/promptfoo/README.md](examples/promptfoo/README.md) and [docs/LEARNINGS_PROMPTFOO.md](docs/LEARNINGS_PROMPTFOO.md).
 
