@@ -133,6 +133,25 @@ scp_inspect(content) / scp_run_pipeline            [scp] → uses updated regist
 
 **Load order (inspect + v1.1):** env path (if exists) → `~/.scp/threat_registry_projection.json` → packaged `scp_threat_registry.json`.
 
+### Live registry smoke (opt-in network)
+
+Non-interactive CLI against [scp-mycelium-registry v0.1.0](https://github.com/ManintheCrowds/scp-mycelium-registry):
+
+```powershell
+cd C:\Users\Dell\Documents\GitHub\SCP
+python scripts/mycelium_live_smoke.py --dry-run
+python scripts/mycelium_live_smoke.py --approve-merge --json
+```
+
+Pytest (skipped unless `SCP_MYCELIUM_LIVE_E2E=1`):
+
+```powershell
+$env:SCP_MYCELIUM_LIVE_E2E = "1"
+python -m pytest tests/test_mycelium_live_e2e.py -v
+```
+
+See [SCP_R6_PRIVACY_CONSENT.md](SCP_R6_PRIVACY_CONSENT.md) before enabling community Path B publish.
+
 See [SCP_R5_MCP_INTEGRATION.md](SCP_R5_MCP_INTEGRATION.md) and [README.md](../README.md) for full tool reference.
 
 ---
