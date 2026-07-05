@@ -3,7 +3,17 @@
 
 import re
 
-HIDDEN_UNICODE = {0x200B, 0x200C, 0x200D, 0x202E, 0x2060, 0xFEFF}
+HIDDEN_UNICODE: frozenset[int] = frozenset(
+    set(range(0x200B, 0x2010))      # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    | set(range(0x2028, 0x2030))    # line/para separators, bidi embeds/overrides/pop
+    | set(range(0x2060, 0x2065))    # word joiner, invisible operators
+    | set(range(0x2066, 0x2070))    # bidi isolates, deprecated formatting
+    | set(range(0xFE00, 0xFE10))    # variation selectors 1-16
+    | {0xFEFF}                      # BOM / ZWNBSP
+    | set(range(0xFFF9, 0xFFFC))    # interlinear annotation anchors
+    | set(range(0xE0001, 0xE0080))  # Unicode Tags block (ASCII-mirror invisible)
+    | set(range(0xE0100, 0xE01F0))  # variation selectors supplement
+)
 
 DELIMITER_PATTERNS = [
     (re.compile(r"^---\s*$", re.MULTILINE), "horizontal_rule"),

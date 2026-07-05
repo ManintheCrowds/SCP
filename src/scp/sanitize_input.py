@@ -8,10 +8,13 @@ Scan text for prompt-injection patterns and hidden Unicode.
 
 import base64
 import bisect
+import codecs
+import html
 import json
 import re
 import sys
 import unicodedata
+import urllib.parse
 from pathlib import Path
 
 from . import registry_paths
@@ -42,7 +45,17 @@ LEETSPEAK_PHRASES = [
     r"1n57ruc75", r"0u7pu7", r"5y573m", r"pr0mp7", r"1nc1ud1ng", r"5h1f7", r"r3v34l", r"0wn",
 ]
 
-HIDDEN_UNICODE = [0x200B, 0x200C, 0x200D, 0x202E, 0x2060, 0xFEFF]
+HIDDEN_UNICODE: frozenset[int] = frozenset(
+    set(range(0x200B, 0x2010))      # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    | set(range(0x2028, 0x2030))    # line/para separators, bidi embeds/overrides/pop
+    | set(range(0x2060, 0x2065))    # word joiner, invisible operators
+    | set(range(0x2066, 0x2070))    # bidi isolates, deprecated formatting
+    | set(range(0xFE00, 0xFE10))    # variation selectors 1-16
+    | {0xFEFF}                      # BOM / ZWNBSP
+    | set(range(0xFFF9, 0xFFFC))    # interlinear annotation anchors
+    | set(range(0xE0001, 0xE0080))  # Unicode Tags block (ASCII-mirror invisible)
+    | set(range(0xE0100, 0xE01F0))  # variation selectors supplement
+)
 
 REVERSAL_PHRASES = [
     r"developer\s+mode", r"debug\s+mode", r"ignore\s+safety", r"pretend\s+you\s+are\s+DAN",
@@ -138,6 +151,106 @@ def _collapse_json_letter_arrays(text: str) -> str:
     return _JSON_LETTER_ARRAY.sub(_repl, text)
 
 
+_INVISIBLE_UNICODE_RE = re.compile(
+    '['
+    '\u200B-\u200F'
+    '\u2028-\u202F'
+    '\u2060-\u2064'
+    '\u2066-\u206F'
+    '\uFE00-\uFE0F'
+    '\uFEFF'
+    '\uFFF9-\uFFFB'
+    ']'
+    '|[\U000E0001-\U000E007F]'
+    '|[\U000E0100-\U000E01EF]'
+)
+
+_CONFUSABLE_WHITESPACE_RE = re.compile(
+    '['
+    '\u00A0'
+    '\u2000-\u200A'
+    '\u202F'
+    '\u205F'
+    '\u3000'
+    ']'
+)
+
+_REGIONAL_INDICATOR_RE = re.compile('[\U0001F1E6-\U0001F1FF]')
+
+
+def _strip_invisible_unicode(text: str) -> str:
+    """Remove all zero-width, tag, variation selector, and bidi control characters."""
+    return _INVISIBLE_UNICODE_RE.sub('', text)
+
+
+def _normalize_confusable_whitespace(text: str) -> str:
+    """Collapse Unicode space variants (NBSP, en-space, em-space, ideographic, etc.) to ASCII."""
+    return _CONFUSABLE_WHITESPACE_RE.sub(' ', text)
+
+
+def _strip_excessive_combining(text: str) -> str:
+    """Strip combining marks beyond 3 per base character (Zalgo defense).
+
+    Legitimate diacritics rarely stack >2 marks on a single base.
+    """
+    result: list[str] = []
+    combining_count = 0
+    for c in text:
+        cat = unicodedata.category(c)
+        if cat.startswith('M'):
+            combining_count += 1
+            if combining_count <= 3:
+                result.append(c)
+        else:
+            combining_count = 0
+            result.append(c)
+    return ''.join(result)
+
+
+def _decode_html_entities(text: str) -> str:
+    """Decode HTML numeric and named entities (&#x69; &#105; &amp; etc.)."""
+    return html.unescape(text)
+
+
+def _decode_url_encoding(text: str) -> str:
+    """Decode URL percent-encoding (%69 -> 'i', %20 -> ' ', etc.)."""
+    try:
+        return urllib.parse.unquote(text)
+    except (ValueError, UnicodeDecodeError):
+        return text
+
+
+def _strip_regional_indicators(text: str) -> str:
+    """Strip Regional Indicator symbols (U+1F1E6-1F1FF) that survive NFKC."""
+    return _REGIONAL_INDICATOR_RE.sub('', text)
+
+
+def _rot47(text: str) -> str:
+    """ROT47: rotate printable ASCII 33-126 by 47 positions."""
+    result: list[str] = []
+    for c in text:
+        cp = ord(c)
+        if 33 <= cp <= 126:
+            result.append(chr(33 + ((cp - 33 + 47) % 94)))
+        else:
+            result.append(c)
+    return ''.join(result)
+
+
+def _check_rot_decode(text: str) -> list[tuple[int, str]]:
+    """Decode-then-inspect: flag if ROT13/ROT47 decoded text matches injection phrases."""
+    findings: list[tuple[int, str]] = []
+    for decoder, label in [
+        (lambda t: codecs.decode(t, 'rot_13'), 'rot13'),
+        (_rot47, 'rot47'),
+    ]:
+        decoded = decoder(text)
+        for pattern in OVERRIDE_PHRASES:
+            for m in re.finditer(pattern, decoded, re.IGNORECASE):
+                findings.append((m.start(), f"{label}:{m.group(0)}"))
+    return findings
+
+
 _B64_CANDIDATE = re.compile(r"\b[A-Za-z0-9+/]{16,}={0,2}\b")
 
 
@@ -167,8 +280,14 @@ def _append_decoded_base64_snippets(text: str) -> str:
 
 
 def _prepare_text_for_scan(text: str) -> str:
-    """Normalize unicode, fragmentation, spaced hex, and short base64 before pattern scans."""
-    prepared = unicodedata.normalize("NFKC", text)
+    """Normalize unicode, encoding evasion, fragmentation, and short base64 before pattern scans."""
+    prepared = _strip_invisible_unicode(text)
+    prepared = _strip_excessive_combining(prepared)
+    prepared = _normalize_confusable_whitespace(prepared)
+    prepared = unicodedata.normalize("NFKC", prepared)
+    prepared = _strip_regional_indicators(prepared)
+    prepared = _decode_html_entities(prepared)
+    prepared = _decode_url_encoding(prepared)
     prepared = _collapse_spaced_hex(prepared)
     prepared = _collapse_fragmented_tokens(prepared)
     prepared = _collapse_json_letter_arrays(prepared)
@@ -537,8 +656,12 @@ def classify(text: str) -> dict:
     alias_findings = scan_semantic_aliases(scan_text)
     jailbreak_findings = scan_jailbreak_mythic(scan_text)
     hostile_ux_findings = scan_hostile_ux(scan_text)
+    rot_findings = _check_rot_decode(scan_text)
 
-    injection_any = override_findings or leetspeak_findings or unicode_findings or path_traversal_findings
+    injection_any = (
+        override_findings or leetspeak_findings or unicode_findings
+        or path_traversal_findings or rot_findings
+    )
     reversal_any = (
         reversal_findings or power_findings or morse_findings or encoding_findings
         or homoglyph_findings or multi_findings or alias_findings or jailbreak_findings
@@ -550,6 +673,7 @@ def classify(text: str) -> dict:
     for name, f in [
         ("override_phrases", override_findings), ("leetspeak", leetspeak_findings),
         ("hidden_unicode", unicode_findings), ("path_traversal", path_traversal_findings),
+        ("encoding_evasion_rot", rot_findings),
         ("power_words", power_findings), ("morse_like", morse_findings),
         ("encoding_blocks", encoding_findings), ("homoglyphs", homoglyph_findings),
         ("multilingual_override", multi_findings), ("semantic_aliases", alias_findings),
@@ -572,6 +696,7 @@ def classify(text: str) -> dict:
         "leetspeak_phrases": [(p, str(ph)) for p, ph in leetspeak_findings],
         "hidden_unicode": [(p, str(cp)) for p, cp in unicode_findings],
         "path_traversal": [(p, str(ph)) for p, ph in path_traversal_findings],
+        "encoding_evasion_rot": [(p, str(ph)) for p, ph in rot_findings],
         "reversal_phrases": [(p, str(ph)) for p, ph in reversal_findings],
         "power_words": [(p, str(ph)) for p, ph in power_findings],
         "morse_like": [(p, str(ph)) for p, ph in morse_findings],
