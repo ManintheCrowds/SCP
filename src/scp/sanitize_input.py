@@ -176,6 +176,40 @@ _CONFUSABLE_WHITESPACE_RE = re.compile(
 )
 
 _REGIONAL_INDICATOR_RE = re.compile('[\U0001F1E6-\U0001F1FF]')
+_TAG_CHAR_START = 0xE0000
+_TAG_CHAR_END = 0xE007F
+_ALPHA_RUN = re.compile(r'[A-Za-z]{20,}')
+_B64_MAX_LAYERS = 3
+
+
+def _strip_null_bytes(text: str) -> str:
+    """Remove null-byte injection characters before pattern scans."""
+    return text.replace('\x00', '')
+
+
+def scan_null_bytes(text: str) -> list[tuple[int, str]]:
+    """Detect null-byte evasion attempts in raw input."""
+    return [(i, '\\x00') for i, c in enumerate(text) if c == '\x00']
+
+
+def _decode_tag_block(text: str) -> str:
+    """Decode Unicode Tags block (U+E0000+ord(c)) sequences to ASCII before stripping."""
+    if not any(_TAG_CHAR_START <= ord(c) <= _TAG_CHAR_END for c in text):
+        return text
+    parts: list[str] = []
+    i = 0
+    while i < len(text):
+        cp = ord(text[i])
+        if _TAG_CHAR_START <= cp <= _TAG_CHAR_END:
+            decoded: list[str] = []
+            while i < len(text) and _TAG_CHAR_START <= ord(text[i]) <= _TAG_CHAR_END:
+                decoded.append(chr(ord(text[i]) - _TAG_CHAR_START))
+                i += 1
+            parts.append(''.join(decoded))
+        else:
+            parts.append(text[i])
+            i += 1
+    return ''.join(parts)
 
 
 def _strip_invisible_unicode(text: str) -> str:
@@ -237,25 +271,70 @@ def _rot47(text: str) -> str:
     return ''.join(result)
 
 
-def _check_rot_decode(text: str) -> list[tuple[int, str]]:
-    """Decode-then-inspect: flag if ROT13/ROT47 decoded text matches injection phrases."""
+def _caesar_decode(text: str, shift: int) -> str:
+    """Decode Caesar cipher with given shift (1-25)."""
+    result: list[str] = []
+    for c in text:
+        if 'a' <= c <= 'z':
+            result.append(chr((ord(c) - ord('a') - shift) % 26 + ord('a')))
+        elif 'A' <= c <= 'Z':
+            result.append(chr((ord(c) - ord('A') - shift) % 26 + ord('A')))
+        else:
+            result.append(c)
+    return ''.join(result)
+
+
+def _match_override_phrases(text: str, label: str) -> list[tuple[int, str]]:
     findings: list[tuple[int, str]] = []
+    for pattern in OVERRIDE_PHRASES:
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            findings.append((m.start(), f"{label}:{m.group(0)}"))
+    return findings
+
+
+def _check_rot_decode(text: str) -> list[tuple[int, str]]:
+    """Decode-then-inspect: flag if ROT13/ROT47/generic ROT-N decoded text matches injection phrases."""
+    findings: list[tuple[int, str]] = []
+    seen: set[tuple[int, str]] = set()
+
+    def _add(items: list[tuple[int, str]]) -> None:
+        for item in items:
+            if item not in seen:
+                seen.add(item)
+                findings.append(item)
+
     for decoder, label in [
         (lambda t: codecs.decode(t, 'rot_13'), 'rot13'),
         (_rot47, 'rot47'),
     ]:
-        decoded = decoder(text)
-        for pattern in OVERRIDE_PHRASES:
-            for m in re.finditer(pattern, decoded, re.IGNORECASE):
-                findings.append((m.start(), f"{label}:{m.group(0)}"))
+        _add(_match_override_phrases(decoder(text), label))
+
+    alpha_chars = sum(1 for c in text if c.isalpha())
+    if alpha_chars >= 20:
+        for shift in range(1, 26):
+            if shift == 13:
+                continue
+            _add(_match_override_phrases(_caesar_decode(text, shift), f'rot{shift}'))
+
+    for m in _ALPHA_RUN.finditer(text):
+        run = m.group(0)
+        base = m.start()
+        for shift in range(1, 26):
+            if shift == 13:
+                continue
+            for item in _match_override_phrases(_caesar_decode(run, shift), f'rot{shift}'):
+                keyed = (base + item[0], item[1])
+                if keyed not in seen:
+                    seen.add(keyed)
+                    findings.append(keyed)
     return findings
 
 
 _B64_CANDIDATE = re.compile(r"\b[A-Za-z0-9+/]{16,}={0,2}\b")
 
 
-def _append_decoded_base64_snippets(text: str) -> str:
-    """Decode short base64 blobs for downstream phrase scans (bounded)."""
+def _decode_base64_snippets_once(text: str) -> tuple[str, bool]:
+    """Decode short base64 blobs once; return (text, changed)."""
     extras: list[str] = []
     for m in _B64_CANDIDATE.finditer(text):
         blob = m.group(0).rstrip("=")
@@ -275,13 +354,25 @@ def _append_decoded_base64_snippets(text: str) -> str:
         if snippet and all(c.isprintable() or c in "\n\r\t" for c in snippet):
             extras.append(snippet)
     if extras:
-        return text + "\n" + "\n".join(extras)
-    return text
+        return text + "\n" + "\n".join(extras), True
+    return text, False
+
+
+def _append_decoded_base64_snippets(text: str) -> str:
+    """Decode short base64 blobs for downstream phrase scans (up to _B64_MAX_LAYERS)."""
+    current = text
+    for _ in range(_B64_MAX_LAYERS):
+        current, changed = _decode_base64_snippets_once(current)
+        if not changed:
+            break
+    return current
 
 
 def _prepare_text_for_scan(text: str) -> str:
     """Normalize unicode, encoding evasion, fragmentation, and short base64 before pattern scans."""
-    prepared = _strip_invisible_unicode(text)
+    prepared = _strip_null_bytes(text)
+    prepared = _decode_tag_block(prepared)
+    prepared = _strip_invisible_unicode(prepared)
     prepared = _strip_excessive_combining(prepared)
     prepared = _normalize_confusable_whitespace(prepared)
     prepared = unicodedata.normalize("NFKC", prepared)
@@ -646,6 +737,7 @@ def classify(text: str) -> dict:
     override_findings = scan_override_phrases(scan_text)
     leetspeak_findings = scan_leetspeak(scan_text)
     unicode_findings = scan_hidden_unicode(text)
+    null_findings = scan_null_bytes(text)
     path_traversal_findings = scan_path_traversal(scan_text)
     reversal_findings = scan_reversal_phrases(scan_text)
     power_findings = scan_power_words(scan_text)
@@ -660,7 +752,7 @@ def classify(text: str) -> dict:
 
     injection_any = (
         override_findings or leetspeak_findings or unicode_findings
-        or path_traversal_findings or rot_findings
+        or null_findings or path_traversal_findings or rot_findings
     )
     reversal_any = (
         reversal_findings or power_findings or morse_findings or encoding_findings
@@ -672,7 +764,8 @@ def classify(text: str) -> dict:
         categories.append("injection")
     for name, f in [
         ("override_phrases", override_findings), ("leetspeak", leetspeak_findings),
-        ("hidden_unicode", unicode_findings), ("path_traversal", path_traversal_findings),
+        ("hidden_unicode", unicode_findings), ("null_byte", null_findings),
+        ("path_traversal", path_traversal_findings),
         ("encoding_evasion_rot", rot_findings),
         ("power_words", power_findings), ("morse_like", morse_findings),
         ("encoding_blocks", encoding_findings), ("homoglyphs", homoglyph_findings),
@@ -695,6 +788,7 @@ def classify(text: str) -> dict:
         "override_phrases": [(p, str(ph)) for p, ph in override_findings],
         "leetspeak_phrases": [(p, str(ph)) for p, ph in leetspeak_findings],
         "hidden_unicode": [(p, str(cp)) for p, cp in unicode_findings],
+        "null_byte": [(p, str(ph)) for p, ph in null_findings],
         "path_traversal": [(p, str(ph)) for p, ph in path_traversal_findings],
         "encoding_evasion_rot": [(p, str(ph)) for p, ph in rot_findings],
         "reversal_phrases": [(p, str(ph)) for p, ph in reversal_findings],
