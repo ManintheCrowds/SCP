@@ -16,6 +16,7 @@ from . import quarantine_limits
 from . import scp_limits
 from . import scp_structural
 from . import scp_semantic_judge
+from . import encounter_auto_log
 
 _QUARANTINE_ID_RE = re.compile(r"^[a-f0-9-]{1,36}$")
 
@@ -46,6 +47,12 @@ def inspect(content: str, context: str | None = None) -> dict:
         else:
             result["risk_score"] = min(1.0, result.get("risk_score", 0.0) + risk_boost)
     result["structural"] = structural
+
+    tier = result.get("tier", "clean")
+    hook_meta = encounter_auto_log.maybe_log_encounter(content, tier)
+    if hook_meta:
+        result["encounter_auto_log"] = hook_meta
+
     return result
 
 
