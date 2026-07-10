@@ -557,10 +557,21 @@ def _build_l402_metadata(resp: requests.Response) -> dict:
 
 
 def _resolve_fetch_host_allowlist(host_allowlist: list[str] | None) -> list[str]:
-    if host_allowlist is not None:
-        return [h.strip() for h in host_allowlist if h and h.strip()]
+    """Union MCP/CLI host entries with SCP_ANTIGEN_FETCH_HOST_ALLOWLIST (deduped)."""
     env = os.environ.get("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "")
-    return [a.strip() for a in env.split(",") if a.strip()]
+    hosts: list[str] = [a.strip() for a in env.split(",") if a.strip()]
+    if host_allowlist is not None:
+        hosts.extend(h.strip() for h in host_allowlist if h and h.strip())
+    # Preserve order, drop duplicates (case-insensitive for hosts).
+    seen: set[str] = set()
+    out: list[str] = []
+    for h in hosts:
+        key = h.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(h)
+    return out
 
 
 def _fetch_response(
@@ -754,6 +765,7 @@ def import_from_announcement(
             l402_token=token,
             antigen_id=announcement.antigen_id,
             session=session,
+            host_allowlist=allowlist,
         )
     except FetchError as exc:
         return {

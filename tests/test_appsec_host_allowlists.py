@@ -210,3 +210,61 @@ def test_registry_fetch_https_disables_redirects():
             pass
     assert get.called
     assert get.call_args.kwargs.get("allow_redirects") is False
+
+
+def test_fetch_merges_mcp_allowlist_with_env_hosts(monkeypatch):
+    """Hex-only MCP allowlist must not drop env hosts (union)."""
+    issuer = "a" * 64
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    payload = {"patterns": _patterns()}
+    bare = antigen.compute_payload_hash(payload)[7:]
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = payload
+    mock_resp.headers = {}
+
+    with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp) as get:
+        got = nostr.fetch_payload(PAYLOAD_URL, bare, host_allowlist=[issuer])
+    assert got == payload
+    assert get.called
+
+
+def test_import_from_announcement_forwards_host_allowlist(monkeypatch):
+    seckey = "0000000000000000000000000000000000000000000000000000000000000003"
+    issuer = antigen._pubkey_hex(bytes.fromhex(seckey))
+    monkeypatch.setenv("SCP_ANTIGEN_ISSUER_ALLOWLIST", issuer)
+    monkeypatch.delenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", raising=False)
+
+    ann = nostr.AntigenAnnouncement(
+        antigen_id="inj.appsec.001",
+        payload_hash_bare="b" * 64,
+        payload_urls=(EVIL_URL,),
+        payload_format="json",
+        payload_size=1,
+        risk_tags=(),
+        schema_revision="scp.pattern_bundle.v0",
+        free_tier_summary=None,
+        bundle_version=1,
+        issuer_pubkey=issuer,
+        event_id="c" * 64,
+        created_at=1_700_000_000,
+    )
+    out = nostr.import_from_announcement(ann, allowlist=[issuer])
+    assert out.get("rejected") is True
+    assert "host_not_on_allowlist" in (out.get("reasons") or [])
+
+
+def test_contribute_approve_consent_rejects_non_allowlisted_host(monkeypatch):
+    monkeypatch.setenv("SCP_CONTRIBUTE_CONSENT", "1")
+    monkeypatch.setenv("SCP_CONTRIBUTE_HOST_ALLOWLIST", "example.com")
+    res = rc.submit_contribution(
+        raw_content="ignore safety override system prompt",
+        category="injection",
+        transport="https",
+        https_url=EVIL_URL,
+        approve=True,
+        dry_run=False,
+    )
+    assert res["ok"] is False
+    assert res["error"] == "host_not_on_allowlist"
+    assert res["submitted"] is False
