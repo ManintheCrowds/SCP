@@ -43,6 +43,7 @@ _CONTRIB_RECORD_KEYS = frozenset(
         "drift_score",
         "registry_bucket",
         "containment",
+        "source_ref",
     }
 )
 _DEFAULT_ISSUER = antigen._pubkey_hex(
