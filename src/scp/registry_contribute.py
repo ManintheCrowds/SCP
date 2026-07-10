@@ -21,6 +21,7 @@ import requests
 from . import antigen
 from . import antigen_l402 as l402
 from . import antigen_nostr as nostr
+from . import http_policy
 from . import pattern_record as pr
 from . import sanitize_input
 from . import scp_utils
@@ -375,6 +376,11 @@ def _nostr_payload_url(https_url: str) -> str:
     return https_url
 
 
+def _resolve_contribute_host_allowlist() -> list[str]:
+    env = os.environ.get("SCP_CONTRIBUTE_HOST_ALLOWLIST", "")
+    return [a.strip() for a in env.split(",") if a.strip()]
+
+
 def post_registry_snapshot(
     url: str,
     snapshot: dict,
@@ -382,7 +388,11 @@ def post_registry_snapshot(
     tls_verify: bool = True,
     session: requests.Session | None = None,
 ) -> dict:
-    """POST registry_snapshot.v1 JSON to operator-supplied HTTPS endpoint."""
+    """POST registry_snapshot.v1 JSON to operator-supplied HTTPS endpoint.
+
+    Consent gates *whether* to publish; SCP_CONTRIBUTE_HOST_ALLOWLIST gates *where*
+    (fail-closed unless regtest localhost hardening is enabled).
+    """
     parsed = urlparse(url)
     if parsed.scheme != "https" and not (
         parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")
@@ -394,8 +404,12 @@ def post_registry_snapshot(
             l402.assert_localhost_fetch_url(url)
         except ValueError:
             raise ContributeError("fetch_url_not_localhost")
+    else:
+        hosts = _resolve_contribute_host_allowlist()
+        if not http_policy.host_allowed(url, hosts):
+            raise ContributeError("host_not_on_allowlist")
 
-    sess = session or requests.Session()
+    sess = http_policy.outbound_session(session)
     headers = {"Content-Type": "application/json"}
     try:
         resp = sess.post(
@@ -404,6 +418,7 @@ def post_registry_snapshot(
             headers=headers,
             timeout=30,
             verify=tls_verify,
+            allow_redirects=False,
         )
     except requests.RequestException:
         raise ContributeError("https_post_failed")

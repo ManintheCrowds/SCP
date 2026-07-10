@@ -25,6 +25,9 @@ def isolated_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SCP_PATTERN_SSOT_PATH", str(tmp_path / "ssot.json"))
     monkeypatch.setenv("SCP_CONTRIBUTE_CONSENT", "1")
     monkeypatch.setenv("SCP_CONTRIBUTE_OPT_IN_LOG", str(tmp_path / "contribute_opt_in.jsonl"))
+    monkeypatch.setenv(
+        "SCP_CONTRIBUTE_HOST_ALLOWLIST", "example.com,127.0.0.1,localhost"
+    )
     monkeypatch.delenv("SCP_ANTIGEN_REGTEST_E2E", raising=False)
     monkeypatch.delenv("NOSTR_SECKEY", raising=False)
     return tmp_path
