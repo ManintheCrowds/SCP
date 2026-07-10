@@ -71,6 +71,7 @@ def isolated_env(tmp_path: Path, monkeypatch, operator_l402_token) -> Path:
     monkeypatch.delenv("SCP_ANTIGEN_ISSUER_ALLOWLIST", raising=False)
     monkeypatch.delenv("SCP_ANTIGEN_ALLOWLIST_FILE", raising=False)
     monkeypatch.delenv("SCP_ANTIGEN_L402_TOKEN", raising=False)
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
     return tmp_path
 
 

@@ -15,6 +15,7 @@ import requests
 from . import antigen
 from . import antigen_l402 as l402
 from . import antigen_nostr as nostr
+from . import http_policy
 from . import pattern_record as pr
 from . import registry_ssot
 from . import scp_utils
@@ -37,11 +38,7 @@ def _parse_allowlist(allowlist: list[str] | None) -> list[str]:
 
 
 def _host_allowed(url: str, allowlist: list[str]) -> bool:
-    if not allowlist:
-        return False
-    host = (urlparse(url).hostname or "").lower()
-    allowed_hosts = {a.lower() for a in allowlist if not _HEX64.match(a.lower())}
-    return host in allowed_hosts
+    return http_policy.host_allowed(url, allowlist)
 
 
 def _issuer_allowed(pubkey: str, allowlist: list[str]) -> bool:
@@ -120,13 +117,15 @@ def _fetch_https(
         except ValueError:
             raise RegistryFetchError("fetch_url_not_localhost")
 
-    sess = session or requests.Session()
+    sess = http_policy.outbound_session(session)
     headers: dict[str, str] = {}
     if if_none_match:
         headers["If-None-Match"] = if_none_match
 
     try:
-        resp = sess.get(url, headers=headers, timeout=30, verify=tls_verify)
+        resp = sess.get(
+            url, headers=headers, timeout=30, verify=tls_verify, allow_redirects=False
+        )
     except requests.RequestException:
         raise RegistryFetchError("fetch_failed")
 

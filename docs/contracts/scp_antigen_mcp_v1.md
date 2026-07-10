@@ -26,14 +26,14 @@
 | `scp_antigen_merge` | `bundle_json`, `approve?` default **false** | **`approve=true` required** | Registry merge |
 | `scp_antigen_publish` | `bundle_json`, `seckey_hex?`, `relays?`, `dry_run?` | Operator credentials | Nostr kind 30078 |
 | `scp_antigen_discover` | `allowlist?`, `relays?`, filters | Empty allowlist fails closed | Metadata only |
-| `scp_antigen_fetch` | `url`, `expected_hash`, `allowlist?`, `l402_token?` | No auto-pay on 402 | HTTPS fetch + verify |
+| `scp_antigen_fetch` | `url`, `expected_hash`, `allowlist?`, `l402_token?` | No auto-pay on 402; **host allowlist fail-closed** (`allowlist` hosts and/or `SCP_ANTIGEN_FETCH_HOST_ALLOWLIST`) | HTTPS fetch + verify |
 
 ### Registry mycelium (R3/R4)
 
 | Tool | Parameters | Human gate | Notes |
 |------|------------|------------|-------|
 | `scp_fetch_registry` | `source`, `allowlist`, `if_none_match?`, `tls_verify?`, `relays?` | Stages to quarantine only; **`merged` always false** | HTTPS or nostr |
-| `scp_contribute_pattern` | `transport`, `patterns_json?`, `raw_content?`, `approve?` default **false**, … | **`approve=true` for publish**; `approve=false` → zero network I/O | R3 contribute |
+| `scp_contribute_pattern` | `transport`, `patterns_json?`, `raw_content?`, `approve?` default **false**, … | **`approve=true` for publish**; `SCP_CONTRIBUTE_CONSENT=1`; **`SCP_CONTRIBUTE_HOST_ALLOWLIST`** gates POST destination; `approve=false` → zero network I/O | R3 contribute |
 | `scp_apply_registry_quarantine` | `quarantine_path`, `approve?` default **false** | **`approve=true` for production merge**; dev auto via `SCP_REGISTRY_MERGE_DEV_AUTO=1` | R4 SSOT + projection |
 
 ---

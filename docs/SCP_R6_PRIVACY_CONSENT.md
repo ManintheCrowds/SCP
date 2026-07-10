@@ -25,6 +25,7 @@ Extends R3 two-phase consent ([SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW
 |-------|------|----------|
 | **Proposal (default)** | `approve=false` | Stage locally; return proposal; **zero network I/O** |
 | **Attestation (R6)** | `SCP_CONTRIBUTE_CONSENT=1` | Operator confirms contribution guidelines read (env, not agent-settable default) |
+| **Host allowlist** | `SCP_CONTRIBUTE_HOST_ALLOWLIST` | Fail-closed destination hosts for HTTPS POST (consent ≠ host trust) |
 | **Publish** | `approve=true` + attestation | nostr and/or HTTPS submit |
 
 Production default: **no dev auto-submit**. No env bypasses `approve=true` for network publish (unlike R4 `SCP_REGISTRY_MERGE_DEV_AUTO`, which applies only to **inbound** merge).

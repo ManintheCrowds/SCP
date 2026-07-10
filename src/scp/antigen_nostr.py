@@ -19,6 +19,7 @@ import requests
 
 from . import antigen
 from . import antigen_l402 as l402
+from . import http_policy
 
 # Parameterized-replaceable kind (30000–39999); ADR 2026-06-29 / operator lock 2026-06-30.
 ANTIGEN_NOSTR_KIND = 30078
@@ -555,6 +556,13 @@ def _build_l402_metadata(resp: requests.Response) -> dict:
     return meta
 
 
+def _resolve_fetch_host_allowlist(host_allowlist: list[str] | None) -> list[str]:
+    if host_allowlist is not None:
+        return [h.strip() for h in host_allowlist if h and h.strip()]
+    env = os.environ.get("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "")
+    return [a.strip() for a in env.split(",") if a.strip()]
+
+
 def _fetch_response(
     sess: requests.Session,
     url: str,
@@ -569,8 +577,10 @@ def _fetch_response(
     if l402_token:
         macaroon, preimage = l402.normalize_l402_token(l402_token)
         headers = {"Authorization": l402.format_authorization_header(macaroon, preimage)}
-        return sess.get(url, timeout=30, headers=headers, verify=verify_tls)
-    return sess.get(url, timeout=30, verify=verify_tls)
+        return sess.get(
+            url, timeout=30, headers=headers, verify=verify_tls, allow_redirects=False
+        )
+    return sess.get(url, timeout=30, verify=verify_tls, allow_redirects=False)
 
 
 def _process_fetch_response(
@@ -640,11 +650,15 @@ def fetch_payload(
     l402_token: str | None = None,
     antigen_id: str | None = None,
     session: requests.Session | None = None,
+    host_allowlist: list[str] | None = None,
 ) -> dict:
     """Fetch HTTPS payload, verify sha256 (bare hex).
 
     On 402 without l402_token, raise FetchError with parsed L402 challenge metadata.
     When l402_token is supplied, send Authorization on the request (operator-paid retry).
+
+    Production: host must be on SCP_ANTIGEN_FETCH_HOST_ALLOWLIST or host_allowlist
+    (fail-closed). Regtest envs use localhost assert instead.
     """
     if not _HEX64.match(expected_hash_bare_hex):
         raise FetchError("bad_expected_hash")
@@ -656,9 +670,13 @@ def fetch_payload(
             l402.assert_localhost_fetch_url(url)
         except ValueError:
             raise FetchError("fetch_url_not_localhost")
+    else:
+        hosts = _resolve_fetch_host_allowlist(host_allowlist)
+        if not http_policy.host_allowed(url, hosts):
+            raise FetchError("host_not_on_allowlist")
 
     token = l402_token or l402.l402_token_from_env()
-    sess = session or requests.Session()
+    sess = http_policy.outbound_session(session)
     try:
         resp = _fetch_response(sess, url, l402_token=token)
     except ValueError as exc:
