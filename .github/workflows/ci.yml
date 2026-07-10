@@ -1,4 +1,5 @@
 # PURPOSE: Run OpenHarness MCP contract conformance (tool names vs scp_mcp_v1).
+# Branch protection requires a check context named exactly "CI" (not the workflow name).
 name: CI
 
 on:
@@ -43,3 +44,16 @@ jobs:
       - name: promptfoo eval (SCP tier probes, no API keys)
         working-directory: examples/promptfoo
         run: npx promptfoo eval -c promptfooconfig.yaml
+
+  # Required status context for main branch protection. Must keep this job id as CI.
+  CI:
+    needs: [contract, promptfoo-eval]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on upstream jobs
+        run: |
+          echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }}"
+          if [ "${{ needs.contract.result }}" != "success" ] || [ "${{ needs.promptfoo-eval.result }}" != "success" ]; then
+            exit 1
+          fi

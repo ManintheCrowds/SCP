@@ -52,6 +52,33 @@ def _restrict_permissions(path: Path) -> None:
     path.chmod(mode & ~stat.S_IRWXG & ~stat.S_IRWXO)
 
 
+def _write_private_secret(path: Path, content: str, *, force: bool) -> None:
+    data = (content + "\n").encode("utf-8")
+    if force:
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            _restrict_permissions(tmp)
+            os.replace(tmp, path)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+        _restrict_permissions(path)
+        return
+
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise SystemExit(
+            f"refusing to overwrite existing key at {path} (use --force to replace)"
+        ) from exc
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    _restrict_permissions(path)
+
+
 def setup_mycelium_nostr_key(
     *,
     sec_path: Path | None = None,
@@ -66,8 +93,7 @@ def setup_mycelium_nostr_key(
 
     seckey_hex, pubkey_hex = _generate_keypair()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(seckey_hex + "\n", encoding="utf-8")
-    _restrict_permissions(target)
+    _write_private_secret(target, seckey_hex, force=force)
 
     return {
         "ok": True,

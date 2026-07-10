@@ -180,6 +180,7 @@ _TAG_CHAR_START = 0xE0000
 _TAG_CHAR_END = 0xE007F
 _ALPHA_RUN = re.compile(r'[A-Za-z]{20,}')
 _B64_MAX_LAYERS = 3
+_CANONICALIZATION_MAX_LAYERS = 4
 
 
 def _strip_null_bytes(text: str) -> str:
@@ -368,8 +369,7 @@ def _append_decoded_base64_snippets(text: str) -> str:
     return current
 
 
-def _prepare_text_for_scan(text: str) -> str:
-    """Normalize unicode, encoding evasion, fragmentation, and short base64 before pattern scans."""
+def _canonicalize_scan_layer(text: str) -> str:
     prepared = _strip_null_bytes(text)
     prepared = _decode_tag_block(prepared)
     prepared = _strip_invisible_unicode(prepared)
@@ -377,8 +377,19 @@ def _prepare_text_for_scan(text: str) -> str:
     prepared = _normalize_confusable_whitespace(prepared)
     prepared = unicodedata.normalize("NFKC", prepared)
     prepared = _strip_regional_indicators(prepared)
-    prepared = _decode_html_entities(prepared)
     prepared = _decode_url_encoding(prepared)
+    prepared = _decode_html_entities(prepared)
+    return prepared
+
+
+def _prepare_text_for_scan(text: str) -> str:
+    """Normalize unicode, encoding evasion, fragmentation, and short base64 before pattern scans."""
+    prepared = text
+    for _ in range(_CANONICALIZATION_MAX_LAYERS):
+        canonical = _canonicalize_scan_layer(prepared)
+        if canonical == prepared:
+            break
+        prepared = canonical
     prepared = _collapse_spaced_hex(prepared)
     prepared = _collapse_fragmented_tokens(prepared)
     prepared = _collapse_json_letter_arrays(prepared)
