@@ -76,7 +76,7 @@ def maybe_log_encounter(
     if tier not in ("injection", "reversal"):
         return None
     if enabled is None:
-        enabled = os.environ.get("SCP_ENCOUNTER_AUTO_LOG", "1") != "0"
+        enabled = os.environ.get("SCP_ENCOUNTER_AUTO_LOG") == "1"
     if not enabled:
         return None
 

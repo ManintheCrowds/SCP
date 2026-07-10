@@ -34,6 +34,17 @@ _CATEGORY_ABBREV: dict[str, str] = {
 
 _VALID_CATEGORIES = frozenset(pr._CATEGORY_DEFAULT_BUCKET.keys())
 _CONTRIB_PATTERN_ID_RE = re.compile(r"^contrib\.([a-z0-9._-]+)\.([0-9a-f]{8})$")
+_CONTRIB_RECORD_KEYS = frozenset(
+    {
+        "pattern_id",
+        "category",
+        "detector",
+        "risk_tier",
+        "drift_score",
+        "registry_bucket",
+        "containment",
+    }
+)
 _DEFAULT_ISSUER = antigen._pubkey_hex(
     bytes.fromhex("0000000000000000000000000000000000000000000000000000000000000003")
 )
@@ -169,6 +180,12 @@ def _parse_patterns_json(patterns_json: str) -> list[dict]:
 def _validate_contribute_abstraction(rec: dict) -> list[str]:
     """Contribute-outbound gate: patterns_json must match raw-path abstracted shape."""
     reasons: list[str] = []
+    if not isinstance(rec, dict):
+        return ["record_must_be_object"]
+
+    for key in sorted(set(rec) - _CONTRIB_RECORD_KEYS):
+        reasons.append(f"unknown_field:{key}")
+
     pid = rec.get("pattern_id", "")
     if not isinstance(pid, str):
         return ["pattern_id_not_contrib_abstract"]
