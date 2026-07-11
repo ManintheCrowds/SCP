@@ -209,11 +209,18 @@ def apply_merge(
         return {"merged": False, "reason": "nothing_to_merge", "proposal": diff_info}
 
     merged_list = list(local.values())
-    save_ssot(merged_list)
-
+    mv = pr.validate_snapshot_patterns(merged_list)
+    if not mv["valid"]:
+        _audit(
+            "local_ssot_validation_failed",
+            quarantine_path=str(quarantine_path),
+            error_count=len(mv["errors"]),
+        )
+        return {"merged": False, "reason": "local_ssot_validation_failed", "errors": mv["errors"]}
     projection = pr.project_to_registry(merged_list)
     proj_path = _projection_path()
     proj_path.parent.mkdir(parents=True, exist_ok=True)
+    save_ssot(merged_list)
     proj_path.write_text(json.dumps(projection, indent=2, ensure_ascii=False), encoding="utf-8")
 
     if auto_applied:

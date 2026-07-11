@@ -69,6 +69,29 @@ def test_apply_merge_operator_approved(isolated_ssot):
     assert any(p["pattern_id"] == "merge.approved.001" for p in ssot)
 
 
+def test_apply_merge_rejects_invalid_existing_ssot_before_save(isolated_ssot):
+    poisoned = _rec("local.bad.001")
+    poisoned["registry_bucket"] = "multilingual_override"
+    poisoned["source_ref"] = {"lang": []}
+    registry_ssot.save_ssot([poisoned])
+
+    snap = {
+        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
+        "registry_version": "2026-07-02T00:00:00Z",
+        "patterns": [_rec("merge.good.001")],
+    }
+    qfile = isolated_ssot / "q-poisoned.json"
+    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+
+    res = registry_ssot.apply_merge(qfile, approve=True)
+
+    assert res["merged"] is False
+    assert res["reason"] == "local_ssot_validation_failed"
+    assert any("invalid_source_ref_lang" in e for e in res["errors"])
+    assert not any(p["pattern_id"] == "merge.good.001" for p in registry_ssot.load_ssot())
+    assert not (isolated_ssot / "projection.json").exists()
+
+
 def test_dev_auto_low_risk_only(isolated_ssot, monkeypatch):
     monkeypatch.setenv("SCP_REGISTRY_MERGE_DEV_AUTO", "1")
     monkeypatch.setenv("SCP_REGISTRY_MAX_DRIFT", "0.15")
