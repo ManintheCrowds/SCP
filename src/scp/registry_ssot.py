@@ -220,8 +220,8 @@ def apply_merge(
     projection = pr.project_to_registry(merged_list)
     proj_path = _projection_path()
     proj_path.parent.mkdir(parents=True, exist_ok=True)
-    save_ssot(merged_list)
     proj_path.write_text(json.dumps(projection, indent=2, ensure_ascii=False), encoding="utf-8")
+    save_ssot(merged_list)
 
     if auto_applied:
         _audit(
