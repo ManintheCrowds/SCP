@@ -112,6 +112,24 @@ def test_apply_merge_projection_write_failure_does_not_save_ssot(isolated_ssot, 
     )
 
 
+def test_apply_merge_ssot_write_failure_does_not_write_projection(isolated_ssot, monkeypatch):
+    ssot_dir = isolated_ssot / "ssot-as-dir"
+    ssot_dir.mkdir()
+    monkeypatch.setenv("SCP_PATTERN_SSOT_PATH", str(ssot_dir))
+    snap = {
+        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
+        "registry_version": "2026-07-02T00:00:00Z",
+        "patterns": [_rec("merge.ssot-fails.001")],
+    }
+    qfile = isolated_ssot / "q-ssot-fails.json"
+    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+
+    with pytest.raises(IsADirectoryError):
+        registry_ssot.apply_merge(qfile, approve=True)
+
+    assert not (isolated_ssot / "projection.json").exists()
+
+
 def test_dev_auto_low_risk_only(isolated_ssot, monkeypatch):
     monkeypatch.setenv("SCP_REGISTRY_MERGE_DEV_AUTO", "1")
     monkeypatch.setenv("SCP_REGISTRY_MAX_DRIFT", "0.15")

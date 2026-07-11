@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,15 +46,62 @@ def load_ssot() -> list[dict]:
     return []
 
 
-def save_ssot(patterns: list[dict]) -> None:
-    path = _ssot_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+def _ssot_payload(patterns: list[dict]) -> dict:
+    return {
         "schema_revision": "scp.pattern_ssot.v1",
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "patterns": patterns,
     }
+
+
+def save_ssot(patterns: list[dict]) -> None:
+    path = _ssot_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _ssot_payload(patterns)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_temp_text(path: Path, content: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and not path.is_file():
+        raise IsADirectoryError(str(path))
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+        text=True,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    return tmp_path
+
+
+def _write_json_pair_staged(first: tuple[Path, dict], second: tuple[Path, dict]) -> None:
+    staged: list[tuple[Path, Path]] = []
+    replaced: list[tuple[Path, bytes | None]] = []
+    try:
+        for path, payload in (first, second):
+            content = json.dumps(payload, indent=2, ensure_ascii=False)
+            staged.append((path, _write_temp_text(path, content)))
+        for path, tmp_path in staged:
+            old_content = path.read_bytes() if path.is_file() else None
+            os.replace(tmp_path, path)
+            replaced.append((path, old_content))
+    except Exception:
+        for path, old_content in reversed(replaced):
+            if old_content is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(old_content)
+        raise
+    finally:
+        for _path, tmp_path in staged:
+            tmp_path.unlink(missing_ok=True)
 
 
 def _detector_key(detector: dict) -> str:
@@ -219,9 +267,7 @@ def apply_merge(
         return {"merged": False, "reason": "local_ssot_validation_failed", "errors": mv["errors"]}
     projection = pr.project_to_registry(merged_list)
     proj_path = _projection_path()
-    proj_path.parent.mkdir(parents=True, exist_ok=True)
-    proj_path.write_text(json.dumps(projection, indent=2, ensure_ascii=False), encoding="utf-8")
-    save_ssot(merged_list)
+    _write_json_pair_staged((proj_path, projection), (_ssot_path(), _ssot_payload(merged_list)))
 
     if auto_applied:
         _audit(
