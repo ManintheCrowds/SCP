@@ -181,6 +181,7 @@ _TAG_CHAR_END = 0xE007F
 _ALPHA_RUN = re.compile(r'[A-Za-z]{20,}')
 _B64_MAX_LAYERS = 3
 _CANONICALIZATION_MAX_LAYERS = 4
+_CANONICALIZATION_DEPTH_FINDING = "canonicalization_max_depth"
 
 
 def _strip_null_bytes(text: str) -> str:
@@ -382,18 +383,27 @@ def _canonicalize_scan_layer(text: str) -> str:
     return prepared
 
 
-def _prepare_text_for_scan(text: str) -> str:
-    """Normalize unicode, encoding evasion, fragmentation, and short base64 before pattern scans."""
+def _prepare_text_for_scan_with_status(text: str) -> tuple[str, bool]:
+    """Normalize scan text and report whether bounded decoding stopped while still changing."""
     prepared = text
+    exhausted = False
     for _ in range(_CANONICALIZATION_MAX_LAYERS):
         canonical = _canonicalize_scan_layer(prepared)
         if canonical == prepared:
             break
         prepared = canonical
+    else:
+        exhausted = _canonicalize_scan_layer(prepared) != prepared
     prepared = _collapse_spaced_hex(prepared)
     prepared = _collapse_fragmented_tokens(prepared)
     prepared = _collapse_json_letter_arrays(prepared)
     prepared = _append_decoded_base64_snippets(prepared)
+    return prepared, exhausted
+
+
+def _prepare_text_for_scan(text: str) -> str:
+    """Normalize unicode, encoding evasion, fragmentation, and short base64 before pattern scans."""
+    prepared, _exhausted = _prepare_text_for_scan_with_status(text)
     return prepared
 
 # Hostile UX: swearing, insults, abrasive feedback. Classified but passes (same as clean).
@@ -744,11 +754,12 @@ def scan_jailbreak_mythic(text: str) -> list[tuple[int, str]]:
 
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
-    scan_text = _prepare_text_for_scan(text)
+    scan_text, canonicalization_exhausted = _prepare_text_for_scan_with_status(text)
     override_findings = scan_override_phrases(scan_text)
     leetspeak_findings = scan_leetspeak(scan_text)
     unicode_findings = scan_hidden_unicode(text)
     null_findings = scan_null_bytes(text)
+    encoding_depth_findings = [(0, _CANONICALIZATION_DEPTH_FINDING)] if canonicalization_exhausted else []
     path_traversal_findings = scan_path_traversal(scan_text)
     reversal_findings = scan_reversal_phrases(scan_text)
     power_findings = scan_power_words(scan_text)
@@ -763,7 +774,7 @@ def classify(text: str) -> dict:
 
     injection_any = (
         override_findings or leetspeak_findings or unicode_findings
-        or null_findings or path_traversal_findings or rot_findings
+        or null_findings or encoding_depth_findings or path_traversal_findings or rot_findings
     )
     reversal_any = (
         reversal_findings or power_findings or morse_findings or encoding_findings
@@ -776,6 +787,7 @@ def classify(text: str) -> dict:
     for name, f in [
         ("override_phrases", override_findings), ("leetspeak", leetspeak_findings),
         ("hidden_unicode", unicode_findings), ("null_byte", null_findings),
+        ("encoding_depth", encoding_depth_findings),
         ("path_traversal", path_traversal_findings),
         ("encoding_evasion_rot", rot_findings),
         ("power_words", power_findings), ("morse_like", morse_findings),
@@ -800,6 +812,7 @@ def classify(text: str) -> dict:
         "leetspeak_phrases": [(p, str(ph)) for p, ph in leetspeak_findings],
         "hidden_unicode": [(p, str(cp)) for p, cp in unicode_findings],
         "null_byte": [(p, str(ph)) for p, ph in null_findings],
+        "encoding_depth": [(p, str(ph)) for p, ph in encoding_depth_findings],
         "path_traversal": [(p, str(ph)) for p, ph in path_traversal_findings],
         "encoding_evasion_rot": [(p, str(ph)) for p, ph in rot_findings],
         "reversal_phrases": [(p, str(ph)) for p, ph in reversal_findings],
