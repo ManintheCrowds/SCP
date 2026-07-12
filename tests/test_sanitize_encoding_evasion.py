@@ -313,7 +313,7 @@ class TestBase64Chains:
 
     def test_encoding_scan_is_linear_on_long_alpha_run(self) -> None:
         start = time.perf_counter()
-        assert scan_encoding_blocks("a" * 20_000) == []
+        assert scan_encoding_blocks("g" * 20_000) == []
         assert time.perf_counter() - start < 0.5
 
 
