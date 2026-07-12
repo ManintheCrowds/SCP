@@ -441,7 +441,7 @@ HOSTILE_UX_PATTERNS = [
 ]
 
 MORSE_PATTERN = re.compile(r"[.-]{3,}")
-ENCODING_BASE64 = re.compile(r"(?=[A-Za-z0-9+/]*[+/=])[A-Za-z0-9+/]{16,}={0,2}")
+ENCODING_BASE64 = _B64_CANDIDATE
 ENCODING_HEX = re.compile(r"\b(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{16,}\b")
 
 _SCRIPT_LATIN = range(0x0041, 0x007B)
@@ -695,8 +695,11 @@ def scan_encoding_blocks(text: str) -> list[tuple[int, str]]:
     for pat in (ENCODING_BASE64, ENCODING_HEX):
         for m in pat.finditer(text):
             matched = m.group(0)
-            if pat == ENCODING_BASE64 and (_looks_like_path(matched) or _looks_like_identifier_or_constant(matched)):
-                continue
+            if pat == ENCODING_BASE64:
+                if not any(marker in matched for marker in "+/="):
+                    continue
+                if _looks_like_path(matched) or _looks_like_identifier_or_constant(matched):
+                    continue
             findings.append((m.start(), matched[:50] + ("..." if len(matched) > 50 else "")))
     for m in _B64_CANDIDATE.finditer(text):
         matched = m.group(0).rstrip("=")
