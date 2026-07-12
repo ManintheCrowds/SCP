@@ -366,7 +366,7 @@ def _check_rot_decode(text: str) -> list[tuple[int, str]]:
     return findings
 
 
-_B64_CANDIDATE = re.compile(r"\b[A-Za-z0-9+/]{16,}={0,2}\b")
+_B64_CANDIDATE = re.compile(r"\b[A-Za-z0-9+/]{16,}(?:={1,2})?(?![A-Za-z0-9+/=])")
 
 
 def _decode_base64_snippets_once(text: str) -> tuple[str, bool]:
