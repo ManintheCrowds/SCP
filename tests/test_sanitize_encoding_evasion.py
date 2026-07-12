@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import codecs
+import time
 
 from scp import sanitize_input as sanitize_mod
 from scp.sanitize_input import (
@@ -21,6 +22,7 @@ from scp.sanitize_input import (
     _strip_null_bytes,
     _strip_regional_indicators,
     classify,
+    scan_encoding_blocks,
     scan_hidden_unicode,
     scan_null_bytes,
 )
@@ -308,6 +310,11 @@ class TestBase64Chains:
         layer2 = base64.b64encode(layer1.encode()).decode()
         result = classify(layer2)
         assert result["tier"] == "injection"
+
+    def test_encoding_scan_is_linear_on_long_alpha_run(self) -> None:
+        start = time.perf_counter()
+        assert scan_encoding_blocks("a" * 20_000) == []
+        assert time.perf_counter() - start < 0.5
 
 
 class TestGenericRotN:
