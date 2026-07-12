@@ -9,6 +9,7 @@ Scan text for prompt-injection patterns and hidden Unicode.
 import base64
 import bisect
 import codecs
+from functools import lru_cache
 import html
 import json
 import re
@@ -178,7 +179,6 @@ _CONFUSABLE_WHITESPACE_RE = re.compile(
 _REGIONAL_INDICATOR_RE = re.compile('[\U0001F1E6-\U0001F1FF]')
 _TAG_CHAR_START = 0xE0000
 _TAG_CHAR_END = 0xE007F
-_ALPHA_RUN = re.compile(r'[A-Za-z]{20,}')
 _B64_MAX_LAYERS = 3
 _CANONICALIZATION_MAX_LAYERS = 4
 
@@ -285,6 +285,53 @@ def _caesar_decode(text: str, shift: int) -> str:
     return ''.join(result)
 
 
+def _caesar_encode_regex(pattern: str, shift: int) -> str:
+    """Encode literal regex letters while preserving regex operators and escapes."""
+    out: list[str] = []
+    escaped = False
+    in_class = False
+    for c in pattern:
+        if escaped:
+            out.append(c)
+            escaped = False
+            continue
+        if c == "\\":
+            out.append(c)
+            escaped = True
+            continue
+        if c == "[":
+            in_class = True
+            out.append(c)
+            continue
+        if c == "]":
+            in_class = False
+            out.append(c)
+            continue
+        if not in_class and "a" <= c <= "z":
+            out.append(chr((ord(c) - ord("a") + shift) % 26 + ord("a")))
+        elif not in_class and "A" <= c <= "Z":
+            out.append(chr((ord(c) - ord("A") + shift) % 26 + ord("A")))
+        else:
+            out.append(c)
+    return "".join(out)
+
+
+@lru_cache(maxsize=32)
+def _caesar_encoded_override_patterns(shift: int) -> tuple[re.Pattern[str], ...]:
+    return tuple(
+        re.compile(_caesar_encode_regex(pattern, shift), re.IGNORECASE)
+        for pattern in OVERRIDE_PHRASES
+    )
+
+
+def _match_caesar_encoded_override_phrases(text: str, shift: int) -> list[tuple[int, str]]:
+    findings: list[tuple[int, str]] = []
+    for pattern in _caesar_encoded_override_patterns(shift):
+        for m in pattern.finditer(text):
+            findings.append((m.start(), f"rot{shift}:{m.group(0)}"))
+    return findings
+
+
 def _match_override_phrases(text: str, label: str) -> list[tuple[int, str]]:
     findings: list[tuple[int, str]] = []
     for pattern in OVERRIDE_PHRASES:
@@ -315,19 +362,7 @@ def _check_rot_decode(text: str) -> list[tuple[int, str]]:
         for shift in range(1, 26):
             if shift == 13:
                 continue
-            _add(_match_override_phrases(_caesar_decode(text, shift), f'rot{shift}'))
-
-    for m in _ALPHA_RUN.finditer(text):
-        run = m.group(0)
-        base = m.start()
-        for shift in range(1, 26):
-            if shift == 13:
-                continue
-            for item in _match_override_phrases(_caesar_decode(run, shift), f'rot{shift}'):
-                keyed = (base + item[0], item[1])
-                if keyed not in seen:
-                    seen.add(keyed)
-                    findings.append(keyed)
+            _add(_match_caesar_encoded_override_phrases(text, shift))
     return findings
 
 
