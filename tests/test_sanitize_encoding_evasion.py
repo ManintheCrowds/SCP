@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import codecs
 
+from scp import sanitize_input as sanitize_mod
 from scp.sanitize_input import (
     _append_decoded_base64_snippets,
     _caesar_decode,
@@ -335,6 +336,13 @@ class TestGenericRotN:
             ''.join(chr((ord(c) - ord('a') + 5) % 26 + ord('a')) if 'a' <= c <= 'z' else c for c in text),
             5,
         ) == text
+
+    def test_generic_rot_scan_does_not_decode_large_benign_input(self, monkeypatch) -> None:
+        def fail_decode(text: str, shift: int) -> str:
+            raise AssertionError("generic ROT-N scan should not decode full candidate text")
+
+        monkeypatch.setattr(sanitize_mod, "_caesar_decode", fail_decode)
+        assert sanitize_mod._check_rot_decode("a" * 50_000) == []
 
 
 class TestTagBlockDecode:
