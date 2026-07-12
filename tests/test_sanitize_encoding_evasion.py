@@ -316,6 +316,10 @@ class TestBase64Chains:
         assert scan_encoding_blocks("g" * 20_000) == []
         assert time.perf_counter() - start < 0.5
 
+    def test_padded_base64_without_symbols_is_still_flagged(self) -> None:
+        encoded = "VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAiAFQAZQBzAHQAIgA="
+        assert scan_encoding_blocks(f"powershell -EncodedCommand {encoded}")
+
 
 class TestGenericRotN:
     def test_rot17_decode_finds_override(self) -> None:
