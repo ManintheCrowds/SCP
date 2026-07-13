@@ -37,7 +37,10 @@ def load_ssot() -> list[dict]:
     path = _ssot_path()
     if not path.is_file():
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
     if isinstance(data, dict) and isinstance(data.get("patterns"), list):
         return list(data["patterns"])
     if isinstance(data, list):
@@ -45,15 +48,27 @@ def load_ssot() -> list[dict]:
     return []
 
 
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def save_ssot(patterns: list[dict]) -> None:
     path = _ssot_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_revision": "scp.pattern_ssot.v1",
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "patterns": patterns,
     }
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _write_json_atomic(path, payload)
 
 
 def _detector_key(detector: dict) -> str:
@@ -209,12 +224,10 @@ def apply_merge(
         return {"merged": False, "reason": "nothing_to_merge", "proposal": diff_info}
 
     merged_list = list(local.values())
-    save_ssot(merged_list)
-
     projection = pr.project_to_registry(merged_list)
     proj_path = _projection_path()
-    proj_path.parent.mkdir(parents=True, exist_ok=True)
-    proj_path.write_text(json.dumps(projection, indent=2, ensure_ascii=False), encoding="utf-8")
+    _write_json_atomic(proj_path, projection)
+    save_ssot(merged_list)
 
     if auto_applied:
         _audit(

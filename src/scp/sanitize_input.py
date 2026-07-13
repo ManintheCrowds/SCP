@@ -180,7 +180,7 @@ _TAG_CHAR_START = 0xE0000
 _TAG_CHAR_END = 0xE007F
 _ALPHA_RUN = re.compile(r'[A-Za-z]{20,}')
 _B64_MAX_LAYERS = 3
-_CANONICALIZATION_MAX_LAYERS = 4
+_CANONICALIZATION_MAX_LAYERS = 8
 
 
 def _strip_null_bytes(text: str) -> str:
