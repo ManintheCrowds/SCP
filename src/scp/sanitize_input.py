@@ -293,8 +293,20 @@ def _match_override_phrases(text: str, label: str) -> list[tuple[int, str]]:
     return findings
 
 
+def _match_reversal_phrases(text: str, label: str) -> list[tuple[int, str]]:
+    findings: list[tuple[int, str]] = []
+    for pattern in REVERSAL_PHRASES:
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            findings.append((m.start(), f"{label}:{m.group(0)}"))
+    return findings
+
+
+def _match_evasion_phrases(text: str, label: str) -> list[tuple[int, str]]:
+    return _match_override_phrases(text, label) + _match_reversal_phrases(text, label)
+
+
 def _check_rot_decode(text: str) -> list[tuple[int, str]]:
-    """Decode-then-inspect: flag if ROT13/ROT47/generic ROT-N decoded text matches injection phrases."""
+    """Decode-then-inspect: flag if ROT-decoded text matches safety-control phrases."""
     findings: list[tuple[int, str]] = []
     seen: set[tuple[int, str]] = set()
 
@@ -308,14 +320,14 @@ def _check_rot_decode(text: str) -> list[tuple[int, str]]:
         (lambda t: codecs.decode(t, 'rot_13'), 'rot13'),
         (_rot47, 'rot47'),
     ]:
-        _add(_match_override_phrases(decoder(text), label))
+        _add(_match_evasion_phrases(decoder(text), label))
 
     alpha_chars = sum(1 for c in text if c.isalpha())
     if alpha_chars >= 20:
         for shift in range(1, 26):
             if shift == 13:
                 continue
-            _add(_match_override_phrases(_caesar_decode(text, shift), f'rot{shift}'))
+            _add(_match_evasion_phrases(_caesar_decode(text, shift), f'rot{shift}'))
 
     for m in _ALPHA_RUN.finditer(text):
         run = m.group(0)
@@ -323,7 +335,7 @@ def _check_rot_decode(text: str) -> list[tuple[int, str]]:
         for shift in range(1, 26):
             if shift == 13:
                 continue
-            for item in _match_override_phrases(_caesar_decode(run, shift), f'rot{shift}'):
+            for item in _match_evasion_phrases(_caesar_decode(run, shift), f'rot{shift}'):
                 keyed = (base + item[0], item[1])
                 if keyed not in seen:
                     seen.add(keyed)
@@ -395,6 +407,13 @@ def _prepare_text_for_scan(text: str) -> str:
     prepared = _collapse_json_letter_arrays(prepared)
     prepared = _append_decoded_base64_snippets(prepared)
     return prepared
+
+
+def _scan_nested_encoding_overflow(text: str) -> list[tuple[int, str]]:
+    """Flag inputs that still canonicalize after the bounded decode loop."""
+    if _canonicalize_scan_layer(text) == text:
+        return []
+    return [(0, "nested_encoding_depth_exceeded")]
 
 # Hostile UX: swearing, insults, abrasive feedback. Classified but passes (same as clean).
 HOSTILE_UX_PATTERNS = [
@@ -745,6 +764,7 @@ def scan_jailbreak_mythic(text: str) -> list[tuple[int, str]]:
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
     scan_text = _prepare_text_for_scan(text)
+    nested_encoding_findings = _scan_nested_encoding_overflow(scan_text)
     override_findings = scan_override_phrases(scan_text)
     leetspeak_findings = scan_leetspeak(scan_text)
     unicode_findings = scan_hidden_unicode(text)
@@ -764,6 +784,7 @@ def classify(text: str) -> dict:
     injection_any = (
         override_findings or leetspeak_findings or unicode_findings
         or null_findings or path_traversal_findings or rot_findings
+        or nested_encoding_findings
     )
     reversal_any = (
         reversal_findings or power_findings or morse_findings or encoding_findings
@@ -778,6 +799,7 @@ def classify(text: str) -> dict:
         ("hidden_unicode", unicode_findings), ("null_byte", null_findings),
         ("path_traversal", path_traversal_findings),
         ("encoding_evasion_rot", rot_findings),
+        ("encoding_evasion_nested", nested_encoding_findings),
         ("power_words", power_findings), ("morse_like", morse_findings),
         ("encoding_blocks", encoding_findings), ("homoglyphs", homoglyph_findings),
         ("multilingual_override", multi_findings), ("semantic_aliases", alias_findings),
@@ -802,6 +824,7 @@ def classify(text: str) -> dict:
         "null_byte": [(p, str(ph)) for p, ph in null_findings],
         "path_traversal": [(p, str(ph)) for p, ph in path_traversal_findings],
         "encoding_evasion_rot": [(p, str(ph)) for p, ph in rot_findings],
+        "encoding_evasion_nested": [(p, str(ph)) for p, ph in nested_encoding_findings],
         "reversal_phrases": [(p, str(ph)) for p, ph in reversal_findings],
         "power_words": [(p, str(ph)) for p, ph in power_findings],
         "morse_like": [(p, str(ph)) for p, ph in morse_findings],
