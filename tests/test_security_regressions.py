@@ -44,6 +44,18 @@ def test_classify_many_backticks_completes_quickly() -> None:
     assert time.perf_counter() - t0 < 5.0
 
 
+def test_scan_encoding_blocks_long_alpha_run_completes_quickly() -> None:
+    s = "Z" * 50_000
+    t0 = time.perf_counter()
+    sanitize_input.scan_encoding_blocks(s)
+    assert time.perf_counter() - t0 < 0.5
+
+
+def test_scan_encoding_blocks_still_flags_padded_base64() -> None:
+    findings = sanitize_input.scan_encoding_blocks("prefix QUJDREVGR0hJSktMTU5P== suffix")
+    assert any("QUJDREVGR0hJSktMTU5P" in phrase for _, phrase in findings)
+
+
 def test_mask_long_almost_email_completes_quickly() -> None:
     s = ("a" * 100_000) + "@example.com"
     t0 = time.perf_counter()

@@ -406,7 +406,7 @@ HOSTILE_UX_PATTERNS = [
 ]
 
 MORSE_PATTERN = re.compile(r"[.-]{3,}")
-ENCODING_BASE64 = re.compile(r"(?=[A-Za-z0-9+/]*[+/=])[A-Za-z0-9+/]{16,}={0,2}")
+ENCODING_BASE64 = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{16,}={0,2}(?![A-Za-z0-9+/=])")
 ENCODING_HEX = re.compile(r"\b(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{16,}\b")
 
 _SCRIPT_LATIN = range(0x0041, 0x007B)
@@ -655,14 +655,22 @@ def _valid_base64_decode(blob: str) -> bool:
     return bool(text) and sum(1 for c in text if c.isprintable() or c in "\n\r\t") >= len(text) * 0.9
 
 
+def _has_base64_marker(blob: str) -> bool:
+    return "+" in blob or "/" in blob or blob.endswith("=")
+
+
 def scan_encoding_blocks(text: str) -> list[tuple[int, str]]:
     findings = []
-    for pat in (ENCODING_BASE64, ENCODING_HEX):
-        for m in pat.finditer(text):
-            matched = m.group(0)
-            if pat == ENCODING_BASE64 and (_looks_like_path(matched) or _looks_like_identifier_or_constant(matched)):
-                continue
-            findings.append((m.start(), matched[:50] + ("..." if len(matched) > 50 else "")))
+    for m in ENCODING_BASE64.finditer(text):
+        matched = m.group(0)
+        if not _has_base64_marker(matched):
+            continue
+        if _looks_like_path(matched) or _looks_like_identifier_or_constant(matched):
+            continue
+        findings.append((m.start(), matched[:50] + ("..." if len(matched) > 50 else "")))
+    for m in ENCODING_HEX.finditer(text):
+        matched = m.group(0)
+        findings.append((m.start(), matched[:50] + ("..." if len(matched) > 50 else "")))
     for m in _B64_CANDIDATE.finditer(text):
         matched = m.group(0).rstrip("=")
         if len(matched) < 24:
