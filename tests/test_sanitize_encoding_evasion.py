@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import codecs
+import time
 
 from scp.sanitize_input import (
     _append_decoded_base64_snippets,
@@ -307,6 +308,14 @@ class TestBase64Chains:
         layer2 = base64.b64encode(layer1.encode()).decode()
         result = classify(layer2)
         assert result["tier"] == "injection"
+
+    def test_long_alpha_run_classifies_without_quadratic_base64_scan(self) -> None:
+        start = time.perf_counter()
+        result = classify("Z" * 32_000)
+        elapsed = time.perf_counter() - start
+
+        assert result["tier"] == "clean"
+        assert elapsed < 1.0
 
 
 class TestGenericRotN:
