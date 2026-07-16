@@ -406,7 +406,7 @@ HOSTILE_UX_PATTERNS = [
 ]
 
 MORSE_PATTERN = re.compile(r"[.-]{3,}")
-ENCODING_BASE64 = _B64_CANDIDATE
+ENCODING_BASE64 = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
 ENCODING_HEX = re.compile(r"\b(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{16,}\b")
 
 _SCRIPT_LATIN = range(0x0041, 0x007B)
