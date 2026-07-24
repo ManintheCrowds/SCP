@@ -20,7 +20,7 @@ EXPECTED_SCP_MCP_V1_1_SHA256 = (
 
 # Synced with OpenHarness docs/contracts/scp_antigen_mcp_v1.md
 EXPECTED_SCP_ANTIGEN_MCP_V1_SHA256 = (
-    "bc44c12956fe1c819220b02069ead357ccea0ca3b72774d47ec12590a965c64b"
+    "5de6660504cb3b215085c586fca3873eb76d4306327c3f6da4ba2731e560f8c5"
 )
 
 

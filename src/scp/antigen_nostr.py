@@ -20,6 +20,7 @@ import requests
 from . import antigen
 from . import antigen_l402 as l402
 from . import http_policy
+from . import operator_consent
 
 # Parameterized-replaceable kind (30000–39999); ADR 2026-06-29 / operator lock 2026-06-30.
 ANTIGEN_NOSTR_KIND = 30078
@@ -66,12 +67,19 @@ class FetchError(Exception):
 # --------------------------------------------------------------------------- env / keys
 
 def _load_relays(relays: list[str] | None) -> tuple[str, ...]:
-    if relays:
-        return tuple(r.strip() for r in relays if r.strip())
-    env = os.environ.get("SCP_ANTIGEN_RELAYS")
-    if env:
-        return tuple(r.strip() for r in env.split(",") if r.strip())
-    return DEFAULT_RELAYS
+    """Resolve relays; under MCP require SCP_ANTIGEN_RELAY_ALLOWLIST (fail-closed)."""
+    env_defaults = os.environ.get("SCP_ANTIGEN_RELAYS")
+    defaults: tuple[str, ...] = (
+        tuple(r.strip() for r in env_defaults.split(",") if r.strip())
+        if env_defaults
+        else DEFAULT_RELAYS
+    )
+    require_env = operator_consent.mcp_transport_active()
+    return http_policy.filter_relays(
+        relays,
+        require_env_allowlist=require_env,
+        fallback_defaults=defaults,
+    )
 
 
 def _normalize_seckey(seckey: str) -> str:
@@ -220,10 +228,15 @@ def _content_from_manifest(manifest: dict) -> str:
 def build_announcement_event(
     bundle: dict,
     *,
-    seckey_hex: str,
+    seckey_hex: str | None = None,
     created_at: int | None = None,
+    sign: bool = True,
 ) -> dict:
-    """Build and sign a kind-30078 antigen announcement from a verified bundle."""
+    """Build a kind-30078 antigen announcement from a verified bundle.
+
+    When sign=False, returns an unsigned event preview (no production key use).
+    When sign=True, seckey_hex is required.
+    """
     manifest = bundle["manifest"]
     issuer = str(manifest.get("issuer_pubkey", "")).lower()
     v = antigen.verify_bundle(
@@ -247,7 +260,12 @@ def build_announcement_event(
         "tags": _tags_from_manifest(manifest, payload_size),
         "content": _content_from_manifest(manifest),
         "created_at": int(created_at if created_at is not None else time.time()),
+        "pubkey": issuer if _HEX64.match(issuer) else "",
     }
+    if not sign:
+        return unsigned
+    if not seckey_hex:
+        raise ValueError("seckey_hex required when sign=True")
     return sign_event(unsigned, seckey_hex=seckey_hex)
 
 
@@ -394,6 +412,9 @@ class WebSocketRelayTransport:
         msg = json.dumps(["EVENT", event])
         errors: list[str] = []
         for relay in relays:
+            if not http_policy.relay_url_safe(relay):
+                errors.append(f"{relay}: relay_blocked")
+                continue
             try:
                 conn = ws.create_connection(relay, timeout=10)
                 try:
@@ -417,6 +438,8 @@ class WebSocketRelayTransport:
         for relay in relays:
             if time.time() >= deadline:
                 break
+            if not http_policy.relay_url_safe(relay):
+                continue
             try:
                 conn = ws.create_connection(relay, timeout=min(10, timeout_s))
                 try:
@@ -461,21 +484,67 @@ def publish_announcement(
     relays: list[str] | None = None,
     transport: RelayTransport | None = None,
     dry_run: bool = False,
+    approve: bool = False,
+    allow_env_seckey: bool = True,
+    skip_consent_check: bool = False,
 ) -> dict:
-    key = _normalize_seckey(seckey_hex or seckey_from_env() or "")
-    if not key:
-        raise ValueError("seckey_hex or NOSTR_SECKEY required for publish")
-    relay_list = _load_relays(relays)
-    event = build_announcement_event(bundle, seckey_hex=key)
+    """Publish a verified antigen bundle as a nostr kind-30078 announcement.
+
+    Dual gate for live publish: approve=True + SCP_ANTIGEN_PUBLISH_CONSENT=1
+    (unless skip_consent_check — used by contribute after SCP_CONTRIBUTE_CONSENT).
+    dry_run returns an unsigned event preview and never signs with production keys.
+    """
     manifest = bundle["manifest"]
+    relay_list = _load_relays(relays)
+    if operator_consent.mcp_transport_active() and not relay_list:
+        return {
+            "published": False,
+            "reason": "empty_relay_allowlist",
+            "relays": [],
+        }
+
     if dry_run:
+        event = build_announcement_event(bundle, sign=False)
         antigen._audit(
             "nostr_publish_dry_run",
             antigen_id=manifest["antigen_id"],
             payload_hash=manifest["payload_content_hash"],
-            event_id=event["id"],
+            signed=False,
         )
-        return {"published": False, "dry_run": True, "event": event, "relays": list(relay_list)}
+        return {
+            "published": False,
+            "dry_run": True,
+            "signed": False,
+            "event": event,
+            "relays": list(relay_list),
+        }
+
+    if not approve:
+        return {
+            "published": False,
+            "reason": "approval_required",
+            "proposal": {
+                "antigen_id": manifest.get("antigen_id"),
+                "payload_hash": manifest.get("payload_content_hash"),
+            },
+        }
+
+    if not skip_consent_check and not operator_consent.consent_attested(
+        operator_consent.PUBLISH_CONSENT_ENV
+    ):
+        return {
+            "published": False,
+            "reason": "consent_required",
+            "env": operator_consent.PUBLISH_CONSENT_ENV,
+        }
+
+    key_raw = seckey_hex
+    if not key_raw and allow_env_seckey:
+        key_raw = seckey_from_env()
+    if not key_raw:
+        raise ValueError("seckey_hex or NOSTR_SECKEY required for publish")
+    key = _normalize_seckey(key_raw)
+    event = build_announcement_event(bundle, seckey_hex=key, sign=True)
 
     tx = transport or _default_transport()
     tx.publish(event, relays=relay_list)
@@ -556,11 +625,10 @@ def _build_l402_metadata(resp: requests.Response) -> dict:
     return meta
 
 
-def _resolve_fetch_host_allowlist(host_allowlist: list[str] | None) -> list[str]:
-    if host_allowlist is not None:
-        return [h.strip() for h in host_allowlist if h and h.strip()]
-    env = os.environ.get("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "")
-    return [a.strip() for a in env.split(",") if a.strip()]
+def _resolve_fetch_host_allowlist(host_allowlist: list[str] | None = None) -> list[str]:
+    """Env-only HTTPS destinations (SCP_ANTIGEN_FETCH_HOST_ALLOWLIST). Caller hosts ignored."""
+    _ = host_allowlist  # retained for call-site compat; never expands destinations
+    return http_policy.env_fetch_host_allowlist()
 
 
 def _fetch_response(
@@ -651,14 +719,15 @@ def fetch_payload(
     antigen_id: str | None = None,
     session: requests.Session | None = None,
     host_allowlist: list[str] | None = None,
+    allow_env_l402_token: bool = True,
 ) -> dict:
     """Fetch HTTPS payload, verify sha256 (bare hex).
 
     On 402 without l402_token, raise FetchError with parsed L402 challenge metadata.
     When l402_token is supplied, send Authorization on the request (operator-paid retry).
 
-    Production: host must be on SCP_ANTIGEN_FETCH_HOST_ALLOWLIST or host_allowlist
-    (fail-closed). Regtest envs use localhost assert instead.
+    Host allowlist is env-only (SCP_ANTIGEN_FETCH_HOST_ALLOWLIST); host_allowlist arg ignored.
+    MCP should pass allow_env_l402_token=False so SCP_ANTIGEN_L402_TOKEN is never auto-attached.
     """
     if not _HEX64.match(expected_hash_bare_hex):
         raise FetchError("bad_expected_hash")
@@ -675,7 +744,10 @@ def fetch_payload(
         if not http_policy.host_allowed(url, hosts):
             raise FetchError("host_not_on_allowlist")
 
-    token = l402_token or l402.l402_token_from_env()
+    token = l402_token
+    if token is None and allow_env_l402_token:
+        # Only attach env token when destination is already on operator env allowlist.
+        token = l402.l402_token_from_env()
     sess = http_policy.outbound_session(session)
     try:
         resp = _fetch_response(sess, url, l402_token=token)

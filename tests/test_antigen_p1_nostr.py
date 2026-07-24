@@ -108,7 +108,9 @@ def test_empty_allowlist_discover_returns_empty(issuer):
 def test_inmemory_relay_publish_subscribe(issuer):
     bundle = _signed_bundle(issuer)
     mem = nostr.InMemoryRelayTransport()
-    nostr.publish_announcement(bundle, seckey_hex=SECKEY, relays=[], transport=mem)
+    nostr.publish_announcement(
+        bundle, seckey_hex=SECKEY, relays=[], transport=mem, approve=True, skip_consent_check=True
+    )
     assert len(mem.events) == 1
 
     found = nostr.discover_announcements(
@@ -202,6 +204,9 @@ def test_publish_dry_run(issuer):
     bundle = _signed_bundle(issuer)
     out = nostr.publish_announcement(bundle, seckey_hex=SECKEY, relays=[], dry_run=True)
     assert out["dry_run"] is True
+    assert out.get("signed") is False
+    assert "sig" not in out["event"]
+    assert "id" not in out["event"]
     assert out["published"] is False
     assert "event" in out
 

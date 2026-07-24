@@ -26,11 +26,23 @@ def isolated_ssot(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SCP_THREAT_REGISTRY_PATH", str(tmp_path / "projection.json"))
     monkeypatch.setenv("SCP_ANTIGEN_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "quarantine"))
+    monkeypatch.setenv("SCP_REGISTRY_MERGE_CONSENT", "1")
     monkeypatch.delenv("SCP_REGISTRY_MERGE_DEV_AUTO", raising=False)
     return tmp_path
 
 
-def test_diff_add_and_conflict():
+def test_apply_merge_requires_consent(isolated_ssot, monkeypatch):
+    monkeypatch.delenv("SCP_REGISTRY_MERGE_CONSENT", raising=False)
+    snap = {
+        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
+        "registry_version": "2026-07-02T00:00:00Z",
+        "patterns": [_rec("merge.consent.001")],
+    }
+    qfile = isolated_ssot / "q-consent.json"
+    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+    res = registry_ssot.apply_merge(qfile, approve=True)
+    assert res["merged"] is False
+    assert res["reason"] == "consent_required"
     registry_ssot.save_ssot([_rec("existing.001", norm="local-token")])
     remote = [_rec("existing.001", norm="remote-token"), _rec("new.001")]
     d = registry_ssot.diff_snapshot(remote)

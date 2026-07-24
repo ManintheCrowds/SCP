@@ -19,6 +19,7 @@ def isolated_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("SCP_THREAT_REGISTRY_PATH", str(proj))
     monkeypatch.setenv("SCP_ANTIGEN_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "quarantine"))
+    monkeypatch.setenv("SCP_REGISTRY_MERGE_CONSENT", "1")
     monkeypatch.delenv("SCP_REGISTRY_MERGE_DEV_AUTO", raising=False)
     return tmp_path
 

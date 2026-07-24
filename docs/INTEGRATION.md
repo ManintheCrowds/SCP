@@ -150,7 +150,7 @@ $env:SCP_MYCELIUM_LIVE_E2E = "1"
 python -m pytest tests/test_mycelium_live_e2e.py -v
 ```
 
-See [SCP_R6_PRIVACY_CONSENT.md](SCP_R6_PRIVACY_CONSENT.md) — Path B publish requires `SCP_CONTRIBUTE_CONSENT=1` and `SCP_CONTRIBUTE_HOST_ALLOWLIST` (destination hosts). Antigen HTTPS fetch requires `SCP_ANTIGEN_FETCH_HOST_ALLOWLIST` (or host entries in the MCP `allowlist` arg).
+See [SCP_R6_PRIVACY_CONSENT.md](SCP_R6_PRIVACY_CONSENT.md) — Path B publish requires `SCP_CONTRIBUTE_CONSENT=1` and `SCP_CONTRIBUTE_HOST_ALLOWLIST` (destination hosts). Antigen HTTPS fetch requires `SCP_ANTIGEN_FETCH_HOST_ALLOWLIST` (env-only; MCP cannot expand hosts). Antigen publish requires `SCP_ANTIGEN_PUBLISH_CONSENT=1` (also required for MCP `scp_contribute_pattern` nostr/both). Registry merge/apply requires `SCP_REGISTRY_MERGE_CONSENT=1`. Relays for MCP require `SCP_ANTIGEN_RELAY_ALLOWLIST`.
 
 ### Nostr discovery announce (R2 step 7)
 

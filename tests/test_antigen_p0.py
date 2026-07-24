@@ -39,6 +39,7 @@ def isolated_env(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "quarantine"))
     monkeypatch.setenv("SCP_ANTIGEN_AUDIT_LOG", str(tmp_path / "antigen_audit.jsonl"))
     monkeypatch.setenv("SCP_THREAT_REGISTRY_PATH", str(tmp_path / "registry.json"))
+    monkeypatch.setenv("SCP_REGISTRY_MERGE_CONSENT", "1")
     monkeypatch.delenv("SCP_ANTIGEN_ISSUER_ALLOWLIST", raising=False)
     monkeypatch.delenv("SCP_ANTIGEN_ALLOWLIST_FILE", raising=False)
     return tmp_path

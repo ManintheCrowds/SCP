@@ -27,6 +27,7 @@ Extends R3 two-phase consent ([SCP_R3_CONTRIBUTE_FLOW.md](SCP_R3_CONTRIBUTE_FLOW
 | **Attestation (R6)** | `SCP_CONTRIBUTE_CONSENT=1` | Operator confirms contribution guidelines read (env, not agent-settable default) |
 | **Host allowlist** | `SCP_CONTRIBUTE_HOST_ALLOWLIST` | Fail-closed destination hosts for HTTPS POST (consent ≠ host trust) |
 | **Publish** | `approve=true` + attestation | nostr and/or HTTPS submit |
+| **MCP nostr dual-gate** | Under MCP, nostr/both also requires `SCP_ANTIGEN_PUBLISH_CONSENT=1` | Prevents contribute from bypassing antigen publish consent |
 
 Production default: **no dev auto-submit**. No env bypasses `approve=true` for network publish (unlike R4 `SCP_REGISTRY_MERGE_DEV_AUTO`, which applies only to **inbound** merge).
 
@@ -119,7 +120,7 @@ Fetch/merge failure → packaged registry unchanged (R4 recovery).
 
 ## merge_policy.json (future)
 
-Operator-local custom merge rules (R1 pointer): `~/.scp/merge_policy.json` — schema TBD; production merge remains `approve=true` on `scp_apply_registry_quarantine`.
+Operator-local custom merge rules (R1 pointer): `~/.scp/merge_policy.json` — schema TBD; production merge remains `approve=true` **plus** `SCP_REGISTRY_MERGE_CONSENT=1` on `scp_apply_registry_quarantine` / `scp_antigen_merge`.
 
 ---
 

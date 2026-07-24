@@ -35,7 +35,7 @@ def _minimal_snapshot() -> dict:
     return pr.build_registry_snapshot([rec], registry_version="2026-01-01T00:00:00Z")
 
 
-def test_announce_snapshot_dry_run_returns_pubkey_and_event_id():
+def test_announce_snapshot_dry_run_returns_pubkey_unsigned():
     snapshot = _minimal_snapshot()
     session = MagicMock()
     session.get.return_value = MagicMock(
@@ -56,8 +56,10 @@ def test_announce_snapshot_dry_run_returns_pubkey_and_event_id():
     expected_pubkey = antigen._pubkey_hex(bytes.fromhex(SECKEY))
     assert result["ok"] is True
     assert result["dry_run"] is True
+    assert result["signed"] is False
     assert result["issuer_pubkey"] == expected_pubkey
-    assert result["event_id"]
+    assert result["event_id"] == ""
+    assert result["published"] is False
     assert result["pattern_count"] == 1
     session.get.assert_called_once_with(PAYLOAD_URL, timeout=30)
 
