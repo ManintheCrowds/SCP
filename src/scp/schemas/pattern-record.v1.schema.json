@@ -45,7 +45,13 @@
     },
     "source_ref": {
       "type": "object",
-      "additionalProperties": true
+      "additionalProperties": false,
+      "properties": {
+        "lang": {
+          "type": "string",
+          "pattern": "^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$"
+        }
+      }
     },
     "registry_bucket": {
       "type": "string"

@@ -12,6 +12,12 @@ import requests
 from scp.ollama_url_guard import validate_ollama_base_url
 
 
+def _post_ollama(endpoint: str, body: dict, headers: dict) -> requests.Response:
+    with requests.Session() as session:
+        session.trust_env = False
+        return session.post(endpoint, json=body, headers=headers, timeout=30, allow_redirects=False)
+
+
 def judge(content: str, sink: str) -> dict:
     if sink not in ("handoff", "state"):
         return {"suspicious": False, "reason": "sink not handoff/state"}
@@ -42,7 +48,7 @@ Text:
         headers["Authorization"] = f"Bearer {token}"
 
     try:
-        r = requests.post(endpoint, json=body, headers=headers, timeout=30, allow_redirects=False)
+        r = _post_ollama(endpoint, body, headers)
         if 300 <= r.status_code < 400:
             return {"suspicious": False, "reason": "Ollama redirect not allowed; judge skipped (fail-open)"}
         r.raise_for_status()

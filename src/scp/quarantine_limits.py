@@ -139,11 +139,17 @@ def prepare_quarantine_write(qdir: Path, content_utf8_bytes: int, meta_utf8_byte
             "SCP_QUARANTINE_MAX_CONTENT_BYTES must not exceed SCP_QUARANTINE_MAX_TOTAL_BYTES"
         )
 
+    incoming = content_utf8_bytes + meta_utf8_bytes
+    if incoming > max_t:
+        raise ValueError(
+            f"quarantine entry ({incoming} bytes) exceeds "
+            f"SCP_QUARANTINE_MAX_TOTAL_BYTES ({max_t})"
+        )
+
     days = retention_days_on_write()
     if days is not None:
         purge_older_than(qdir, days)
 
-    incoming = content_utf8_bytes + meta_utf8_bytes
     total = total_quarantine_bytes(qdir)
     if total + incoming <= max_t:
         return

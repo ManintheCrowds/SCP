@@ -18,6 +18,10 @@ DEFAULT_MAX_DRIFT = 0.15
 DEFAULT_DEV_AUTO_CATEGORIES = frozenset({"injection"})
 
 
+class SsotCorruptError(ValueError):
+    """Raised when an on-disk SSOT file exists but cannot be loaded safely."""
+
+
 def _ssot_path() -> Path:
     env = os.environ.get("SCP_PATTERN_SSOT_PATH")
     if env:
@@ -37,32 +41,79 @@ def load_ssot() -> list[dict]:
     path = _ssot_path()
     if not path.is_file():
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        # Fail closed: never pretend a corrupt/unreadable store is empty —
+        # that would let apply_merge wipe local patterns on the next write.
+        raise SsotCorruptError(f"corrupt or unreadable SSOT at {path}: {exc}") from exc
     if isinstance(data, dict) and isinstance(data.get("patterns"), list):
         return list(data["patterns"])
     if isinstance(data, list):
         return data
-    return []
+    raise SsotCorruptError(f"invalid SSOT shape at {path}")
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _restore_projection(path: Path, previous_text: str | None) -> None:
+    """Best-effort undo of a projection write after SSOT commit failure."""
+    try:
+        if previous_text is None:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.restore.tmp")
+        try:
+            tmp.write_text(previous_text, encoding="utf-8")
+            os.replace(tmp, path)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def save_ssot(patterns: list[dict]) -> None:
     path = _ssot_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_revision": "scp.pattern_ssot.v1",
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "patterns": patterns,
     }
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _write_json_atomic(path, payload)
 
 
 def _detector_key(detector: dict) -> str:
     return json.dumps(detector, sort_keys=True, separators=(",", ":"))
 
 
-def diff_snapshot(patterns: list[dict]) -> dict:
+def diff_snapshot(
+    patterns: list[dict],
+    *,
+    local_patterns: list[dict] | None = None,
+) -> dict:
     """Diff remote snapshot vs local SSOT. Returns add/conflict/drift_max/risk_breakdown."""
-    local = {p["pattern_id"]: p for p in load_ssot() if isinstance(p, dict) and p.get("pattern_id")}
+    if local_patterns is None:
+        local_patterns = load_ssot()
+    local = {
+        p["pattern_id"]: p
+        for p in local_patterns
+        if isinstance(p, dict) and p.get("pattern_id")
+    }
     adds: list[str] = []
     conflicts: list[dict] = []
     drift_max = 0.0
@@ -161,7 +212,11 @@ def apply_merge(
         _audit("pattern_rejected_anonymization", quarantine_path=str(quarantine_path), error_count=len(pv["errors"]))
         return {"merged": False, "reason": "pattern_validation_failed", "errors": pv["errors"]}
 
-    diff_info = diff_snapshot(patterns)
+    try:
+        local_patterns = load_ssot()
+        diff_info = diff_snapshot(patterns, local_patterns=local_patterns)
+    except SsotCorruptError as exc:
+        return {"merged": False, "reason": "ssot_corrupt", "error": str(exc)}
     if diff_info["conflict_count"] > 0 and not approve:
         return {
             "merged": False,
@@ -177,7 +232,7 @@ def apply_merge(
             "proposal": diff_info,
         }
 
-    local = {p["pattern_id"]: p for p in load_ssot() if p.get("pattern_id")}
+    local = {p["pattern_id"]: p for p in local_patterns if p.get("pattern_id")}
     applied = 0
     auto_applied = 0
     skipped = 0
@@ -209,12 +264,23 @@ def apply_merge(
         return {"merged": False, "reason": "nothing_to_merge", "proposal": diff_info}
 
     merged_list = list(local.values())
-    save_ssot(merged_list)
 
+    # Projection first so SSOT is not committed without a successful projection
+    # write; roll projection back if SSOT then fails (avoid split-brain).
     projection = pr.project_to_registry(merged_list)
     proj_path = _projection_path()
-    proj_path.parent.mkdir(parents=True, exist_ok=True)
-    proj_path.write_text(json.dumps(projection, indent=2, ensure_ascii=False), encoding="utf-8")
+    previous_projection: str | None = None
+    if proj_path.is_file():
+        try:
+            previous_projection = proj_path.read_text(encoding="utf-8")
+        except OSError:
+            previous_projection = None
+    _write_json_atomic(proj_path, projection)
+    try:
+        save_ssot(merged_list)
+    except Exception:
+        _restore_projection(proj_path, previous_projection)
+        raise
 
     if auto_applied:
         _audit(

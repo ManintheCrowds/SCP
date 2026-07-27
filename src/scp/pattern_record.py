@@ -16,6 +16,8 @@ RISK_TIERS = frozenset({"low", "medium", "high", "critical"})
 DETECTOR_KINDS = frozenset({"token_family", "regex_family", "semantic_alias", "structural"})
 CONTAINMENT_ACTIONS = frozenset({"sanitize", "quarantine", "block"})
 REGISTRY_SNAPSHOT_REVISION = "scp.registry_snapshot.v1"
+_SOURCE_REF_KEYS = frozenset({"lang"})
+_SOURCE_REF_LANG_RE = re.compile(r"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$")
 
 _CATEGORY_DEFAULT_BUCKET: dict[str, str] = {
     "injection": "power_words",
@@ -190,6 +192,20 @@ def validate_pattern_record(record: dict) -> dict:
     bucket = record.get("registry_bucket")
     if bucket is not None and (not isinstance(bucket, str) or not bucket.strip()):
         errors.append("invalid_registry_bucket")
+
+    source_ref = record.get("source_ref")
+    if source_ref is not None:
+        if not isinstance(source_ref, dict):
+            errors.append("invalid_source_ref")
+        else:
+            extra_keys = set(source_ref) - _SOURCE_REF_KEYS
+            if extra_keys:
+                errors.append("invalid_source_ref")
+            lang = source_ref.get("lang")
+            if lang is not None and (
+                not isinstance(lang, str) or not _SOURCE_REF_LANG_RE.match(lang)
+            ):
+                errors.append("invalid_source_ref_lang")
 
     return {"valid": len(errors) == 0, "errors": errors}
 
