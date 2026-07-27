@@ -94,15 +94,19 @@ def announce_snapshot(
         relays=relays,
         transport=relay_transport,
         dry_run=dry_run,
+        approve=not dry_run,
+        skip_consent_check=True,  # operator CLI; consent is running this script
     )
+    event = pub.get("event") or {}
     return {
         "ok": True,
         "dry_run": dry_run,
+        "signed": pub.get("signed", not dry_run),
         "payload_url": payload_url,
         "antigen_id": antigen_id,
         "issuer_pubkey": issuer_pubkey,
-        "event_id": pub.get("event_id") or pub.get("event", {}).get("id", ""),
-        "published": pub.get("published", not dry_run),
+        "event_id": pub.get("event_id") or event.get("id", ""),
+        "published": pub.get("published", False),
         "relays": pub.get("relays", []),
         "pattern_count": len(records),
         "etag": snapshot.get("etag"),

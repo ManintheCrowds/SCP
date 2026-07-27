@@ -82,6 +82,7 @@ def _cmd_publish(args) -> dict:
         seckey_hex=seckey,
         relays=relays,
         dry_run=args.dry_run,
+        approve=not args.dry_run,
     )
 
 

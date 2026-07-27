@@ -59,11 +59,14 @@ def _encounter_dir() -> Path | None:
 
 
 def _sanitize_for_log(content: str, tier: str) -> str:
-    """Light sanitize for log body — full SCP gate already ran in inspect."""
+    """Redact secrets then truncate for durable encounter logs."""
+    from . import mask_secrets
+
+    redacted = mask_secrets.mask(content)
     if tier == "injection":
-        preview = content[:500]
+        preview = redacted[:500]
         return f"[auto] SCP injection-tier detection (preview truncated)\n{preview}"
-    return f"[auto] SCP reversal-tier detection\n{content[:2000]}"
+    return f"[auto] SCP reversal-tier detection\n{redacted[:2000]}"
 
 
 def maybe_log_encounter(

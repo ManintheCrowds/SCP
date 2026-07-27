@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import antigen
+from . import operator_consent
 from . import pattern_record as pr
 from . import registry_paths
 
@@ -149,6 +150,8 @@ def diff_snapshot(
 
 
 def _dev_auto_enabled() -> bool:
+    if operator_consent.mcp_transport_active():
+        return False
     return os.environ.get("SCP_REGISTRY_MERGE_DEV_AUTO") == "1"
 
 
@@ -221,6 +224,14 @@ def apply_merge(
         return {
             "merged": False,
             "reason": "conflicts_require_operator",
+            "proposal": diff_info,
+        }
+
+    if approve and not operator_consent.consent_attested(operator_consent.MERGE_CONSENT_ENV):
+        return {
+            "merged": False,
+            "reason": "consent_required",
+            "env": operator_consent.MERGE_CONSENT_ENV,
             "proposal": diff_info,
         }
 

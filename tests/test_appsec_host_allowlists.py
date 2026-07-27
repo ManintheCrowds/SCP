@@ -114,7 +114,23 @@ def test_mcp_fetch_rejects_empty_allowlist_before_network(monkeypatch):
     get.assert_not_called()
 
 
-def test_mcp_fetch_uses_allowlist_hosts(monkeypatch):
+def test_mcp_fetch_caller_host_cannot_expand_allowlist(monkeypatch):
+    """Caller allowlist hosts are ignored; only env hosts count."""
+    monkeypatch.delenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", raising=False)
+    bare = "b" * 64
+    with patch("scp.antigen_nostr.requests.Session.get") as get:
+        out = json.loads(
+            antigen_mcp.scp_antigen_fetch(
+                PAYLOAD_URL, bare, allowlist="example.com"
+            )
+        )
+    assert out["ok"] is False
+    assert out["error"] == "host_not_on_allowlist"
+    get.assert_not_called()
+
+
+def test_mcp_fetch_uses_env_host_allowlist(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
     payload = {"patterns": _patterns()}
     bare = antigen.compute_payload_hash(payload)[7:]
     mock_resp = MagicMock()
@@ -124,11 +140,32 @@ def test_mcp_fetch_uses_allowlist_hosts(monkeypatch):
 
     with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
         out = json.loads(
-            antigen_mcp.scp_antigen_fetch(
-                PAYLOAD_URL, bare, allowlist="example.com"
-            )
+            antigen_mcp.scp_antigen_fetch(PAYLOAD_URL, bare, allowlist="ignored.example")
         )
     assert out["ok"] is True
+
+
+def test_mcp_fetch_does_not_auto_attach_env_l402(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    monkeypatch.setenv("SCP_ANTIGEN_L402_TOKEN", "mac:preimagehex")
+    bare = "c" * 64
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"patterns": _patterns()}
+    mock_resp.headers = {}
+    # force hash mismatch path after get — capture headers instead
+    captured: dict = {}
+
+    def fake_get(*args, **kwargs):
+        captured["headers"] = kwargs.get("headers") or {}
+        mock_resp.json.return_value = {"patterns": _patterns()}
+        # make hash fail after fetch
+        return mock_resp
+
+    with patch("scp.antigen_nostr.requests.Session.get", side_effect=fake_get):
+        out = json.loads(antigen_mcp.scp_antigen_fetch(PAYLOAD_URL, bare))
+    assert "Authorization" not in captured.get("headers", {})
+    assert out["ok"] is False  # hash mismatch expected
 
 
 def test_contribute_post_rejects_without_host_allowlist():

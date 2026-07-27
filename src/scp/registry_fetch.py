@@ -1,11 +1,10 @@
 # PURPOSE: SCP-R4 parallel fetch path — HTTPS + nostr registry snapshot to quarantine (no auto-merge).
 # DEPENDENCIES: pattern_record, registry_ssot, antigen_l402, antigen_nostr, scp_utils
-# MODIFICATION NOTES: Parallel to antigen_nostr.fetch_payload; see SCP_R4_FETCH_REGISTRY.md
+# MODIFICATION NOTES: AppSec 2026-07-24 — env-only HTTPS hosts for registry fetch
 
 from __future__ import annotations
 
 import json
-import os
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -108,7 +107,9 @@ def _fetch_https(
         raise RegistryFetchError("host_not_on_allowlist")
 
     parsed = urlparse(url)
-    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")):
+    if parsed.scheme != "https" and not (
+        parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")
+    ):
         raise RegistryFetchError("url_must_be_https")
 
     if l402.regtest_fetch_hardening_enabled():
@@ -191,15 +192,29 @@ def fetch_registry(
     transport: nostr.RelayTransport | None = None,
     session: requests.Session | None = None,
 ) -> dict:
-    """Fetch registry snapshot, validate, quarantine. merged is always False."""
+    """Fetch registry snapshot, validate, quarantine. merged is always False.
+
+    HTTPS destinations use env host allowlist only (SCP_REGISTRY_FETCH_HOST_ALLOWLIST
+    or SCP_ANTIGEN_FETCH_HOST_ALLOWLIST). Caller allowlist is issuer pubkeys for nostr.
+    """
     allow = _parse_allowlist(allowlist)
-    if not allow:
-        return {"ok": False, "error": "empty_allowlist", "local_registry_unchanged": True}
+    issuer_allow = http_policy.pubkey_entries(allow)
 
     try:
         if _is_https_source(source):
+            hosts = http_policy.env_registry_host_allowlist()
+            if not hosts:
+                return {
+                    "ok": False,
+                    "error": "empty_host_allowlist",
+                    "local_registry_unchanged": True,
+                }
             fetched = _fetch_https(
-                source, allow, if_none_match=if_none_match, tls_verify=tls_verify, session=session
+                source,
+                hosts,
+                if_none_match=if_none_match,
+                tls_verify=tls_verify,
+                session=session,
             )
             if fetched.get("unchanged"):
                 return {
@@ -216,7 +231,15 @@ def fetch_registry(
                     etag = f"sha256:{etag}" if _HEX64.match(str(etag)) else etag
                 snapshot["etag"] = etag
         else:
-            snapshot = fetch_nostr_registry(source, allow, relays=relays, transport=transport)
+            if not issuer_allow:
+                return {
+                    "ok": False,
+                    "error": "empty_allowlist",
+                    "local_registry_unchanged": True,
+                }
+            snapshot = fetch_nostr_registry(
+                source, issuer_allow, relays=relays, transport=transport
+            )
     except RegistryFetchError as exc:
         return {
             "ok": False,
@@ -236,7 +259,9 @@ def fetch_registry(
 
     pv = pr.validate_snapshot_patterns(snapshot["patterns"])
     if not pv["valid"]:
-        antigen._audit("pattern_rejected_anonymization", source=source, error_count=len(pv["errors"]))
+        antigen._audit(
+            "pattern_rejected_anonymization", source=source, error_count=len(pv["errors"])
+        )
         return {
             "ok": False,
             "error": "pattern_validation_failed",

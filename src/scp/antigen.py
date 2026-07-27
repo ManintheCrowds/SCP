@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import scp_utils
+from . import operator_consent
 
 SCHEMA_REVISION = "scp.pattern_bundle.v0"
 SUPPORTED_PAYLOAD_FORMATS = ("application/json",)  # jsonl/gzip deferred to P1+
@@ -470,6 +471,19 @@ def merge_to_registry(
         return {
             "merged": False,
             "reason": "approval_required",
+            "proposal": {
+                "antigen_id": manifest["antigen_id"],
+                "issuer_pubkey": manifest["issuer_pubkey"],
+                "pattern_count": len(bundle["payload"]["patterns"]),
+                "target": "imported_antigens",
+            },
+        }
+
+    if not operator_consent.consent_attested(operator_consent.MERGE_CONSENT_ENV):
+        return {
+            "merged": False,
+            "reason": "consent_required",
+            "env": operator_consent.MERGE_CONSENT_ENV,
             "proposal": {
                 "antigen_id": manifest["antigen_id"],
                 "issuer_pubkey": manifest["issuer_pubkey"],

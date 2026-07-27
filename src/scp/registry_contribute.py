@@ -22,6 +22,7 @@ from . import antigen
 from . import antigen_l402 as l402
 from . import antigen_nostr as nostr
 from . import http_policy
+from . import operator_consent
 from . import pattern_record as pr
 from . import sanitize_input
 from . import scp_utils
@@ -550,12 +551,17 @@ def _build_and_publish_nostr(
         payload_urls=[_nostr_payload_url(https_url)],
     )
     try:
-        return nostr.publish_announcement(
+        # CLI: SCP_CONTRIBUTE_CONSENT already gated submit. MCP: also require
+        # SCP_ANTIGEN_PUBLISH_CONSENT so contribute cannot bypass publish dual-gate.
+        skip_publish_consent = not operator_consent.mcp_transport_active()
+        out = nostr.publish_announcement(
             signed,
             seckey_hex=key,
             relays=relays,
             transport=relay_transport,
             dry_run=dry_run,
+            approve=not dry_run,
+            skip_consent_check=skip_publish_consent,
         )
     except (ValueError, RuntimeError) as exc:
         detail = str(exc)[:200] if str(exc) else None
@@ -563,6 +569,16 @@ def _build_and_publish_nostr(
             "publish_failed",
             reasons=[detail] if detail else [],
         ) from exc
+    if dry_run:
+        return out
+    if not out.get("published"):
+        reason = str(out.get("reason") or "publish_failed")
+        detail = str(out.get("env") or out.get("reason") or "")[:200] or None
+        raise ContributeError(
+            reason,
+            reasons=[detail] if detail else [],
+        )
+    return out
 
 
 def submit_contribution(
