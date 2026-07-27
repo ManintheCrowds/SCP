@@ -69,6 +69,43 @@ def test_apply_merge_operator_approved(isolated_ssot):
     assert any(p["pattern_id"] == "merge.approved.001" for p in ssot)
 
 
+def test_load_ssot_returns_empty_for_corrupt_json(isolated_ssot):
+    ssot_path = isolated_ssot / "ssot.json"
+    ssot_path.write_text('{"patterns": [', encoding="utf-8")
+
+    assert registry_ssot.load_ssot() == []
+
+
+def test_apply_merge_does_not_commit_ssot_when_projection_write_fails(
+    isolated_ssot,
+    monkeypatch,
+):
+    registry_ssot.save_ssot([_rec("existing.001")])
+    snap = {
+        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
+        "registry_version": "2026-07-02T00:00:00Z",
+        "patterns": [_rec("merge.writefail.001")],
+    }
+    qfile = isolated_ssot / "q_writefail.json"
+    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+
+    original_write_text = Path.write_text
+
+    def fail_projection_write(self, data, *args, **kwargs):
+        if self.name == "projection.json" or self.name.startswith(".projection.json."):
+            raise OSError("projection full")
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_projection_write)
+
+    with pytest.raises(OSError, match="projection full"):
+        registry_ssot.apply_merge(qfile, approve=True)
+
+    ssot = registry_ssot.load_ssot()
+    assert any(p["pattern_id"] == "existing.001" for p in ssot)
+    assert all(p["pattern_id"] != "merge.writefail.001" for p in ssot)
+
+
 def test_dev_auto_low_risk_only(isolated_ssot, monkeypatch):
     monkeypatch.setenv("SCP_REGISTRY_MERGE_DEV_AUTO", "1")
     monkeypatch.setenv("SCP_REGISTRY_MAX_DRIFT", "0.15")

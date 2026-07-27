@@ -66,3 +66,13 @@ def test_validate_snapshot_ok():
     }
     assert pr.validate_snapshot(snap)["valid"] is True
     assert pr.validate_snapshot_patterns(snap["patterns"])["valid"] is True
+
+
+def test_validate_snapshot_rejects_unsafe_source_ref():
+    rec = _valid_record()
+    rec["source_ref"] = {"lang": []}
+
+    result = pr.validate_snapshot_patterns([rec])
+
+    assert result["valid"] is False
+    assert "patterns[0].invalid_source_ref_lang" in result["errors"]

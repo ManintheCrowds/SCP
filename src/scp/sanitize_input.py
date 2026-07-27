@@ -9,6 +9,7 @@ Scan text for prompt-injection patterns and hidden Unicode.
 import base64
 import bisect
 import codecs
+from functools import lru_cache
 import html
 import json
 import re
@@ -178,9 +179,9 @@ _CONFUSABLE_WHITESPACE_RE = re.compile(
 _REGIONAL_INDICATOR_RE = re.compile('[\U0001F1E6-\U0001F1FF]')
 _TAG_CHAR_START = 0xE0000
 _TAG_CHAR_END = 0xE007F
-_ALPHA_RUN = re.compile(r'[A-Za-z]{20,}')
 _B64_MAX_LAYERS = 3
-_CANONICALIZATION_MAX_LAYERS = 4
+# Bounded decode depth for nested URL/HTML evasion (#12 curated).
+_CANONICALIZATION_MAX_LAYERS = 8
 
 
 def _strip_null_bytes(text: str) -> str:
@@ -285,6 +286,53 @@ def _caesar_decode(text: str, shift: int) -> str:
     return ''.join(result)
 
 
+def _caesar_encode_regex(pattern: str, shift: int) -> str:
+    """Encode literal regex letters while preserving regex operators and escapes."""
+    out: list[str] = []
+    escaped = False
+    in_class = False
+    for c in pattern:
+        if escaped:
+            out.append(c)
+            escaped = False
+            continue
+        if c == "\\":
+            out.append(c)
+            escaped = True
+            continue
+        if c == "[":
+            in_class = True
+            out.append(c)
+            continue
+        if c == "]":
+            in_class = False
+            out.append(c)
+            continue
+        if not in_class and "a" <= c <= "z":
+            out.append(chr((ord(c) - ord("a") + shift) % 26 + ord("a")))
+        elif not in_class and "A" <= c <= "Z":
+            out.append(chr((ord(c) - ord("A") + shift) % 26 + ord("A")))
+        else:
+            out.append(c)
+    return "".join(out)
+
+
+@lru_cache(maxsize=32)
+def _caesar_encoded_override_patterns(shift: int) -> tuple[re.Pattern[str], ...]:
+    return tuple(
+        re.compile(_caesar_encode_regex(pattern, shift), re.IGNORECASE)
+        for pattern in OVERRIDE_PHRASES
+    )
+
+
+def _match_caesar_encoded_override_phrases(text: str, shift: int) -> list[tuple[int, str]]:
+    findings: list[tuple[int, str]] = []
+    for pattern in _caesar_encoded_override_patterns(shift):
+        for m in pattern.finditer(text):
+            findings.append((m.start(), f"rot{shift}:{m.group(0)}"))
+    return findings
+
+
 def _match_override_phrases(text: str, label: str) -> list[tuple[int, str]]:
     findings: list[tuple[int, str]] = []
     for pattern in OVERRIDE_PHRASES:
@@ -312,26 +360,17 @@ def _check_rot_decode(text: str) -> list[tuple[int, str]]:
 
     alpha_chars = sum(1 for c in text if c.isalpha())
     if alpha_chars >= 20:
+        # Match Caesar-encoded phrases in place (linear) instead of decoding
+        # every alpha run (quadratic stall on long benign input).
         for shift in range(1, 26):
             if shift == 13:
                 continue
-            _add(_match_override_phrases(_caesar_decode(text, shift), f'rot{shift}'))
-
-    for m in _ALPHA_RUN.finditer(text):
-        run = m.group(0)
-        base = m.start()
-        for shift in range(1, 26):
-            if shift == 13:
-                continue
-            for item in _match_override_phrases(_caesar_decode(run, shift), f'rot{shift}'):
-                keyed = (base + item[0], item[1])
-                if keyed not in seen:
-                    seen.add(keyed)
-                    findings.append(keyed)
+            _add(_match_caesar_encoded_override_phrases(text, shift))
     return findings
 
 
-_B64_CANDIDATE = re.compile(r"\b[A-Za-z0-9+/]{16,}={0,2}\b")
+# No catastrophic lookahead; padding optional; stop at non-alphabet chars.
+_B64_CANDIDATE = re.compile(r"\b[A-Za-z0-9+/]{16,}(?:={1,2})?(?![A-Za-z0-9+/=])")
 
 
 def _decode_base64_snippets_once(text: str) -> tuple[str, bool]:
@@ -406,7 +445,8 @@ HOSTILE_UX_PATTERNS = [
 ]
 
 MORSE_PATTERN = re.compile(r"[.-]{3,}")
-ENCODING_BASE64 = re.compile(r"(?=[A-Za-z0-9+/]*[+/=])[A-Za-z0-9+/]{16,}={0,2}")
+# Linear scan: no nested lookahead over the whole alphabet run (#14/#13 curated).
+ENCODING_BASE64 = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
 ENCODING_HEX = re.compile(r"\b(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{16,}\b")
 
 _SCRIPT_LATIN = range(0x0041, 0x007B)
@@ -655,14 +695,22 @@ def _valid_base64_decode(blob: str) -> bool:
     return bool(text) and sum(1 for c in text if c.isprintable() or c in "\n\r\t") >= len(text) * 0.9
 
 
+def _has_base64_marker(blob: str) -> bool:
+    return "+" in blob or "/" in blob or blob.endswith("=")
+
+
 def scan_encoding_blocks(text: str) -> list[tuple[int, str]]:
     findings = []
-    for pat in (ENCODING_BASE64, ENCODING_HEX):
-        for m in pat.finditer(text):
-            matched = m.group(0)
-            if pat == ENCODING_BASE64 and (_looks_like_path(matched) or _looks_like_identifier_or_constant(matched)):
-                continue
-            findings.append((m.start(), matched[:50] + ("..." if len(matched) > 50 else "")))
+    for m in ENCODING_BASE64.finditer(text):
+        matched = m.group(0)
+        if not _has_base64_marker(matched):
+            continue
+        if _looks_like_path(matched) or _looks_like_identifier_or_constant(matched):
+            continue
+        findings.append((m.start(), matched[:50] + ("..." if len(matched) > 50 else "")))
+    for m in ENCODING_HEX.finditer(text):
+        matched = m.group(0)
+        findings.append((m.start(), matched[:50] + ("..." if len(matched) > 50 else "")))
     for m in _B64_CANDIDATE.finditer(text):
         matched = m.group(0).rstrip("=")
         if len(matched) < 24:

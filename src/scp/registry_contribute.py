@@ -47,6 +47,9 @@ _CONTRIB_RECORD_KEYS = frozenset(
         "source_ref",
     }
 )
+_CONTRIB_DETECTOR_KEYS = frozenset({"kind", "normalized"})
+_CONTRIB_SOURCE_REF_KEYS = frozenset({"lang"})
+_SOURCE_REF_LANG_RE = re.compile(r"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$")
 _DEFAULT_ISSUER = antigen._pubkey_hex(
     bytes.fromhex("0000000000000000000000000000000000000000000000000000000000000003")
 )
@@ -205,10 +208,26 @@ def _validate_contribute_abstraction(rec: dict) -> list[str]:
     detector = rec.get("detector")
     if not isinstance(detector, dict) or detector.get("kind") != "token_family":
         reasons.append("detector_must_be_token_family")
-    elif isinstance(category, str) and category in _VALID_CATEGORIES:
-        expected_norm = f"{category}-family-{hash8}"
-        if detector.get("normalized") != expected_norm:
-            reasons.append("normalized_not_abstracted")
+    else:
+        for key in sorted(set(detector) - _CONTRIB_DETECTOR_KEYS):
+            reasons.append(f"unknown_detector_field:{key}")
+        if isinstance(category, str) and category in _VALID_CATEGORIES:
+            expected_norm = f"{category}-family-{hash8}"
+            if detector.get("normalized") != expected_norm:
+                reasons.append("normalized_not_abstracted")
+
+    source_ref = rec.get("source_ref")
+    if source_ref is not None:
+        if not isinstance(source_ref, dict):
+            reasons.append("invalid_source_ref")
+        else:
+            for key in sorted(set(source_ref) - _CONTRIB_SOURCE_REF_KEYS):
+                reasons.append(f"unknown_source_ref_field:{key}")
+            lang = source_ref.get("lang")
+            if lang is not None and (
+                not isinstance(lang, str) or not _SOURCE_REF_LANG_RE.match(lang)
+            ):
+                reasons.append("invalid_source_ref_lang")
     return reasons
 
 

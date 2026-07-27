@@ -131,6 +131,39 @@ def test_structured_patterns_rejects_non_token_family_detector():
     assert any("detector_must_be_token_family" in r for r in res.get("reasons", []))
 
 
+def test_structured_patterns_rejects_unknown_detector_field():
+    rec = _valid_record()
+    rec["detector"]["customer_prompt"] = "raw customer prompt that must not be published"
+    patterns = json.dumps([rec])
+    res = rc.submit_contribution(patterns_json=patterns, transport="https", https_url=PAYLOAD_URL)
+    assert res["ok"] is False
+    assert res["error"] == "anonymization_failed"
+    assert any("unknown_detector_field:customer_prompt" in r for r in res.get("reasons", []))
+    assert res["submitted"] is False
+
+
+def test_structured_patterns_rejects_unabstracted_source_ref_metadata():
+    rec = _valid_record()
+    rec["source_ref"] = {"lang": "en", "note": "raw customer prompt that must not be published"}
+    patterns = json.dumps([rec])
+    res = rc.submit_contribution(patterns_json=patterns, transport="https", https_url=PAYLOAD_URL)
+    assert res["ok"] is False
+    assert res["error"] == "anonymization_failed"
+    assert any("unknown_source_ref_field:note" in r for r in res.get("reasons", []))
+    assert res["submitted"] is False
+
+
+def test_structured_patterns_rejects_unabstracted_source_ref_lang_value():
+    rec = _valid_record()
+    rec["source_ref"] = {"lang": "raw customer prompt that must not be published"}
+    patterns = json.dumps([rec])
+    res = rc.submit_contribution(patterns_json=patterns, transport="https", https_url=PAYLOAD_URL)
+    assert res["ok"] is False
+    assert res["error"] == "anonymization_failed"
+    assert any("invalid_source_ref_lang" in r for r in res.get("reasons", []))
+    assert res["submitted"] is False
+
+
 def test_structured_patterns_accepts_abstracted_form(isolated_env):
     patterns = json.dumps([_valid_record()])
     prepared = rc.prepare_contribution(patterns_json=patterns)

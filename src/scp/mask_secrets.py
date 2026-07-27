@@ -36,6 +36,8 @@ def _try_email_span_at(text: str, at: int) -> tuple[int, int] | None:
     while end < hi:
         c = text[end]
         if c == ".":
+            if end + 1 >= len(text) or not _is_domain_label_char(text[end + 1]):
+                break
             end += 1
             continue
         if _is_domain_label_char(c):
