@@ -554,7 +554,7 @@ def _build_and_publish_nostr(
         # CLI: SCP_CONTRIBUTE_CONSENT already gated submit. MCP: also require
         # SCP_ANTIGEN_PUBLISH_CONSENT so contribute cannot bypass publish dual-gate.
         skip_publish_consent = not operator_consent.mcp_transport_active()
-        return nostr.publish_announcement(
+        out = nostr.publish_announcement(
             signed,
             seckey_hex=key,
             relays=relays,
@@ -569,6 +569,16 @@ def _build_and_publish_nostr(
             "publish_failed",
             reasons=[detail] if detail else [],
         ) from exc
+    if dry_run:
+        return out
+    if not out.get("published"):
+        reason = str(out.get("reason") or "publish_failed")
+        detail = str(out.get("env") or out.get("reason") or "")[:200] or None
+        raise ContributeError(
+            reason,
+            reasons=[detail] if detail else [],
+        )
+    return out
 
 
 def submit_contribution(

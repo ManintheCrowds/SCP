@@ -496,12 +496,6 @@ def publish_announcement(
     """
     manifest = bundle["manifest"]
     relay_list = _load_relays(relays)
-    if operator_consent.mcp_transport_active() and not relay_list:
-        return {
-            "published": False,
-            "reason": "empty_relay_allowlist",
-            "relays": [],
-        }
 
     if dry_run:
         event = build_announcement_event(bundle, sign=False)
@@ -536,6 +530,13 @@ def publish_announcement(
             "published": False,
             "reason": "consent_required",
             "env": operator_consent.PUBLISH_CONSENT_ENV,
+        }
+
+    if not relay_list:
+        return {
+            "published": False,
+            "reason": "empty_relay_allowlist",
+            "relays": [],
         }
 
     key_raw = seckey_hex

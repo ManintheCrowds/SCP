@@ -105,11 +105,17 @@ def test_empty_allowlist_discover_returns_empty(issuer):
     assert out == []
 
 
-def test_inmemory_relay_publish_subscribe(issuer):
+def test_inmemory_relay_publish_subscribe(issuer, monkeypatch):
     bundle = _signed_bundle(issuer)
     mem = nostr.InMemoryRelayTransport()
+    monkeypatch.delenv("SCP_ANTIGEN_RELAY_ALLOWLIST", raising=False)
     nostr.publish_announcement(
-        bundle, seckey_hex=SECKEY, relays=[], transport=mem, approve=True, skip_consent_check=True
+        bundle,
+        seckey_hex=SECKEY,
+        relays=None,
+        transport=mem,
+        approve=True,
+        skip_consent_check=True,
     )
     assert len(mem.events) == 1
 
@@ -121,6 +127,20 @@ def test_inmemory_relay_publish_subscribe(issuer):
     assert len(found) == 1
     assert found[0].antigen_id == "inj.nostr.001"
     assert found[0].issuer_pubkey == issuer
+
+
+def test_cli_publish_rejects_filtered_empty_relay_list(issuer, monkeypatch):
+    bundle = _signed_bundle(issuer)
+    monkeypatch.setenv("SCP_ANTIGEN_RELAY_ALLOWLIST", "wss://allowed.example")
+    out = nostr.publish_announcement(
+        bundle,
+        seckey_hex=SECKEY,
+        relays=["wss://other.example"],
+        approve=True,
+        skip_consent_check=True,
+    )
+    assert out.get("published") is False
+    assert out.get("reason") == "empty_relay_allowlist"
 
 
 def test_fetch_payload_hash_match(issuer):

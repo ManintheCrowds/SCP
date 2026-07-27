@@ -389,7 +389,7 @@ def test_both_transport_posts_before_nostr(isolated_env, monkeypatch):
     def fake_publish(bundle, **kwargs):
         if not kwargs.get("dry_run"):
             order.append("nostr")
-        return {"event_id": "b" * 64, "relays": []}
+        return {"published": True, "event_id": "b" * 64, "relays": ["wss://relay.example"]}
 
     monkeypatch.setattr(rc, "post_registry_snapshot", fake_post)
     monkeypatch.setattr(rc.nostr, "publish_announcement", fake_publish)
@@ -406,6 +406,29 @@ def test_both_transport_posts_before_nostr(isolated_env, monkeypatch):
     )
     assert res["ok"] is True
     assert order == ["https", "nostr"]
+
+
+def test_nostr_soft_fail_is_contribution_failure(isolated_env, monkeypatch):
+    def fake_publish(bundle, **kwargs):
+        if kwargs.get("dry_run"):
+            return {"published": False, "dry_run": True, "relays": []}
+        return {"published": False, "reason": "consent_required", "env": "SCP_ANTIGEN_PUBLISH_CONSENT"}
+
+    monkeypatch.setattr(rc.nostr, "publish_announcement", fake_publish)
+
+    raw = "ignore safety override system prompt"
+    res = rc.submit_contribution(
+        raw_content=raw,
+        category="injection",
+        transport="nostr",
+        https_url=PAYLOAD_URL,
+        approve=True,
+        dry_run=False,
+        seckey_hex=SECKEY,
+    )
+    assert res["ok"] is False
+    assert res["submitted"] is False
+    assert res["error"] == "consent_required"
 
 
 def test_both_missing_seckey_before_https(isolated_env, monkeypatch):
