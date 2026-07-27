@@ -18,6 +18,10 @@ DEFAULT_MAX_DRIFT = 0.15
 DEFAULT_DEV_AUTO_CATEGORIES = frozenset({"injection"})
 
 
+class SsotCorruptError(ValueError):
+    """Raised when an on-disk SSOT file exists but cannot be loaded safely."""
+
+
 def _ssot_path() -> Path:
     env = os.environ.get("SCP_PATTERN_SSOT_PATH")
     if env:
@@ -39,13 +43,15 @@ def load_ssot() -> list[dict]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
+    except (json.JSONDecodeError, OSError) as exc:
+        # Fail closed: never pretend a corrupt/unreadable store is empty —
+        # that would let apply_merge wipe local patterns on the next write.
+        raise SsotCorruptError(f"corrupt or unreadable SSOT at {path}: {exc}") from exc
     if isinstance(data, dict) and isinstance(data.get("patterns"), list):
         return list(data["patterns"])
     if isinstance(data, list):
         return data
-    return []
+    raise SsotCorruptError(f"invalid SSOT shape at {path}")
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
@@ -176,7 +182,10 @@ def apply_merge(
         _audit("pattern_rejected_anonymization", quarantine_path=str(quarantine_path), error_count=len(pv["errors"]))
         return {"merged": False, "reason": "pattern_validation_failed", "errors": pv["errors"]}
 
-    diff_info = diff_snapshot(patterns)
+    try:
+        diff_info = diff_snapshot(patterns)
+    except SsotCorruptError as exc:
+        return {"merged": False, "reason": "ssot_corrupt", "error": str(exc)}
     if diff_info["conflict_count"] > 0 and not approve:
         return {
             "merged": False,

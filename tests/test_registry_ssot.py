@@ -69,11 +69,29 @@ def test_apply_merge_operator_approved(isolated_ssot):
     assert any(p["pattern_id"] == "merge.approved.001" for p in ssot)
 
 
-def test_load_ssot_returns_empty_for_corrupt_json(isolated_ssot):
+def test_load_ssot_raises_for_corrupt_json(isolated_ssot):
     ssot_path = isolated_ssot / "ssot.json"
     ssot_path.write_text('{"patterns": [', encoding="utf-8")
 
-    assert registry_ssot.load_ssot() == []
+    with pytest.raises(registry_ssot.SsotCorruptError, match="corrupt or unreadable SSOT"):
+        registry_ssot.load_ssot()
+
+
+def test_apply_merge_aborts_when_ssot_corrupt(isolated_ssot):
+    ssot_path = isolated_ssot / "ssot.json"
+    ssot_path.write_text('{"patterns": [', encoding="utf-8")
+    snap = {
+        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
+        "registry_version": "2026-07-02T00:00:00Z",
+        "patterns": [_rec("merge.corrupt.001")],
+    }
+    qfile = isolated_ssot / "q_corrupt.json"
+    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+
+    res = registry_ssot.apply_merge(qfile, approve=True)
+    assert res["merged"] is False
+    assert res["reason"] == "ssot_corrupt"
+    assert ssot_path.read_text(encoding="utf-8") == '{"patterns": ['
 
 
 def test_apply_merge_does_not_commit_ssot_when_projection_write_fails(
