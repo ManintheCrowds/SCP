@@ -1,6 +1,6 @@
 # SCP Antigen MCP contract v1
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Purpose:** Public specification for the SCP mesh extension MCP server (`antigen_mcp.py`) — antigen transport, shared registry fetch/contribute/apply. Separate from core [scp_mcp_v1.md](scp_mcp_v1.md) to preserve frozen v1.0 core contract.
 
 **Normative:** Tool names and human-gate semantics below. Network I/O tools live here only — not on core `scp_mcp`.
@@ -32,8 +32,8 @@
 
 | Tool | Parameters | Human gate | Notes |
 |------|------------|------------|-------|
-| `scp_fetch_registry` | `source`, `allowlist` (issuer pubkeys for nostr), `if_none_match?`, `tls_verify?`, `relays?` | Stages to quarantine only; **`merged` always false**; HTTPS hosts from env | HTTPS or nostr |
-| `scp_contribute_pattern` | `transport`, `patterns_json?`, `raw_content?`, `approve?` default **false**, … | **`approve=true`**; `SCP_CONTRIBUTE_CONSENT=1`; nostr/both also **`SCP_ANTIGEN_PUBLISH_CONSENT=1`** under MCP; **`SCP_CONTRIBUTE_HOST_ALLOWLIST`** gates POST; MCP rejects `seckey_hex` | R3 contribute |
+| `scp_fetch_registry` | `source`, `allowlist` (issuer pubkeys for nostr), `if_none_match?`, `relays?` | Stages to quarantine only; **`merged` always false**; HTTPS hosts from env; TLS via **`SCP_REGISTRY_TLS_VERIFY`** (no MCP `tls_verify`) | HTTPS or nostr |
+| `scp_contribute_pattern` | `transport`, `patterns_json?`, `raw_content?`, `approve?` default **false**, … | **`approve=true`**; `SCP_CONTRIBUTE_CONSENT=1`; nostr/both also **`SCP_ANTIGEN_PUBLISH_CONSENT=1`** under MCP; **`SCP_CONTRIBUTE_HOST_ALLOWLIST`** gates POST; MCP rejects `seckey_hex`; TLS via **`SCP_REGISTRY_TLS_VERIFY`** | R3 contribute |
 | `scp_apply_registry_quarantine` | `quarantine_path`, `approve?` default **false** | **`approve=true` + `SCP_REGISTRY_MERGE_CONSENT=1`**; `SCP_REGISTRY_MERGE_DEV_AUTO` disabled under MCP | R4 SSOT + projection |
 
 ---
@@ -60,6 +60,8 @@ Core inspect load order documented in [scp_mcp_v1.1.md](scp_mcp_v1.1.md).
 | `SCP_REGISTRY_MERGE_DEV_AUTO` | Dev-only auto-merge low-risk (CLI only; ignored under MCP) |
 | `SCP_ANTIGEN_FETCH_HOST_ALLOWLIST` | Env-only HTTPS destinations for antigen fetch |
 | `SCP_REGISTRY_FETCH_HOST_ALLOWLIST` | Optional HTTPS hosts for registry fetch (else fetch host allowlist) |
+| `SCP_REGISTRY_TLS_VERIFY` | Registry HTTPS TLS verify (default on; `0`/`false`/`no` disables). MCP cannot pass `tls_verify` |
+| `SCP_ANTIGEN_TLS_VERIFY` | Antigen fetch HTTPS TLS verify (default on; same disable tokens) |
 | `SCP_ANTIGEN_RELAY_ALLOWLIST` | Fail-closed WSS relay allowlist for MCP |
 | `SCP_ANTIGEN_RELAYS` | Default nostr relays (CLI; filtered by relay allowlist when set) |
 | `SCP_ANTIGEN_PUBLISH_CONSENT` | Hard attestation for live antigen nostr publish (also required for MCP contribute nostr/both) |
@@ -74,6 +76,7 @@ Core inspect load order documented in [scp_mcp_v1.1.md](scp_mcp_v1.1.md).
 - Contribute two-phase consent: proposal (`approve=false`) then publish (`approve=true` + env)
 - No network tools on core `scp_mcp` v1.0 required set
 - HTTPS destination allowlists are **operator env only** (MCP cannot expand)
+- Registry/antigen TLS verify is **operator env only** (`SCP_REGISTRY_TLS_VERIFY` / `SCP_ANTIGEN_TLS_VERIFY`); MCP tools must not expose `tls_verify`
 - Relays fail closed under MCP without `SCP_ANTIGEN_RELAY_ALLOWLIST`; loopback/link-local/metadata blocked
 - Encounter auto-log redacts secrets before durable write
 
@@ -88,5 +91,6 @@ Core inspect load order documented in [scp_mcp_v1.1.md](scp_mcp_v1.1.md).
 
 ## Changelog
 
+- **1.2** — AppSec: remove MCP `tls_verify`; registry TLS via `SCP_REGISTRY_TLS_VERIFY` only (CLI `--no-tls-verify` retained).
 - **1.1** — AppSec hardening: env-only hosts, publish/merge consent, MCP L402/seckey refusal, relay allowlist.
 - **1.0** — Initial antigen + mycelium MCP contract.

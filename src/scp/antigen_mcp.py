@@ -1,7 +1,7 @@
 # PURPOSE: Opt-in MCP server for SCP-ANT1 Antigen P0 tools (export/verify/import/merge).
 # GUARDRAIL: merge/publish require approve + env consent; hosts/relays env-only.
 # DEPENDENCIES: scp.antigen
-# MODIFICATION NOTES: AppSec 2026-07-24 — close L402/Nostr/SSRF/soft-approve confused-deputy paths
+# MODIFICATION NOTES: AppSec 2026-07-28 — registry TLS verify env-only (no MCP tls_verify)
 
 """SCP Antigen MCP Server. Exposes antigen_export, antigen_verify, antigen_import, antigen_merge."""
 
@@ -184,17 +184,17 @@ def scp_fetch_registry(
     source: str,
     allowlist: str,
     if_none_match: str | None = None,
-    tls_verify: bool = True,
     relays: str | None = None,
 ) -> str:
-    """Fetch registry snapshot. HTTPS hosts from env; allowlist = issuer pubkeys for nostr."""
+    """Fetch registry snapshot. HTTPS hosts from env; allowlist = issuer pubkeys for nostr.
+    TLS verify from SCP_REGISTRY_TLS_VERIFY only (default on); no agent tls_verify arg."""
     with operator_consent.mcp_transport_scope():
         try:
             return json.dumps(registry_fetch_mod.fetch_registry(
                 source,
                 _parse_allowlist(allowlist),
                 if_none_match=if_none_match,
-                tls_verify=tls_verify,
+                tls_verify=http_policy.env_tls_verify(),
                 relays=_parse_allowlist(relays),
             ))
         except Exception as e:
@@ -213,10 +213,10 @@ def scp_contribute_pattern(
     approve: bool = False,
     dry_run: bool | None = None,
     seckey_hex: str | None = None,
-    tls_verify: bool = True,
 ) -> str:
     """R3 contribute. MCP refuses seckey_hex. Needs SCP_CONTRIBUTE_CONSENT;
-    nostr/both also needs SCP_ANTIGEN_PUBLISH_CONSENT under MCP."""
+    nostr/both also needs SCP_ANTIGEN_PUBLISH_CONSENT under MCP.
+    TLS verify from SCP_REGISTRY_TLS_VERIFY only (default on)."""
     with operator_consent.mcp_transport_scope():
         try:
             if seckey_hex:
@@ -236,7 +236,7 @@ def scp_contribute_pattern(
                 approve=approve,
                 dry_run=dry_run,
                 seckey_hex=None,
-                tls_verify=tls_verify,
+                tls_verify=http_policy.env_tls_verify(),
             ))
         except Exception as e:
             return _err(e)

@@ -1,6 +1,6 @@
 # PURPOSE: Shared outbound HTTP/WS policy — host allowlist + session hardening (SSRF).
 # DEPENDENCIES: urllib.parse, ipaddress, requests
-# MODIFICATION NOTES: AppSec 2026-07-24 — env-only hosts; relay allowlist + blocked ranges
+# MODIFICATION NOTES: AppSec 2026-07-28 — env-only TLS verify for registry MCP; shared parse helper
 
 from __future__ import annotations
 
@@ -16,6 +16,13 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 FETCH_HOST_ENV = "SCP_ANTIGEN_FETCH_HOST_ALLOWLIST"
 REGISTRY_HOST_ENV = "SCP_REGISTRY_FETCH_HOST_ALLOWLIST"
 RELAY_ALLOWLIST_ENV = "SCP_ANTIGEN_RELAY_ALLOWLIST"
+REGISTRY_TLS_VERIFY_ENV = "SCP_REGISTRY_TLS_VERIFY"
+ANTIGEN_TLS_VERIFY_ENV = "SCP_ANTIGEN_TLS_VERIFY"
+
+
+def env_tls_verify(var: str = REGISTRY_TLS_VERIFY_ENV, *, default: str = "1") -> bool:
+    """Operator env seam for requests verify=. Default verify-on; MCP must not override."""
+    return os.environ.get(var, default).strip().lower() not in ("0", "false", "no")
 
 
 def host_allowed(url: str, allowlist: list[str]) -> bool:
