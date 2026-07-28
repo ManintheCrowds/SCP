@@ -638,11 +638,7 @@ def _fetch_response(
     *,
     l402_token: str | None = None,
 ) -> requests.Response:
-    verify_tls = os.environ.get("SCP_ANTIGEN_TLS_VERIFY", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-    )
+    verify_tls = http_policy.env_tls_verify(http_policy.ANTIGEN_TLS_VERIFY_ENV)
     if l402_token:
         macaroon, preimage = l402.normalize_l402_token(l402_token)
         headers = {"Authorization": l402.format_authorization_header(macaroon, preimage)}

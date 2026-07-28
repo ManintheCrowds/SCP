@@ -49,7 +49,8 @@ Surface: [`antigen_mcp.py`](../src/scp/antigen_mcp.py) (design only for this spi
 | `source` | string | yes | HTTPS URL **or** nostr event reference (`nevent1…` / hex id) |
 | `allowlist` | string[] | yes | Issuer/host allowlist (fail closed) |
 | `if_none_match` | string | no | Etag from prior fetch |
-| `tls_verify` | bool | no | Default true; regtest may set false via env seam |
+
+| `tls_verify` | — | **Not a fetch/MCP param.** Operator env `SCP_REGISTRY_TLS_VERIFY` (default on). Does **not** share `SCP_ANTIGEN_TLS_VERIFY` (antigen fetch only). CLI: `registry fetch --no-tls-verify`. |
 
 Environment seams (regtest/integration only):
 

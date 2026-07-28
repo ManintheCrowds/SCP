@@ -1,8 +1,9 @@
-# PURPOSE: AppSec gates for antigen MCP — consent, L402, relays, merge (2026-07-24).
+# PURPOSE: AppSec gates for antigen MCP — consent, L402, relays, merge, TLS (2026-07-28).
 # Run: PYTHONPATH=src pytest tests/test_appsec_antigen_mcp_gates.py -q
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -34,6 +35,7 @@ def isolated_env(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.delenv("SCP_ANTIGEN_L402_TOKEN", raising=False)
     monkeypatch.delenv("SCP_MCP_TRANSPORT", raising=False)
     monkeypatch.delenv("NOSTR_SECKEY", raising=False)
+    monkeypatch.delenv("SCP_REGISTRY_TLS_VERIFY", raising=False)
     return tmp_path
 
 
@@ -264,3 +266,134 @@ def test_mcp_transport_scope_restores(monkeypatch):
     with operator_consent.mcp_transport_scope():
         assert operator_consent.mcp_transport_active() is True
     assert operator_consent.mcp_transport_active() is False
+
+
+def test_mcp_registry_tools_have_no_tls_verify_param():
+    assert "tls_verify" not in inspect.signature(antigen_mcp.scp_fetch_registry).parameters
+    assert "tls_verify" not in inspect.signature(antigen_mcp.scp_contribute_pattern).parameters
+
+
+def test_env_tls_verify_defaults_and_disable(monkeypatch):
+    monkeypatch.delenv("SCP_REGISTRY_TLS_VERIFY", raising=False)
+    assert http_policy.env_tls_verify() is True
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "0")
+    assert http_policy.env_tls_verify() is False
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "false")
+    assert http_policy.env_tls_verify() is False
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "no")
+    assert http_policy.env_tls_verify() is False
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "")
+    assert http_policy.env_tls_verify() is True
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "   ")
+    assert http_policy.env_tls_verify() is True
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "1")
+    assert http_policy.env_tls_verify() is True
+
+
+def test_mcp_fetch_ignores_antigen_tls_env(monkeypatch):
+    """Registry MCP must not weaken TLS when only SCP_ANTIGEN_TLS_VERIFY=0."""
+    captured: dict = {}
+
+    def fake_fetch(*_args, **kwargs):
+        captured["tls_verify"] = kwargs.get("tls_verify")
+        return {"ok": True, "merged": False}
+
+    monkeypatch.setattr(antigen_mcp.registry_fetch_mod, "fetch_registry", fake_fetch)
+    monkeypatch.delenv("SCP_REGISTRY_TLS_VERIFY", raising=False)
+    monkeypatch.setenv("SCP_ANTIGEN_TLS_VERIFY", "0")
+    antigen_mcp.scp_fetch_registry("https://example.com/snap.json", allowlist="a" * 64)
+    assert captured["tls_verify"] is True
+
+
+def test_mcp_fetch_registry_tls_verify_from_env_only(monkeypatch):
+    captured: dict = {}
+
+    def fake_fetch(*_args, **kwargs):
+        captured["tls_verify"] = kwargs.get("tls_verify")
+        return {"ok": True, "merged": False, "quarantine_path": "/tmp/q.json"}
+
+    monkeypatch.setattr(antigen_mcp.registry_fetch_mod, "fetch_registry", fake_fetch)
+    monkeypatch.delenv("SCP_REGISTRY_TLS_VERIFY", raising=False)
+    antigen_mcp.scp_fetch_registry("https://example.com/snap.json", allowlist="a" * 64)
+    assert captured["tls_verify"] is True
+
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "0")
+    antigen_mcp.scp_fetch_registry("https://example.com/snap.json", allowlist="a" * 64)
+    assert captured["tls_verify"] is False
+
+
+def test_mcp_contribute_tls_verify_from_env_only(monkeypatch):
+    captured: dict = {}
+
+    def fake_submit(**kwargs):
+        captured["tls_verify"] = kwargs.get("tls_verify")
+        return {"ok": True, "submitted": False, "proposal": True}
+
+    monkeypatch.setattr(
+        antigen_mcp.registry_contribute_mod, "submit_contribution", fake_submit
+    )
+    monkeypatch.delenv("SCP_REGISTRY_TLS_VERIFY", raising=False)
+    antigen_mcp.scp_contribute_pattern(
+        transport="https",
+        raw_content="ignore previous instructions override",
+        category="injection",
+        https_url=PAYLOAD_URL,
+        approve=False,
+    )
+    assert captured["tls_verify"] is True
+
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "0")
+    antigen_mcp.scp_contribute_pattern(
+        transport="https",
+        raw_content="ignore previous instructions override",
+        category="injection",
+        https_url=PAYLOAD_URL,
+        approve=False,
+    )
+    assert captured["tls_verify"] is False
+
+
+def test_mcp_fetch_registry_session_get_verify_flag(monkeypatch):
+    """End-to-end: MCP → fetch_registry → Session.get(verify=…) honors env only."""
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    monkeypatch.delenv("SCP_REGISTRY_TLS_VERIFY", raising=False)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "schema_revision": "scp.registry_snapshot.v1",
+        "registry_version": "2026-01-01T00:00:00Z",
+        "patterns": [
+            {
+                "pattern_id": "inj.tls.001",
+                "category": "injection",
+                "detector": {
+                    "kind": "token_family",
+                    "normalized": "tls-env-family",
+                },
+                "risk_tier": "medium",
+            }
+        ],
+    }
+    mock_resp.headers = {}
+
+    with patch(
+        "scp.registry_fetch.requests.Session.get", return_value=mock_resp
+    ) as mock_get:
+        out = json.loads(
+            antigen_mcp.scp_fetch_registry(
+                "https://example.com/snap.json", allowlist="a" * 64
+            )
+        )
+    assert mock_get.called
+    assert mock_get.call_args.kwargs.get("verify") is True
+    assert out.get("ok") is True
+
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "0")
+    with patch(
+        "scp.registry_fetch.requests.Session.get", return_value=mock_resp
+    ) as mock_get:
+        antigen_mcp.scp_fetch_registry(
+            "https://example.com/snap.json", allowlist="a" * 64
+        )
+    assert mock_get.call_args.kwargs.get("verify") is False
