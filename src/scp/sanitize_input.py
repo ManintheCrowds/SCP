@@ -30,7 +30,7 @@ OVERRIDE_PHRASES = [
     r"forget\s+(all\s+)?(previous|prior)\s+instructions",
     r"disregard\s+(all\s+)?(previous|prior)",
     r"you\s+are\s+now\s+(operating\s+in\s+)?unrestricted\s+administrator\s+mode",
-    r"you\s+are\s+now\s+in\s+(developer|debug)\s+mode",
+    r"you\s+are\s+now\s+in\s+debug\s+mode",
     r"override\s+(system\s+)?(prompt|instructions)",
     r"append\s+(the\s+)?contents?\s+of\s+\.env",
     r"output\s+(the\s+)?(full\s+)?(system\s+)?prompt",

@@ -6,7 +6,7 @@ Minimal [promptfoo](https://github.com/promptfoo/promptfoo) setup that runs **`s
 
 - **Python:** 3.10+ with SCP installed editable from the repo root (`pip install -e .`).
 - **Node.js:** 20.20+ or 22.22+ (matches [promptfoo engine requirements](https://www.npmjs.com/package/promptfoo)).
-- **promptfoo:** Pinned in [package.json](package.json) (currently **0.121.3+**). Older 0.119.x builds could mis-handle Windows paths in the Python worker (`C:` vs `:` delimiters); use the pinned version or newer.
+- **promptfoo:** Pinned in [package.json](package.json) (currently **0.121.19**). Older 0.119.x builds could mis-handle Windows paths in the Python worker (`C:` vs `:` delimiters); use the pinned version or newer.
 
 ## Copy-paste (repo root)
 
@@ -47,7 +47,7 @@ npx promptfoo view
 
 ## What it tests
 
-Four cases aligned with [docs/RED_TEAM_PROMPTS.md](../../docs/RED_TEAM_PROMPTS.md): classic injection, hidden Unicode, multilingual reversal, hostile UX tier. Assertions check JSON `tier` from `inspect()`.
+**Seventeen** frozen cases aligned with [docs/RED_TEAM_PROMPTS.md](../../docs/RED_TEAM_PROMPTS.md) (RT1–RT17): injection (1–4, 17), reversal (5–7, 11–16), hostile UX (8–10). Assertions check JSON `tier` from `inspect()`. Do **not** edit this suite during registry autoresearch ratchets — treat it as the fixed eval harness.
 
 ## Files
 
