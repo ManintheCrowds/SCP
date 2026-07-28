@@ -47,7 +47,7 @@ npx promptfoo view
 
 ## What it tests
 
-**Seventeen** frozen cases aligned with [docs/RED_TEAM_PROMPTS.md](../../docs/RED_TEAM_PROMPTS.md) (RT1–RT17): injection (1–4), reversal (5–7, 11–17), hostile UX (8–10). Assertions check JSON `tier` from `inspect()`. Do **not** edit this suite during registry autoresearch ratchets — treat it as the fixed eval harness.
+**Seventeen** frozen cases aligned with [docs/RED_TEAM_PROMPTS.md](../../docs/RED_TEAM_PROMPTS.md) (RT1–RT17): injection (1–4, 17), reversal (5–7, 11–16), hostile UX (8–10). Assertions check JSON `tier` from `inspect()`. Do **not** edit this suite during registry autoresearch ratchets — treat it as the fixed eval harness.
 
 ## Files
 
