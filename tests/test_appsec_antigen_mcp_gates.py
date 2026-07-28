@@ -280,8 +280,29 @@ def test_env_tls_verify_defaults_and_disable(monkeypatch):
     assert http_policy.env_tls_verify() is False
     monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "false")
     assert http_policy.env_tls_verify() is False
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "no")
+    assert http_policy.env_tls_verify() is False
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "")
+    assert http_policy.env_tls_verify() is True
+    monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "   ")
+    assert http_policy.env_tls_verify() is True
     monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "1")
     assert http_policy.env_tls_verify() is True
+
+
+def test_mcp_fetch_ignores_antigen_tls_env(monkeypatch):
+    """Registry MCP must not weaken TLS when only SCP_ANTIGEN_TLS_VERIFY=0."""
+    captured: dict = {}
+
+    def fake_fetch(*_args, **kwargs):
+        captured["tls_verify"] = kwargs.get("tls_verify")
+        return {"ok": True, "merged": False}
+
+    monkeypatch.setattr(antigen_mcp.registry_fetch_mod, "fetch_registry", fake_fetch)
+    monkeypatch.delenv("SCP_REGISTRY_TLS_VERIFY", raising=False)
+    monkeypatch.setenv("SCP_ANTIGEN_TLS_VERIFY", "0")
+    antigen_mcp.scp_fetch_registry("https://example.com/snap.json", allowlist="a" * 64)
+    assert captured["tls_verify"] is True
 
 
 def test_mcp_fetch_registry_tls_verify_from_env_only(monkeypatch):
