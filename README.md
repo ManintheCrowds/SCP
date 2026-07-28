@@ -9,7 +9,7 @@ Inspect, sanitize, contain, and quarantine unknown or potentially hazardous cont
 ## Problem → Solution → Impact
 
 - **Problem:** Untrusted tool output and user content can carry prompt injection, credential leaks, and override phrases into LLM context.
-- **Solution:** Tiered pipeline (inspect → sanitize → contain → quarantine) exposed as MCP tools; optional promptfoo eval harness (16/16 tier probes).
+- **Solution:** Tiered pipeline (inspect → sanitize → contain → quarantine) exposed as MCP tools; optional promptfoo eval harness (4/4 tier probes).
 - **Impact:** OWASP LLM01/LLM06-aligned guardrail for agent stacks; composes with [OpenHarness](https://github.com/ManintheCrowds/OpenHarness) contract v1.
 
 ## Tech stack
@@ -55,6 +55,10 @@ flowchart LR
 - `scp_validate_output(content, tool_name?)` — Check tool output before use
 - `scp_mask_secrets(content)` — Redact credentials/PII
 - `scp_run_pipeline(content, sink, options?)` — One-shot for high-risk sinks
+- `scp_registry_summary()` — Read-only: threat registry path, fingerprint, section sizes
+- `scp_registry_section(section, max_chars?)` — Read-only excerpt of one allowlisted registry section
+
+OpenHarness contract v1 requires the first nine tools above; registry tools are a documented superset.
 
 ## Install
 
@@ -84,6 +88,16 @@ Add to `mcp.json`:
 
 Set `PYTHONPATH` or install the package so `scp` is importable.
 
+### Antigen MCP (registry fetch / contribute)
+
+Second entrypoint for mycelium registry fetch, merge, and contribute flows:
+
+```bash
+python -m scp.antigen_mcp
+```
+
+Consent and host-allowlist env vars, tool list, and `mcp.json` example: [docs/INTEGRATION.md](docs/INTEGRATION.md).
+
 ## Environment
 
 | Variable | Description |
@@ -100,20 +114,21 @@ Set `PYTHONPATH` or install the package so `scp` is importable.
 | `OLLAMA_API_KEY` | Optional bearer token for Ollama (sent as `Authorization: Bearer …`; never put secrets in the URL) |
 | `SCP_SEMANTIC_JUDGE` | Set to `1` to enable semantic judge globally |
 | `SCP_MAX_INPUT_CHARS` | Maximum string length for `inspect`, `classify`, `sanitize`, `contain`, and `mask_secrets` (default `2000000`; hard ceiling `50000000`) |
+| `SCP_THREAT_REGISTRY_PATH` | Optional override path to the threat-registry JSON (default: packaged `src/scp/scp_threat_registry.json`) |
 
 **Trust:** Point Ollama only at hosts you control. On shared runners or CI, keep the semantic judge off unless required; use firewall rules so the process cannot reach sensitive internal subnets unless intended.
 
 ## Threat Registry
 
-Patterns in `scp_threat_registry.json`: power_words, multilingual_override, jailbreak_nicknames, mythic_framing, bitcoin_inscription_override. Version bump on change.
+Packaged patterns in [`src/scp/scp_threat_registry.json`](src/scp/scp_threat_registry.json) (override with `SCP_THREAT_REGISTRY_PATH`): power_words, multilingual_override, semantic_aliases, jailbreak_nicknames, mythic_framing, hostile_ux, bitcoin_inscription_override, bitcoin_tx_mempool_override. Version bump on change.
 
 ## Test harness matrix
 
 | Where | Suite | What it validates |
 |-------|--------|-------------------|
 | This repo (CI job `contract`) | `pytest tests/test_mcp_contract_v1.py` | MCP tool **names** vs OpenHarness v1 set |
-| This repo (CI job `contract`) | `pytest tests/test_contract_document_hash.py` | Vendored [`docs/contracts/scp_mcp_v1.md`](docs/contracts/scp_mcp_v1.md) SHA-256 (sync with OpenHarness) |
-| This repo (CI job `promptfoo-eval`) | `examples/promptfoo` / `npx promptfoo eval` | `scp_utils.inspect` **tier** labels (offline, no API keys) |
+| This repo (local / optional) | `pytest tests/test_contract_document_hash.py` | Vendored [`docs/contracts/scp_mcp_v1.md`](docs/contracts/scp_mcp_v1.md) SHA-256 (sync with OpenHarness); **not** run in CI today |
+| This repo (CI job `promptfoo-eval`) | `examples/promptfoo` / `npx promptfoo eval` | `scp_utils.inspect` **tier** labels (offline, no API keys; 4/4 probes) |
 | **portfolio-harness** | Workflow `scp_pipeline_regression` + `daggr_workflows/tests/test_scp_pipeline_golden.py` | `run_pipeline` / Daggr alignment (install this repo with `pip install -e` in that workspace) |
 
 ## CI and quarantine
@@ -148,7 +163,7 @@ SCP has no shutdown, suicide, or self-termination commands. SCP inspects, saniti
 ## Roadmap
 
 - [ ] GitHub topics: `mcp`, `llm-security`, `prompt-injection`
-- [x] Shared threat registry — [scp-mycelium-registry](https://github.com/ManintheCrowds/scp-mycelium-registry) @ v0.1.0 ([R2 spec](docs/SCP_R2_REGISTRY_HOSTING.md))
+- [x] Shared threat registry — [scp-mycelium-registry](https://github.com/ManintheCrowds/scp-mycelium-registry) @ v0.2.0 ([R2 spec](docs/SCP_R2_REGISTRY_HOSTING.md))
 - [ ] MCP Registry listing when governance doc is ready
 
 ## Red-team eval (SCP-R2)
