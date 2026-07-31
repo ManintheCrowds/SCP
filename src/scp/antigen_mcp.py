@@ -1,7 +1,9 @@
 # PURPOSE: Opt-in MCP server for SCP-ANT1 Antigen P0 tools (export/verify/import/merge).
-# GUARDRAIL: merge/publish require approve + env consent; hosts/relays env-only.
+# GUARDRAIL: merge/publish require approve + env consent; hosts/relays env-only;
+#   bundle_json must be a JSON object (never a path string — AppSec 2026-07-30).
 # DEPENDENCIES: scp.antigen
-# MODIFICATION NOTES: AppSec 2026-07-28 — registry TLS verify env-only (no MCP tls_verify)
+# MODIFICATION NOTES: AppSec 2026-07-30 — reject non-object bundle_json (path type-confusion);
+#   AppSec 2026-07-28 — registry TLS verify env-only (no MCP tls_verify)
 
 """SCP Antigen MCP Server. Exposes antigen_export, antigen_verify, antigen_import, antigen_merge."""
 
@@ -38,6 +40,18 @@ def _parse_pubkey_allowlist(allowlist: str | None) -> list[str] | None:
     return http_policy.pubkey_entries(raw) or []
 
 
+def _parse_bundle_object(bundle_json: str) -> dict:
+    """Parse MCP bundle_json as a JSON object only (no path strings).
+
+    PURPOSE: Fail closed on type confusion — json.loads of a JSON string yields
+    a Python str that _load_bundle historically treated as a filesystem path.
+    """
+    obj = json.loads(bundle_json)
+    if not isinstance(obj, dict):
+        raise ValueError("bundle_json must be a JSON object")
+    return obj
+
+
 @mcp.tool()
 def scp_antigen_export(patterns_json: str, antigen_id: str, issuer_pubkey: str | None = None,
                        seckey_hex: str | None = None, sign: bool = False,
@@ -71,7 +85,7 @@ def scp_antigen_verify(bundle_json: str, allowlist: str | None = None,
     with operator_consent.mcp_transport_scope():
         try:
             return json.dumps(antigen_mod.verify_bundle(
-                json.loads(bundle_json), allowlist=_parse_pubkey_allowlist(allowlist),
+                _parse_bundle_object(bundle_json), allowlist=_parse_pubkey_allowlist(allowlist),
                 require_signature=True))
         except json.JSONDecodeError:
             return _err(ValueError("bundle_json must be valid JSON"))
@@ -87,7 +101,7 @@ def scp_antigen_import(bundle_json: str, allowlist: str | None = None,
     with operator_consent.mcp_transport_scope():
         try:
             return json.dumps(antigen_mod.import_bundle(
-                json.loads(bundle_json), allowlist=_parse_pubkey_allowlist(allowlist),
+                _parse_bundle_object(bundle_json), allowlist=_parse_pubkey_allowlist(allowlist),
                 require_signature=True))
         except json.JSONDecodeError:
             return _err(ValueError("bundle_json must be valid JSON"))
@@ -102,7 +116,7 @@ def scp_antigen_merge(bundle_json: str, approve: bool = False, allowlist: str | 
     with operator_consent.mcp_transport_scope():
         try:
             return json.dumps(antigen_mod.merge_to_registry(
-                json.loads(bundle_json), approve=approve,
+                _parse_bundle_object(bundle_json), approve=approve,
                 allowlist=_parse_pubkey_allowlist(allowlist),
                 require_signature=True))
         except json.JSONDecodeError:
@@ -119,7 +133,7 @@ def scp_antigen_publish(bundle_json: str, relays: str | None = None,
     with operator_consent.mcp_transport_scope():
         try:
             return json.dumps(nostr_mod.publish_announcement(
-                json.loads(bundle_json),
+                _parse_bundle_object(bundle_json),
                 seckey_hex=None,
                 relays=_parse_allowlist(relays),
                 dry_run=dry_run,

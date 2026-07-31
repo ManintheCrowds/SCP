@@ -380,11 +380,16 @@ def verify_bundle(
 # --------------------------------------------------------------------------- import / merge
 
 def _load_bundle(bundle_or_path) -> dict:
-    if isinstance(bundle_or_path, (str, Path)):
-        return json.loads(Path(bundle_or_path).read_text(encoding="utf-8"))
+    # PURPOSE: Load a bundle dict from memory or an explicit Path (CLI).
+    # SECURITY: Bare str is rejected — MCP/json.loads of a JSON string must not
+    # become a filesystem path (AppSec 2026-07-30 path type-confusion).
+    if isinstance(bundle_or_path, Path):
+        return json.loads(bundle_or_path.read_text(encoding="utf-8"))
     if isinstance(bundle_or_path, dict):
         return bundle_or_path
-    raise TypeError("bundle_or_path must be a dict, str, or Path")
+    if isinstance(bundle_or_path, str):
+        raise TypeError("bundle_or_path must be a dict or pathlib.Path, not str")
+    raise TypeError("bundle_or_path must be a dict or pathlib.Path")
 
 
 def import_bundle(

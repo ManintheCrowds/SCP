@@ -1,5 +1,6 @@
-# PURPOSE: AppSec gates for antigen MCP — consent, L402, relays, merge, TLS (2026-07-28).
+# PURPOSE: AppSec gates for antigen MCP — consent, L402, relays, merge, TLS, bundle_json type.
 # Run: PYTHONPATH=src pytest tests/test_appsec_antigen_mcp_gates.py -q
+# MODIFICATION NOTES: AppSec 2026-07-30 — reject JSON-string path as bundle_json (no file read).
 
 from __future__ import annotations
 
@@ -397,3 +398,69 @@ def test_mcp_fetch_registry_session_get_verify_flag(monkeypatch):
             "https://example.com/snap.json", allowlist="a" * 64
         )
     assert mock_get.call_args.kwargs.get("verify") is False
+
+
+# --------------------------------------------------------------------------- bundle_json type gate (AppSec 2026-07-30)
+
+
+def test_mcp_bundle_json_string_path_rejected_no_file_read(tmp_path, monkeypatch):
+    """JSON string path must not trigger filesystem read via import/merge."""
+    marker = "SECRET_MARKER_APPSEC_BUNDLE_PATH_20260730"
+    secret = tmp_path / "secret_bundle.json"
+    secret.write_text(json.dumps({"leak": marker}), encoding="utf-8")
+    path_as_json = json.dumps(str(secret))
+
+    with patch.object(Path, "read_text", wraps=Path.read_text) as spy:
+        for raw in (
+            antigen_mcp.scp_antigen_import(path_as_json),
+            antigen_mcp.scp_antigen_merge(path_as_json, approve=False),
+            antigen_mcp.scp_antigen_verify(path_as_json),
+            antigen_mcp.scp_antigen_publish(path_as_json, dry_run=True),
+        ):
+            out = json.loads(raw)
+            assert "JSON object" in out.get("error", "")
+            assert marker not in raw
+            assert "FileNotFoundError" not in raw
+        # No Path.read_text for the attack payload (MCP rejects before load).
+        for call in spy.call_args_list:
+            self_obj = call.args[0] if call.args else None
+            if self_obj is not None and Path(self_obj) == secret:
+                raise AssertionError("secret path was read via Path.read_text")
+
+
+def test_mcp_bundle_json_object_import_and_merge_proposal():
+    seckey = bytes.fromhex(SECKEY)
+    issuer = antigen._pubkey_hex(seckey)
+    bundle = antigen.export_bundle(
+        _patterns(), antigen_id="inj.type.001", seckey_hex=SECKEY, sign=True
+    )
+    imported = json.loads(
+        antigen_mcp.scp_antigen_import(json.dumps(bundle), allowlist=issuer)
+    )
+    assert imported.get("accepted") is True
+    assert imported.get("merged") is False
+
+    proposal = json.loads(
+        antigen_mcp.scp_antigen_merge(json.dumps(bundle), approve=False, allowlist=issuer)
+    )
+    assert proposal.get("merged") is False
+    assert proposal.get("reason") == "approval_required"
+
+
+def test_load_bundle_rejects_str_path_without_read(tmp_path):
+    marker = "SECRET_LIBRARY_LOAD_BUNDLE_STR"
+    secret = tmp_path / "lib_secret.json"
+    secret.write_text(json.dumps({"leak": marker}), encoding="utf-8")
+    with patch.object(Path, "read_text", wraps=Path.read_text) as spy:
+        with pytest.raises(TypeError, match="not str"):
+            antigen._load_bundle(str(secret))
+        for call in spy.call_args_list:
+            self_obj = call.args[0] if call.args else None
+            if self_obj is not None and Path(self_obj) == secret:
+                raise AssertionError("str path must not call Path.read_text")
+
+    good = tmp_path / "good_bundle.json"
+    good.write_text(json.dumps({"manifest": {}, "payload": {"patterns": []}}), encoding="utf-8")
+    loaded = antigen._load_bundle(good)
+    assert isinstance(loaded, dict)
+    assert "manifest" in loaded

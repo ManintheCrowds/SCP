@@ -49,7 +49,7 @@ def _cmd_export(args) -> dict:
 
 def _cmd_verify(args) -> dict:
     return antigen.verify_bundle(
-        antigen._load_bundle(args.bundle),
+        antigen._load_bundle(Path(args.bundle)),
         allowlist=_split_allowlist(args.allowlist),
         require_signature=args.require_signature,
     )
@@ -57,7 +57,7 @@ def _cmd_verify(args) -> dict:
 
 def _cmd_import(args) -> dict:
     return antigen.import_bundle(
-        args.bundle,
+        Path(args.bundle),
         allowlist=_split_allowlist(args.allowlist),
         require_signature=args.require_signature,
     )
@@ -65,7 +65,7 @@ def _cmd_import(args) -> dict:
 
 def _cmd_merge(args) -> dict:
     return antigen.merge_to_registry(
-        args.bundle,
+        Path(args.bundle),
         approve=args.approve,
         registry_path=args.registry,
         allowlist=_split_allowlist(args.allowlist),
@@ -74,7 +74,7 @@ def _cmd_merge(args) -> dict:
 
 
 def _cmd_publish(args) -> dict:
-    bundle = antigen._load_bundle(args.bundle)
+    bundle = antigen._load_bundle(Path(args.bundle))
     seckey = args.seckey_hex or nostr.seckey_from_env()
     relays = _split_allowlist(args.relays)
     return nostr.publish_announcement(
