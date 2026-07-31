@@ -1,6 +1,6 @@
 # SCP Antigen MCP contract v1
 
-**Version:** 1.2  
+**Version:** 1.3  
 **Purpose:** Public specification for the SCP mesh extension MCP server (`antigen_mcp.py`) — antigen transport, shared registry fetch/contribute/apply. Separate from core [scp_mcp_v1.md](scp_mcp_v1.md) to preserve frozen v1.0 core contract.
 
 **Normative:** Tool names and human-gate semantics below. Network I/O tools live here only — not on core `scp_mcp`.
@@ -21,12 +21,14 @@
 | Tool | Parameters | Human gate | Notes |
 |------|------------|------------|-------|
 | `scp_antigen_export` | `patterns_json`, `antigen_id`, optional metadata; **no MCP `seckey_hex`** | — | Unsigned build on MCP; sign via CLI |
-| `scp_antigen_verify` | `bundle_json`, `allowlist?` (issuer pubkeys); `require_signature` ignored (always true) | — | No side effects |
-| `scp_antigen_import` | `bundle_json`, `allowlist?` (issuer pubkeys); `require_signature` ignored (always true) | Never auto-merges | Quarantine only |
-| `scp_antigen_merge` | `bundle_json`, `approve?` default **false**, `allowlist?` | **`approve=true` + `SCP_REGISTRY_MERGE_CONSENT=1`**; signature always required | Registry merge |
-| `scp_antigen_publish` | `bundle_json`, `relays?`, `dry_run?`, `approve?` | **`approve=true` + `SCP_ANTIGEN_PUBLISH_CONSENT=1`**; no MCP `seckey_hex`; `dry_run` never signs | Nostr kind 30078 |
+| `scp_antigen_verify` | `bundle_json` (**JSON object** only), `allowlist?` (issuer pubkeys); `require_signature` ignored (always true) | — | No side effects; reject JSON string paths |
+| `scp_antigen_import` | `bundle_json` (**JSON object** only), `allowlist?` (issuer pubkeys); `require_signature` ignored (always true) | Never auto-merges | Quarantine only; filesystem paths are CLI-only |
+| `scp_antigen_merge` | `bundle_json` (**JSON object** only), `approve?` default **false**, `allowlist?` | **`approve=true` + `SCP_REGISTRY_MERGE_CONSENT=1`**; signature always required | Registry merge; no path-as-JSON |
+| `scp_antigen_publish` | `bundle_json` (**JSON object** only), `relays?`, `dry_run?`, `approve?` | **`approve=true` + `SCP_ANTIGEN_PUBLISH_CONSENT=1`**; no MCP `seckey_hex`; `dry_run` never signs | Nostr kind 30078 |
 | `scp_antigen_discover` | `allowlist?` (issuer pubkeys), `relays?`, filters | Empty pubkey allowlist fails closed; relays ⊆ `SCP_ANTIGEN_RELAY_ALLOWLIST` | Metadata only |
 | `scp_antigen_fetch` | `url`, `expected_hash`, `allowlist?` (ignored for hosts), `l402_token?` | No auto-pay on 402; **hosts env-only** (`SCP_ANTIGEN_FETCH_HOST_ALLOWLIST`); **never auto-loads** `SCP_ANTIGEN_L402_TOKEN` | HTTPS fetch + verify |
+
+`bundle_json` must be a JSON **object** (the antigen bundle). A JSON string value (including a filesystem path) is rejected. Loading bundles from disk is CLI-only (`pathlib.Path`).
 
 ### Registry mycelium (R3/R4)
 

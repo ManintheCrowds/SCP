@@ -18,9 +18,9 @@ EXPECTED_SCP_MCP_V1_1_SHA256 = (
     "722aca69cc97550dfe742c5fefffbc7f958d871ab269b7373a2359351af734ab"
 )
 
-# Synced with OpenHarness docs/contracts/scp_antigen_mcp_v1.md
+# Synced with OpenHarness docs/contracts/scp_antigen_mcp_v1.md (SCP vendor bump 1.3 — AppSec path gate)
 EXPECTED_SCP_ANTIGEN_MCP_V1_SHA256 = (
-    "5de6660504cb3b215085c586fca3873eb76d4306327c3f6da4ba2731e560f8c5"
+    "306ce8dcf7361b9f4ba1acb2e06c5e4807ef374f5f38b77f866801e4b7c0f724"
 )
 
 
