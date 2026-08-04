@@ -136,10 +136,11 @@ Packaged patterns in [`src/scp/scp_threat_registry.json`](src/scp/scp_threat_reg
 ## CI and quarantine
 
 - **GitHub Actions:** `contract` (Python matrix + pytest) and `promptfoo-eval` (Node 22, `examples/promptfoo`).
-- **Quarantine:** Default directory `scp_quarantine/` (or `SCP_QUARANTINE_DIR`) must not be committed—listed in [`.gitignore`](.gitignore). Writes enforce per-entry and total byte limits (see environment table); optional age-based purge and oldest-first eviction reduce disk exhaustion from repeated or oversized blocked payloads.
+- **Quarantine:** Default directory `scp_quarantine/` (or `SCP_QUARANTINE_DIR`) must not be committed—listed in [`.gitignore`](.gitignore). Writes enforce per-entry and total byte limits (see environment table); optional age-based purge and oldest-first eviction reduce disk exhaustion from repeated or oversized blocked payloads. Lifecycle (write → retain → purge) and non-claims vs Patient “retirement”: [docs/QUARANTINE_LIFECYCLE.md](docs/QUARANTINE_LIFECYCLE.md).
 
 ## Documentation
 
+- [docs/QUARANTINE_LIFECYCLE.md](docs/QUARANTINE_LIFECYCLE.md) — Write → retain → purge; Content axis (not Patient retirement)
 - [docs/OPENHARNESS_CONTRACT.md](docs/OPENHARNESS_CONTRACT.md) — Normative MCP contract sync and `CONTRACT_HASH`
 - [docs/contracts/scp_mcp_v1.md](docs/contracts/scp_mcp_v1.md) — Vendored OpenHarness contract (verified by hash test)
 - [docs/REFERENCE.md](docs/REFERENCE.md) — Threat model, tier definitions, over-sanitization allowlist
