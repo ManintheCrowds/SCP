@@ -4,6 +4,8 @@ Inspect, sanitize, contain, and quarantine unknown or potentially hazardous cont
 
 **Guard** in the Guard–Guide–Build taxonomy. Per OWASP LLM01/LLM06.
 
+**Scope:** SCP is the **Content** axis (payload safety into LLM sinks) — not moral **Patient**hood and not adversarial **Threat** classification. Full stance: [OpenHarness — Patient ≠ Threat ≠ Content](https://github.com/ManintheCrowds/OpenHarness/blob/main/docs/PATIENT_THREAT_CONTENT_DELINEATION.md).
+
 [![CI](https://github.com/ManintheCrowds/SCP/actions/workflows/ci.yml/badge.svg)](https://github.com/ManintheCrowds/SCP/actions/workflows/ci.yml)
 
 ## Problem → Solution → Impact
