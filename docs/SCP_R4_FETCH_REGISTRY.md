@@ -109,7 +109,7 @@ https://raw.githubusercontent.com/ManintheCrowds/scp-mycelium-registry/main/late
 
 ## Merge semantics
 
-Separate tool/step: `scp_apply_registry_quarantine` (future).
+Separate tool/step: `scp_apply_registry_quarantine`. Only accepts quarantine paths under `{SCP_QUARANTINE_DIR}/registry_fetch/` produced by `scp_fetch_registry` (not core `scp_quarantine`).
 
 | Step | Actor | Action |
 |------|-------|--------|
@@ -139,8 +139,10 @@ Audit events: `merge_operator_approved`, `merge_auto_applied` (dev only).
 
 | Transport | Envelope | Notes |
 |-----------|----------|-------|
-| HTTPS | `scp.registry_snapshot.v1` JSON | Etag caching; content-hash optional second check |
-| Nostr | Kind 30078 or dedicated registry event | Same inner `patterns[]`; signature + allowlist pubkey |
+| HTTPS | `scp.registry_snapshot.v1` JSON | Etag caching; content-hash optional second check; **body streamed with hard byte cap** (`SCP_QUARANTINE_MAX_CONTENT_BYTES`, default 1 MiB) before JSON parse — fail closed as `response_too_large` |
+| Nostr | Kind 30078 or dedicated registry event | Same inner `patterns[]`; signature + allowlist pubkey; **event `content` byte-capped** to the same quarantine content limit before `json.loads` |
+
+Quarantine layout: successful fetches write under `{SCP_QUARANTINE_DIR}/registry_fetch/` only. `scp_apply_registry_quarantine` rejects paths outside that directory and snapshots lacking envelope+sidecar `reason=registry_fetch`.
 
 ## Relationship to antigen
 

@@ -1,6 +1,6 @@
 # PURPOSE: SCP-R4 parallel fetch path — HTTPS + nostr registry snapshot to quarantine (no auto-merge).
 # DEPENDENCIES: pattern_record, registry_ssot, antigen_l402, antigen_nostr, scp_utils
-# MODIFICATION NOTES: AppSec 2026-07-24 — env-only HTTPS hosts for registry fetch
+# MODIFICATION NOTES: AppSec 2026-08-03 — registry_fetch quarantine layout; streamed body byte cap
 
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ import requests
 from . import antigen
 from . import antigen_l402 as l402
 from . import antigen_nostr as nostr
+from . import http_body
 from . import http_policy
 from . import pattern_record as pr
+from . import quarantine_limits
 from . import registry_ssot
 from . import scp_utils
 
@@ -84,7 +86,12 @@ def _write_registry_quarantine(
     }
     envelope = {"snapshot": snapshot, "meta": meta}
     content = json.dumps(envelope, indent=2, ensure_ascii=False)
-    q = scp_utils.quarantine(content, reason="registry_fetch", source=source)
+    q = scp_utils.quarantine(
+        content,
+        reason="registry_fetch",
+        source=source,
+        layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+    )
     antigen._audit(
         "registry_fetch_quarantine",
         source=source,
@@ -125,23 +132,42 @@ def _fetch_https(
 
     try:
         resp = sess.get(
-            url, headers=headers, timeout=30, verify=tls_verify, allow_redirects=False
+            url,
+            headers=headers,
+            timeout=30,
+            verify=tls_verify,
+            allow_redirects=False,
+            stream=True,
         )
     except requests.RequestException:
         raise RegistryFetchError("fetch_failed")
 
     if resp.status_code == 304:
+        resp.close()
         return {"unchanged": True}
 
     if resp.status_code != 200:
-        raise RegistryFetchError("fetch_failed", status=resp.status_code)
+        status = resp.status_code
+        resp.close()
+        raise RegistryFetchError("fetch_failed", status=status)
 
+    etag_header = resp.headers.get("ETag")
+    max_bytes = quarantine_limits.max_content_bytes()
     try:
-        body = resp.json()
+        body = http_body.read_response_json(resp, max_bytes)
+    except http_body.ResponseTooLargeError:
+        raise RegistryFetchError("response_too_large")
+    except http_body.ResponseReadError as exc:
+        raise RegistryFetchError(exc.reason)
     except json.JSONDecodeError:
         raise RegistryFetchError("invalid_json")
+    finally:
+        resp.close()
 
-    return {"body": body, "etag": resp.headers.get("ETag") or body.get("etag")}
+    if not isinstance(body, dict):
+        raise RegistryFetchError("invalid_json")
+
+    return {"body": body, "etag": etag_header or body.get("etag")}
 
 
 def _parse_nostr_snapshot(event: dict, allowlist: list[str]) -> dict:
@@ -152,8 +178,20 @@ def _parse_nostr_snapshot(event: dict, allowlist: list[str]) -> dict:
         raise RegistryFetchError("invalid_nostr_signature")
 
     content = event.get("content", "")
+    max_bytes = quarantine_limits.max_content_bytes()
     try:
-        body = json.loads(content) if isinstance(content, str) else content
+        if isinstance(content, str):
+            http_body.assert_content_within_cap(content, max_bytes)
+            body = json.loads(content)
+        elif isinstance(content, dict):
+            # Already-decoded object (in-memory transport): bound via compact JSON size.
+            packed = json.dumps(content, separators=(",", ":"), ensure_ascii=False)
+            http_body.assert_content_within_cap(packed, max_bytes)
+            body = content
+        else:
+            raise RegistryFetchError("invalid_nostr_content")
+    except http_body.ResponseTooLargeError:
+        raise RegistryFetchError("response_too_large")
     except json.JSONDecodeError:
         raise RegistryFetchError("invalid_nostr_content")
 

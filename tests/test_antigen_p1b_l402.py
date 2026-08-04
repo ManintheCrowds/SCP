@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from stream_response_mock import mock_json_response
+
 from scp import antigen, antigen_cli, antigen_l402 as l402, antigen_mcp, antigen_nostr as nostr
 
 SECKEY = "0000000000000000000000000000000000000000000000000000000000000003"
@@ -138,9 +140,7 @@ def test_fetch_l402_token_retry_200(issuer):
     mock_402.status_code = 402
     mock_402.headers = {"WWW-Authenticate": WWW_AUTH}
 
-    mock_200 = MagicMock()
-    mock_200.status_code = 200
-    mock_200.json.return_value = body
+    mock_200 = mock_json_response(body)
 
     def _get(url, timeout=30, headers=None, **kwargs):
         if headers and headers.get("Authorization", "").startswith("L402 "):
@@ -249,9 +249,7 @@ def test_import_from_announcement_paid_quarantine_only(issuer, tmp_path: Path):
     assert ann is not None
     bare = antigen.compute_payload_hash(bundle["payload"])[7:]
 
-    mock_200 = MagicMock()
-    mock_200.status_code = 200
-    mock_200.json.return_value = bundle["payload"]
+    mock_200 = mock_json_response(bundle["payload"])
 
     with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_200):
         result = nostr.import_from_announcement(ann, allowlist=[issuer], l402_token=TOKEN)
@@ -302,15 +300,14 @@ def test_parse_www_authenticate_l402_lsat_prefix():
 
 def test_fetch_tls_verify_disabled(monkeypatch):
     bare = "a" * 64
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {"patterns": _patterns()}
+    mock_resp = mock_json_response({"patterns": _patterns()})
 
     monkeypatch.setenv("SCP_ANTIGEN_TLS_VERIFY", "0")
     with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp) as mock_get:
         with patch("scp.antigen_nostr.antigen.compute_payload_hash", return_value=f"sha256:{bare}"):
             nostr.fetch_payload(PAYLOAD_URL, bare)
     assert mock_get.call_args.kwargs.get("verify") is False
+    assert mock_get.call_args.kwargs.get("stream") is True
 
 
 def test_fetch_localhost_guard_blocks_when_integration_env(monkeypatch):

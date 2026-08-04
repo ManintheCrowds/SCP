@@ -1,6 +1,6 @@
 # PURPOSE: SCP-R4 SSOT store, diff, and operator-gated merge for registry fetch quarantine.
 # DEPENDENCIES: pattern_record, scp_utils (audit via antigen), antigen._audit pattern
-# MODIFICATION NOTES: Option C hybrid SSOT at ~/.scp/pattern_records.json
+# MODIFICATION NOTES: AppSec 2026-08-03 — confine quarantine_path + require registry_fetch provenance
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ from . import antigen
 from . import operator_consent
 from . import pattern_record as pr
 from . import registry_paths
+from . import scp_utils
+
+REGISTRY_FETCH_REASON = "registry_fetch"
 
 DEFAULT_MAX_DRIFT = 0.15
 DEFAULT_DEV_AUTO_CATEGORIES = frozenset({"injection"})
@@ -172,16 +175,67 @@ def _dev_auto_categories() -> frozenset[str]:
     return frozenset(c.strip() for c in raw.split(",") if c.strip())
 
 
+def _path_under_registry_fetch(path: Path) -> bool:
+    """True iff path resolves under {QUARANTINE_DIR}/registry_fetch/."""
+    try:
+        resolved = path.resolve()
+        fetch_root = scp_utils.registry_fetch_quarantine_dir().resolve()
+        quarantine_root = scp_utils.quarantine_dir().resolve()
+    except OSError:
+        return False
+    try:
+        if not fetch_root.is_relative_to(quarantine_root):
+            return False
+        return resolved.is_relative_to(fetch_root)
+    except (ValueError, AttributeError):
+        # Python <3.9 fallback unused; keep defensive.
+        try:
+            resolved.relative_to(fetch_root)
+            fetch_root.relative_to(quarantine_root)
+            return True
+        except ValueError:
+            return False
+
+
+def _sidecar_meta_reason(content_path: Path) -> str | None:
+    """Read sibling {stem}.json reason written by scp_utils.quarantine."""
+    meta_path = content_path.with_suffix(".json")
+    if not meta_path.is_file():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    reason = meta.get("reason")
+    return reason if isinstance(reason, str) else None
+
+
 def _load_quarantine_snapshot(quarantine_path: str | Path) -> dict:
     path = Path(quarantine_path)
+    if not _path_under_registry_fetch(path):
+        raise ValueError("quarantine_path_rejected")
     if not path.is_file():
         raise ValueError("quarantine_file_not_found")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(data, dict) and "snapshot" in data:
-        return data["snapshot"]
-    if isinstance(data, dict) and data.get("schema_revision") == pr.REGISTRY_SNAPSHOT_REVISION:
-        return data
-    raise ValueError("invalid_quarantine_format")
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError("invalid_quarantine_format") from exc
+
+    if not isinstance(data, dict) or "snapshot" not in data:
+        raise ValueError("invalid_quarantine_format")
+    meta = data.get("meta")
+    if not isinstance(meta, dict) or meta.get("reason") != REGISTRY_FETCH_REASON:
+        raise ValueError("quarantine_provenance_rejected")
+    if _sidecar_meta_reason(path) != REGISTRY_FETCH_REASON:
+        raise ValueError("quarantine_provenance_rejected")
+
+    snapshot = data["snapshot"]
+    if not isinstance(snapshot, dict):
+        raise ValueError("invalid_quarantine_format")
+    return snapshot
 
 
 def _eligible_dev_auto(rec: dict, diff_info: dict) -> bool:
@@ -203,8 +257,23 @@ def apply_merge(
     *,
     approve: bool = False,
 ) -> dict:
-    """Merge quarantined registry snapshot into SSOT. Production requires approve=True."""
-    snapshot = _load_quarantine_snapshot(quarantine_path)
+    """Merge quarantined registry snapshot into SSOT. Production requires approve=True.
+
+    Only accepts paths under ``{SCP_QUARANTINE_DIR}/registry_fetch/`` produced by
+    ``scp_fetch_registry`` (envelope + sidecar reason=registry_fetch).
+    """
+    try:
+        snapshot = _load_quarantine_snapshot(quarantine_path)
+    except ValueError as exc:
+        reason = str(exc) or "quarantine_path_rejected"
+        if reason not in (
+            "quarantine_path_rejected",
+            "quarantine_file_not_found",
+            "invalid_quarantine_format",
+            "quarantine_provenance_rejected",
+        ):
+            reason = "quarantine_path_rejected"
+        return {"merged": False, "reason": reason}
     v = pr.validate_snapshot(snapshot)
     if not v["valid"]:
         return {"merged": False, "reason": "invalid_snapshot", "errors": v["errors"]}

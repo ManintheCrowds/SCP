@@ -19,6 +19,7 @@ import requests
 
 from . import antigen
 from . import antigen_l402 as l402
+from . import http_body
 from . import http_policy
 from . import operator_consent
 
@@ -643,9 +644,16 @@ def _fetch_response(
         macaroon, preimage = l402.normalize_l402_token(l402_token)
         headers = {"Authorization": l402.format_authorization_header(macaroon, preimage)}
         return sess.get(
-            url, timeout=30, headers=headers, verify=verify_tls, allow_redirects=False
+            url,
+            timeout=30,
+            headers=headers,
+            verify=verify_tls,
+            allow_redirects=False,
+            stream=True,
         )
-    return sess.get(url, timeout=30, verify=verify_tls, allow_redirects=False)
+    return sess.get(
+        url, timeout=30, verify=verify_tls, allow_redirects=False, stream=True
+    )
 
 
 def _process_fetch_response(
@@ -675,8 +683,29 @@ def _process_fetch_response(
             antigen_id=antigen_id,
         )
 
+    max_bytes = int(
+        os.environ.get("SCP_ANTIGEN_MAX_PAYLOAD_BYTES", antigen.DEFAULT_MAX_PAYLOAD_BYTES)
+    )
     try:
-        body = resp.json()
+        body = http_body.read_response_json(resp, max_bytes)
+    except http_body.ResponseTooLargeError as exc:
+        antigen._audit(
+            "fetch_rejected",
+            url_host=url_host,
+            payload_hash=expected,
+            reason="response_too_large",
+            antigen_id=antigen_id,
+        )
+        raise FetchError("response_too_large") from exc
+    except http_body.ResponseReadError as exc:
+        antigen._audit(
+            "fetch_rejected",
+            url_host=url_host,
+            payload_hash=expected,
+            reason=exc.reason,
+            antigen_id=antigen_id,
+        )
+        raise FetchError(exc.reason) from exc
     except json.JSONDecodeError as exc:
         antigen._audit(
             "fetch_rejected",
@@ -686,6 +715,8 @@ def _process_fetch_response(
             antigen_id=antigen_id,
         )
         raise FetchError("invalid_json") from exc
+    finally:
+        resp.close()
 
     payload = _extract_payload_obj(body)
     actual = antigen.compute_payload_hash(payload)

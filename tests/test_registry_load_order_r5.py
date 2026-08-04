@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from scp import pattern_record as pr
+from scp import registry_fetch
 from scp import registry_paths
 from scp import registry_ssot
 from scp import sanitize_input
@@ -31,9 +32,12 @@ def _merge_token(token: str, isolated_registry: Path) -> None:
         "registry_version": "2026-07-02T00:00:00Z",
         "patterns": [rec],
     }
-    qfile = isolated_registry / "quarantine_snap.json"
-    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
-    res = registry_ssot.apply_merge(qfile, approve=True)
+    q = registry_fetch._write_registry_quarantine(
+        snap,
+        source="https://example.com/r5.json",
+        diff_summary={"add_count": 1, "conflict_count": 0},
+    )
+    res = registry_ssot.apply_merge(q["path"], approve=True)
     assert res["merged"] is True
 
 

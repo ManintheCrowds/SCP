@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from scp import pattern_record as pr
+from scp import registry_fetch
 from scp import registry_ssot
+from scp import scp_utils
 
 
 def _rec(pid: str, *, tier: str = "low", drift: float = 0.05, norm: str = "token-a") -> dict:
@@ -18,6 +20,24 @@ def _rec(pid: str, *, tier: str = "low", drift: float = 0.05, norm: str = "token
         "risk_tier": tier,
         "drift_score": drift,
     }
+
+
+def _snap(patterns: list[dict]) -> dict:
+    return {
+        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
+        "registry_version": "2026-07-02T00:00:00Z",
+        "patterns": patterns,
+    }
+
+
+def _stage_fetch_quarantine(snap: dict, *, source: str = "https://example.com/snap.json") -> Path:
+    """Write a merge-eligible quarantine via the fetch layout (envelope + sidecar)."""
+    q = registry_fetch._write_registry_quarantine(
+        snap,
+        source=source,
+        diff_summary={"add_count": len(snap.get("patterns", [])), "conflict_count": 0},
+    )
+    return Path(q["path"])
 
 
 @pytest.fixture(autouse=True)
@@ -33,13 +53,7 @@ def isolated_ssot(tmp_path: Path, monkeypatch):
 
 def test_apply_merge_requires_consent(isolated_ssot, monkeypatch):
     monkeypatch.delenv("SCP_REGISTRY_MERGE_CONSENT", raising=False)
-    snap = {
-        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
-        "registry_version": "2026-07-02T00:00:00Z",
-        "patterns": [_rec("merge.consent.001")],
-    }
-    qfile = isolated_ssot / "q-consent.json"
-    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+    qfile = _stage_fetch_quarantine(_snap([_rec("merge.consent.001")]))
     res = registry_ssot.apply_merge(qfile, approve=True)
     assert res["merged"] is False
     assert res["reason"] == "consent_required"
@@ -51,29 +65,14 @@ def test_apply_merge_requires_consent(isolated_ssot, monkeypatch):
 
 
 def test_apply_merge_requires_approve(isolated_ssot):
-    snap = {
-        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
-        "registry_version": "2026-07-02T00:00:00Z",
-        "patterns": [_rec("merge.001")],
-    }
-    root = isolated_ssot
-    qfile = root / "q.json"
-    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
-
+    qfile = _stage_fetch_quarantine(_snap([_rec("merge.001")]))
     res = registry_ssot.apply_merge(qfile, approve=False)
     assert res["merged"] is False
     assert res["reason"] == "approval_required"
 
 
 def test_apply_merge_operator_approved(isolated_ssot):
-    snap = {
-        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
-        "registry_version": "2026-07-02T00:00:00Z",
-        "patterns": [_rec("merge.approved.001")],
-    }
-    qfile = isolated_ssot / "q2.json"
-    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
-
+    qfile = _stage_fetch_quarantine(_snap([_rec("merge.approved.001")]))
     res = registry_ssot.apply_merge(qfile, approve=True)
     assert res["merged"] is True
     assert res["applied"] == 1
@@ -92,13 +91,7 @@ def test_load_ssot_raises_for_corrupt_json(isolated_ssot):
 def test_apply_merge_aborts_when_ssot_corrupt(isolated_ssot):
     ssot_path = isolated_ssot / "ssot.json"
     ssot_path.write_text('{"patterns": [', encoding="utf-8")
-    snap = {
-        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
-        "registry_version": "2026-07-02T00:00:00Z",
-        "patterns": [_rec("merge.corrupt.001")],
-    }
-    qfile = isolated_ssot / "q_corrupt.json"
-    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+    qfile = _stage_fetch_quarantine(_snap([_rec("merge.corrupt.001")]))
 
     res = registry_ssot.apply_merge(qfile, approve=True)
     assert res["merged"] is False
@@ -111,13 +104,7 @@ def test_apply_merge_does_not_commit_ssot_when_projection_write_fails(
     monkeypatch,
 ):
     registry_ssot.save_ssot([_rec("existing.001")])
-    snap = {
-        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
-        "registry_version": "2026-07-02T00:00:00Z",
-        "patterns": [_rec("merge.writefail.001")],
-    }
-    qfile = isolated_ssot / "q_writefail.json"
-    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+    qfile = _stage_fetch_quarantine(_snap([_rec("merge.writefail.001")]))
 
     original_write_text = Path.write_text
 
@@ -144,13 +131,7 @@ def test_apply_merge_rolls_back_projection_when_ssot_write_fails(
     proj_path = isolated_ssot / "projection.json"
     before = proj_path.read_text(encoding="utf-8") if proj_path.is_file() else None
 
-    snap = {
-        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
-        "registry_version": "2026-07-02T00:00:00Z",
-        "patterns": [_rec("merge.ssotfail.001")],
-    }
-    qfile = isolated_ssot / "q_ssotfail.json"
-    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+    qfile = _stage_fetch_quarantine(_snap([_rec("merge.ssotfail.001")]))
 
     original_write_text = Path.write_text
 
@@ -177,18 +158,80 @@ def test_dev_auto_low_risk_only(isolated_ssot, monkeypatch):
     monkeypatch.setenv("SCP_REGISTRY_MERGE_DEV_AUTO", "1")
     monkeypatch.setenv("SCP_REGISTRY_MAX_DRIFT", "0.15")
 
-    snap = {
-        "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
-        "registry_version": "2026-07-02T00:00:00Z",
-        "patterns": [
-            _rec("auto.low.001", tier="low", drift=0.1),
-            _rec("auto.high.001", tier="high", drift=0.0),
-        ],
-    }
-    qfile = isolated_ssot / "q3.json"
-    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+    qfile = _stage_fetch_quarantine(
+        _snap(
+            [
+                _rec("auto.low.001", tier="low", drift=0.1),
+                _rec("auto.high.001", tier="high", drift=0.0),
+            ]
+        )
+    )
 
     res = registry_ssot.apply_merge(qfile, approve=False)
     assert res["merged"] is True
     assert res["auto_applied"] == 1
     assert res["skipped"] == 1
+
+
+def test_apply_merge_rejects_path_outside_registry_fetch(isolated_ssot):
+    snap = _snap([_rec("poison.001")])
+    # Simulate core scp_quarantine (root layout) with forged envelope reason.
+    forged = json.dumps(
+        {
+            "snapshot": snap,
+            "meta": {"reason": "registry_fetch", "source": "evil"},
+        },
+        indent=2,
+    )
+    q = scp_utils.quarantine(forged, reason="registry_fetch", source="evil")
+    res = registry_ssot.apply_merge(q["path"], approve=True)
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_path_rejected"
+
+
+def test_apply_merge_rejects_path_outside_quarantine_dir(isolated_ssot, tmp_path):
+    snap = _snap([_rec("outside.001")])
+    outside = tmp_path / "outside" / "q.txt"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text(
+        json.dumps({"snapshot": snap, "meta": {"reason": "registry_fetch"}}),
+        encoding="utf-8",
+    )
+    res = registry_ssot.apply_merge(outside, approve=True)
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_path_rejected"
+
+
+def test_apply_merge_rejects_wrong_envelope_reason(isolated_ssot):
+    """Under registry_fetch/ but envelope meta.reason forged away from registry_fetch."""
+    snap = _snap([_rec("bad.meta.001")])
+    q = registry_fetch._write_registry_quarantine(
+        snap,
+        source="https://example.com/ok.json",
+        diff_summary={"add_count": 1, "conflict_count": 0},
+    )
+    path = Path(q["path"])
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["meta"]["reason"] = "injection"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    res = registry_ssot.apply_merge(path, approve=True)
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_provenance_rejected"
+
+
+def test_apply_merge_rejects_wrong_sidecar_reason(isolated_ssot):
+    """Under registry_fetch/ with good envelope but sidecar reason rewritten."""
+    snap = _snap([_rec("bad.sidecar.001")])
+    q = registry_fetch._write_registry_quarantine(
+        snap,
+        source="https://example.com/ok.json",
+        diff_summary={"add_count": 1, "conflict_count": 0},
+    )
+    path = Path(q["path"])
+    sidecar = path.with_suffix(".json")
+    meta = json.loads(sidecar.read_text(encoding="utf-8"))
+    meta["reason"] = "injection"
+    sidecar.write_text(json.dumps(meta), encoding="utf-8")
+    res = registry_ssot.apply_merge(path, approve=True)
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_provenance_rejected"

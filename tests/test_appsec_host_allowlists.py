@@ -65,15 +65,15 @@ def test_fetch_allowlisted_host_reaches_network(monkeypatch):
     monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
     payload = {"patterns": _patterns()}
     bare = antigen.compute_payload_hash(payload)[7:]
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = payload
-    mock_resp.headers = {}
+    from stream_response_mock import mock_json_response
+
+    mock_resp = mock_json_response(payload)
 
     with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp) as get:
         got = nostr.fetch_payload(PAYLOAD_URL, bare)
     assert got == payload
     assert get.call_args.kwargs.get("allow_redirects") is False
+    assert get.call_args.kwargs.get("stream") is True
 
 
 def test_fetch_session_disables_trust_env(monkeypatch):
@@ -100,6 +100,7 @@ def test_fetch_session_disables_trust_env(monkeypatch):
     assert exc.value.reason == "payment_required"
     assert captured["trust_env"] is False
     assert captured["kwargs"].get("allow_redirects") is False
+    assert captured["kwargs"].get("stream") is True
 
 
 def test_mcp_fetch_rejects_empty_allowlist_before_network(monkeypatch):
@@ -133,10 +134,9 @@ def test_mcp_fetch_uses_env_host_allowlist(monkeypatch):
     monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
     payload = {"patterns": _patterns()}
     bare = antigen.compute_payload_hash(payload)[7:]
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = payload
-    mock_resp.headers = {}
+    from stream_response_mock import mock_json_response
+
+    mock_resp = mock_json_response(payload)
 
     with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
         out = json.loads(
@@ -149,18 +149,14 @@ def test_mcp_fetch_does_not_auto_attach_env_l402(monkeypatch):
     monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
     monkeypatch.setenv("SCP_ANTIGEN_L402_TOKEN", "mac:preimagehex")
     bare = "c" * 64
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {"patterns": _patterns()}
-    mock_resp.headers = {}
-    # force hash mismatch path after get — capture headers instead
+    from stream_response_mock import mock_json_response
+
     captured: dict = {}
 
     def fake_get(*args, **kwargs):
         captured["headers"] = kwargs.get("headers") or {}
-        mock_resp.json.return_value = {"patterns": _patterns()}
-        # make hash fail after fetch
-        return mock_resp
+        # hash will mismatch vs bare
+        return mock_json_response({"patterns": _patterns()})
 
     with patch("scp.antigen_nostr.requests.Session.get", side_effect=fake_get):
         out = json.loads(antigen_mcp.scp_antigen_fetch(PAYLOAD_URL, bare))
@@ -223,9 +219,7 @@ def test_contribute_session_trust_env_false(monkeypatch):
 
 
 def test_registry_fetch_https_disables_redirects():
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
+    body = {
         "schema_revision": "scp.registry_snapshot.v1",
         "registry_version": "v",
         "patterns": [
@@ -237,13 +231,18 @@ def test_registry_fetch_https_disables_redirects():
             }
         ],
     }
+    raw = json.dumps(body).encode("utf-8")
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
     mock_resp.headers = {}
+    mock_resp.iter_content = lambda chunk_size=65536: iter([raw])
 
     with patch("scp.registry_fetch.requests.Session.get", return_value=mock_resp) as get:
-        # May fail validation later; we only care redirects flag was set on GET
+        # May fail validation later; we only care redirects/stream flags on GET
         try:
             rf._fetch_https(PAYLOAD_URL, ["example.com"])
         except Exception:
             pass
     assert get.called
     assert get.call_args.kwargs.get("allow_redirects") is False
+    assert get.call_args.kwargs.get("stream") is True
