@@ -26,7 +26,7 @@
 | `scp_antigen_merge` | `bundle_json` (**JSON object** only), `approve?` default **false**, `allowlist?` | **`approve=true` + `SCP_REGISTRY_MERGE_CONSENT=1`**; signature always required | Registry merge; no path-as-JSON |
 | `scp_antigen_publish` | `bundle_json` (**JSON object** only), `relays?`, `dry_run?`, `approve?` | **`approve=true` + `SCP_ANTIGEN_PUBLISH_CONSENT=1`**; no MCP `seckey_hex`; `dry_run` never signs | Nostr kind 30078 |
 | `scp_antigen_discover` | `allowlist?` (issuer pubkeys), `relays?`, filters | Empty pubkey allowlist fails closed; relays ⊆ `SCP_ANTIGEN_RELAY_ALLOWLIST` | Metadata only |
-| `scp_antigen_fetch` | `url`, `expected_hash`, `allowlist?` (ignored for hosts), `l402_token?` | No auto-pay on 402; **hosts env-only** (`SCP_ANTIGEN_FETCH_HOST_ALLOWLIST`); **never auto-loads** `SCP_ANTIGEN_L402_TOKEN` | HTTPS fetch + verify |
+| `scp_antigen_fetch` | `url`, `expected_hash`, `allowlist?` (ignored for hosts), `l402_token?` | No auto-pay on 402; **hosts env-only** (`SCP_ANTIGEN_FETCH_HOST_ALLOWLIST`); **never auto-loads** `SCP_ANTIGEN_L402_TOKEN` | HTTPS fetch + verify; body hard-capped (`SCP_ANTIGEN_MAX_PAYLOAD_BYTES`) before JSON parse |
 
 `bundle_json` must be a JSON **object** (the antigen bundle). A JSON string value (including a filesystem path) is rejected. Loading bundles from disk is CLI-only (`pathlib.Path`).
 
@@ -34,9 +34,9 @@
 
 | Tool | Parameters | Human gate | Notes |
 |------|------------|------------|-------|
-| `scp_fetch_registry` | `source`, `allowlist` (issuer pubkeys for nostr), `if_none_match?`, `relays?` | Stages to quarantine only; **`merged` always false**; HTTPS hosts from env; TLS via **`SCP_REGISTRY_TLS_VERIFY`** (no MCP `tls_verify`) | HTTPS or nostr |
+| `scp_fetch_registry` | `source`, `allowlist` (issuer pubkeys for nostr), `if_none_match?`, `relays?` | Stages to quarantine only; **`merged` always false**; HTTPS hosts from env; TLS via **`SCP_REGISTRY_TLS_VERIFY`** (no MCP `tls_verify`) | HTTPS or nostr; HTTPS body capped to quarantine content limit; writes under `registry_fetch/` |
 | `scp_contribute_pattern` | `transport`, `patterns_json?`, `raw_content?`, `approve?` default **false**, … | **`approve=true`**; `SCP_CONTRIBUTE_CONSENT=1`; nostr/both also **`SCP_ANTIGEN_PUBLISH_CONSENT=1`** under MCP; **`SCP_CONTRIBUTE_HOST_ALLOWLIST`** gates POST; MCP rejects `seckey_hex`; TLS via **`SCP_REGISTRY_TLS_VERIFY`** | R3 contribute |
-| `scp_apply_registry_quarantine` | `quarantine_path`, `approve?` default **false** | **`approve=true` + `SCP_REGISTRY_MERGE_CONSENT=1`**; `SCP_REGISTRY_MERGE_DEV_AUTO` disabled under MCP | R4 SSOT + projection |
+| `scp_apply_registry_quarantine` | `quarantine_path`, `approve?` default **false** | **`approve=true` + `SCP_REGISTRY_MERGE_CONSENT=1`**; `SCP_REGISTRY_MERGE_DEV_AUTO` disabled under MCP | Path must be under `{SCP_QUARANTINE_DIR}/registry_fetch/` from `scp_fetch_registry` (envelope + sidecar `reason=registry_fetch`); core `scp_quarantine` paths rejected |
 
 ---
 

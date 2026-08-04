@@ -20,6 +20,10 @@ from . import encounter_auto_log
 
 _QUARANTINE_ID_RE = re.compile(r"^[a-f0-9-]{1,36}$")
 
+# Layout used only by registry_fetch → apply_merge; not exposed on core MCP scp_quarantine.
+REGISTRY_FETCH_LAYOUT = "registry_fetch"
+_ALLOWED_QUARANTINE_LAYOUTS = frozenset({REGISTRY_FETCH_LAYOUT})
+
 _pkg_dir = Path(__file__).resolve().parent
 
 
@@ -28,6 +32,16 @@ def _quarantine_dir() -> Path:
     if env:
         return Path(env)
     return _pkg_dir.parent.parent / "scp_quarantine"
+
+
+def quarantine_dir() -> Path:
+    """Public accessor for the configured quarantine root."""
+    return _quarantine_dir()
+
+
+def registry_fetch_quarantine_dir() -> Path:
+    """Directory that only scp_fetch_registry may write into for merge eligibility."""
+    return _quarantine_dir() / REGISTRY_FETCH_LAYOUT
 
 
 def inspect(content: str, context: str | None = None) -> dict:
@@ -122,15 +136,29 @@ def contain(content: str, wrapper: str = "markdown_fence") -> str:
     )
 
 
-def quarantine(content: str, reason: str, source: str) -> dict:
-    qdir = _quarantine_dir()
+def quarantine(
+    content: str,
+    reason: str,
+    source: str,
+    *,
+    layout: str | None = None,
+) -> dict:
+    """Quarantine content. ``layout`` is internal-only (e.g. registry_fetch); MCP must not pass it."""
+    root = _quarantine_dir()
+    if layout is None:
+        qdir = root
+    elif layout in _ALLOWED_QUARANTINE_LAYOUTS:
+        qdir = root / layout
+    else:
+        raise ValueError(f"unsupported quarantine layout: {layout!r}")
     qdir.mkdir(parents=True, exist_ok=True)
     qid = str(uuid.uuid4())[:8]
     meta = {"quarantine_id": qid, "reason": reason, "source": source}
     meta_json = json.dumps(meta, indent=2)
     content_bytes = len(content.encode("utf-8", errors="replace"))
     meta_bytes = len(meta_json.encode("utf-8"))
-    quarantine_limits.prepare_quarantine_write(qdir, content_bytes, meta_bytes)
+    # Quota accounts against the quarantine root (all layouts).
+    quarantine_limits.prepare_quarantine_write(root, content_bytes, meta_bytes)
     content_path = qdir / f"{qid}.txt"
     meta_path = qdir / f"{qid}.json"
     content_path.write_text(content, encoding="utf-8", errors="replace")

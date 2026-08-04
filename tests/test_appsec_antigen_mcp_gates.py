@@ -147,6 +147,7 @@ def test_mcp_dev_auto_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("SCP_REGISTRY_MERGE_DEV_AUTO", "1")
     monkeypatch.delenv("SCP_REGISTRY_MERGE_CONSENT", raising=False)
     from scp import pattern_record as pr
+    from scp import registry_fetch
 
     snap = pr.build_registry_snapshot(
         [
@@ -161,13 +162,48 @@ def test_mcp_dev_auto_disabled(tmp_path, monkeypatch):
         ],
         registry_version="2026-01-01T00:00:00Z",
     )
-    qfile = tmp_path / "q-devauto.json"
-    qfile.write_text(json.dumps({"snapshot": snap}), encoding="utf-8")
+    q = registry_fetch._write_registry_quarantine(
+        snap,
+        source="https://example.com/devauto.json",
+        diff_summary={"add_count": 1, "conflict_count": 0},
+    )
     out = json.loads(
-        antigen_mcp.scp_apply_registry_quarantine(str(qfile), approve=False)
+        antigen_mcp.scp_apply_registry_quarantine(q["path"], approve=False)
     )
     assert out.get("merged") is False
     assert out.get("reason") == "approval_required"
+    assert registry_ssot.load_ssot() == []
+
+
+def test_mcp_apply_rejects_core_quarantine_poison(tmp_path, monkeypatch):
+    """Dual-server: scp_quarantine-forged snapshot must not merge even with consent."""
+    monkeypatch.setenv("SCP_REGISTRY_MERGE_CONSENT", "1")
+    from scp import pattern_record as pr
+    from scp import scp_utils
+
+    snap = pr.build_registry_snapshot(
+        [
+            {
+                "pattern_id": "inj.poison.001",
+                "category": "injection",
+                "detector": {"kind": "token_family", "normalized": "neuter-detection"},
+                "risk_tier": "low",
+                "drift_score": 0.01,
+                "registry_bucket": "power_words",
+            }
+        ],
+        registry_version="2026-01-01T00:00:00Z",
+    )
+    forged = json.dumps(
+        {"snapshot": snap, "meta": {"reason": "registry_fetch", "source": "mcp-poison"}},
+        indent=2,
+    )
+    q = scp_utils.quarantine(forged, reason="registry_fetch", source="mcp-poison")
+    out = json.loads(
+        antigen_mcp.scp_apply_registry_quarantine(q["path"], approve=True)
+    )
+    assert out.get("merged") is False
+    assert out.get("reason") == "quarantine_path_rejected"
     assert registry_ssot.load_ssot() == []
 
 
@@ -358,10 +394,9 @@ def test_mcp_fetch_registry_session_get_verify_flag(monkeypatch):
     """End-to-end: MCP → fetch_registry → Session.get(verify=…) honors env only."""
     monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
     monkeypatch.delenv("SCP_REGISTRY_TLS_VERIFY", raising=False)
+    from stream_response_mock import mock_json_response
 
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
+    body = {
         "schema_revision": "scp.registry_snapshot.v1",
         "registry_version": "2026-01-01T00:00:00Z",
         "patterns": [
@@ -376,7 +411,7 @@ def test_mcp_fetch_registry_session_get_verify_flag(monkeypatch):
             }
         ],
     }
-    mock_resp.headers = {}
+    mock_resp = mock_json_response(body)
 
     with patch(
         "scp.registry_fetch.requests.Session.get", return_value=mock_resp
@@ -388,6 +423,7 @@ def test_mcp_fetch_registry_session_get_verify_flag(monkeypatch):
         )
     assert mock_get.called
     assert mock_get.call_args.kwargs.get("verify") is True
+    assert mock_get.call_args.kwargs.get("stream") is True
     assert out.get("ok") is True
 
     monkeypatch.setenv("SCP_REGISTRY_TLS_VERIFY", "0")

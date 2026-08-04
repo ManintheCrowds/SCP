@@ -70,7 +70,13 @@ def test_fetch_https_quarantine(isolated_env, monkeypatch):
     assert res["merged"] is False
     assert res["quarantine_path"]
     assert res["diff_summary"]["add_count"] == 2
-    assert Path(res["quarantine_path"]).is_file()
+    qpath = Path(res["quarantine_path"])
+    assert qpath.is_file()
+    assert "registry_fetch" in qpath.parts
+    # Merge-eligible after operator consent
+    monkeypatch.setenv("SCP_REGISTRY_MERGE_CONSENT", "1")
+    merge = registry_ssot.apply_merge(qpath, approve=True)
+    assert merge["merged"] is True
 
 
 def test_fetch_failure_unchanged_ssot(isolated_env, monkeypatch):

@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from stream_response_mock import mock_json_response
+
 from scp import antigen, antigen_nostr as nostr
 
 SECKEY = "0000000000000000000000000000000000000000000000000000000000000003"
@@ -145,13 +147,9 @@ def test_cli_publish_rejects_filtered_empty_relay_list(issuer, monkeypatch):
 
 def test_fetch_payload_hash_match(issuer):
     payload = {"patterns": _patterns()}
-    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     bare = antigen.compute_payload_hash(payload)[7:]
 
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = payload
-    mock_resp.headers = {}
+    mock_resp = mock_json_response(payload)
 
     with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
         got = nostr.fetch_payload(PAYLOAD_URL, bare)
@@ -164,9 +162,7 @@ def test_fetch_payload_hash_mismatch(issuer):
     tampered = {"patterns": _patterns()}
     tampered["patterns"][0]["severity"] = "low"
 
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = tampered
+    mock_resp = mock_json_response(tampered)
 
     with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
         with pytest.raises(nostr.FetchError, match="hash_mismatch"):
@@ -198,9 +194,7 @@ def test_e2e_discover_fetch_import_quarantine_only(issuer):
     assert len(announcements) == 1
 
     payload = bundle["payload"]
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = payload
+    mock_resp = mock_json_response(payload)
 
     with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
         res = nostr.import_from_announcement(announcements[0], allowlist=[issuer])
