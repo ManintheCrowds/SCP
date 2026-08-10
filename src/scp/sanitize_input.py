@@ -182,6 +182,7 @@ _TAG_CHAR_END = 0xE007F
 _B64_MAX_LAYERS = 3
 # Bounded decode depth for nested URL/HTML evasion (#12 curated).
 _CANONICALIZATION_MAX_LAYERS = 8
+_CANONICALIZATION_DEPTH_EXCEEDED = "max_canonicalization_layers_exceeded"
 
 
 def _strip_null_bytes(text: str) -> str:
@@ -373,26 +374,39 @@ def _check_rot_decode(text: str) -> list[tuple[int, str]]:
 _B64_CANDIDATE = re.compile(r"\b[A-Za-z0-9+/]{16,}(?:={1,2})?(?![A-Za-z0-9+/=])")
 
 
+def _base64_candidate_offsets(blob: str) -> list[str]:
+    """Return bounded alignment candidates for a base64-like run."""
+    stripped = blob.rstrip("=")
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for offset in range(min(4, len(stripped))):
+        candidate = stripped[offset:]
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+    return candidates
+
+
 def _decode_base64_snippets_once(text: str) -> tuple[str, bool]:
     """Decode short base64 blobs once; return (text, changed)."""
     extras: list[str] = []
     for m in _B64_CANDIDATE.finditer(text):
-        blob = m.group(0).rstrip("=")
-        if len(blob) > 120 or len(blob) < 8:
-            continue
-        try:
-            pad = blob + "=" * ((4 - len(blob) % 4) % 4)
-            decoded = base64.b64decode(pad, validate=False)
-        except ValueError:
-            continue
-        if len(decoded) > 200:
-            continue
-        try:
-            snippet = decoded.decode("utf-8")
-        except UnicodeDecodeError:
-            continue
-        if snippet and all(c.isprintable() or c in "\n\r\t" for c in snippet):
-            extras.append(snippet)
+        for blob in _base64_candidate_offsets(m.group(0)):
+            if len(blob) > 120 or len(blob) < 8:
+                continue
+            try:
+                pad = blob + "=" * ((4 - len(blob) % 4) % 4)
+                decoded = base64.b64decode(pad, validate=False)
+            except ValueError:
+                continue
+            if len(decoded) > 200:
+                continue
+            try:
+                snippet = decoded.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            if snippet and all(c.isprintable() or c in "\n\r\t" for c in snippet):
+                extras.append(snippet)
     if extras:
         return text + "\n" + "\n".join(extras), True
     return text, False
@@ -421,18 +435,27 @@ def _canonicalize_scan_layer(text: str) -> str:
     return prepared
 
 
-def _prepare_text_for_scan(text: str) -> str:
-    """Normalize unicode, encoding evasion, fragmentation, and short base64 before pattern scans."""
+def _prepare_text_for_scan_with_status(text: str) -> tuple[str, bool]:
+    """Normalize text and report whether bounded canonicalization was exhausted."""
     prepared = text
-    for _ in range(_CANONICALIZATION_MAX_LAYERS):
+    canonicalization_exhausted = False
+    for layer in range(_CANONICALIZATION_MAX_LAYERS):
         canonical = _canonicalize_scan_layer(prepared)
         if canonical == prepared:
             break
         prepared = canonical
+        if layer == _CANONICALIZATION_MAX_LAYERS - 1:
+            canonicalization_exhausted = _canonicalize_scan_layer(prepared) != prepared
     prepared = _collapse_spaced_hex(prepared)
     prepared = _collapse_fragmented_tokens(prepared)
     prepared = _collapse_json_letter_arrays(prepared)
     prepared = _append_decoded_base64_snippets(prepared)
+    return prepared, canonicalization_exhausted
+
+
+def _prepare_text_for_scan(text: str) -> str:
+    """Normalize unicode, encoding evasion, fragmentation, and short base64 before pattern scans."""
+    prepared, _ = _prepare_text_for_scan_with_status(text)
     return prepared
 
 # Hostile UX: swearing, insults, abrasive feedback. Classified but passes (same as clean).
@@ -792,7 +815,7 @@ def scan_jailbreak_mythic(text: str) -> list[tuple[int, str]]:
 
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
-    scan_text = _prepare_text_for_scan(text)
+    scan_text, canonicalization_exhausted = _prepare_text_for_scan_with_status(text)
     override_findings = scan_override_phrases(scan_text)
     leetspeak_findings = scan_leetspeak(scan_text)
     unicode_findings = scan_hidden_unicode(text)
@@ -808,10 +831,14 @@ def classify(text: str) -> dict:
     jailbreak_findings = scan_jailbreak_mythic(scan_text)
     hostile_ux_findings = scan_hostile_ux(scan_text)
     rot_findings = _check_rot_decode(scan_text)
+    canonicalization_findings = (
+        [(0, _CANONICALIZATION_DEPTH_EXCEEDED)] if canonicalization_exhausted else []
+    )
 
     injection_any = (
         override_findings or leetspeak_findings or unicode_findings
         or null_findings or path_traversal_findings or rot_findings
+        or canonicalization_findings
     )
     reversal_any = (
         reversal_findings or power_findings or morse_findings or encoding_findings
@@ -826,6 +853,7 @@ def classify(text: str) -> dict:
         ("hidden_unicode", unicode_findings), ("null_byte", null_findings),
         ("path_traversal", path_traversal_findings),
         ("encoding_evasion_rot", rot_findings),
+        ("encoding_evasion_canonicalization", canonicalization_findings),
         ("power_words", power_findings), ("morse_like", morse_findings),
         ("encoding_blocks", encoding_findings), ("homoglyphs", homoglyph_findings),
         ("multilingual_override", multi_findings), ("semantic_aliases", alias_findings),
@@ -850,6 +878,9 @@ def classify(text: str) -> dict:
         "null_byte": [(p, str(ph)) for p, ph in null_findings],
         "path_traversal": [(p, str(ph)) for p, ph in path_traversal_findings],
         "encoding_evasion_rot": [(p, str(ph)) for p, ph in rot_findings],
+        "encoding_evasion_canonicalization": [
+            (p, str(ph)) for p, ph in canonicalization_findings
+        ],
         "reversal_phrases": [(p, str(ph)) for p, ph in reversal_findings],
         "power_words": [(p, str(ph)) for p, ph in power_findings],
         "morse_like": [(p, str(ph)) for p, ph in morse_findings],

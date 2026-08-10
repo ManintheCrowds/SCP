@@ -49,6 +49,24 @@ def test_inspect_uses_projection_after_merge(isolated_registry: Path) -> None:
     assert any(token.lower() in m.lower() for m in matched)
 
 
+def test_projection_keeps_packaged_power_word_gates(isolated_registry: Path) -> None:
+    projection = isolated_registry / "projection.json"
+    projection.write_text(
+        json.dumps(
+            {
+                "version": "1.0-projection",
+                "updated": "projection",
+                "power_words": ["authorized-override-family"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    findings = sanitize_input.scan_power_words("By order of the administrator.")
+    matched = [f[1].lower() for f in findings]
+    assert any("by order of" in phrase for phrase in matched)
+
+
 def test_load_packaged_when_no_projection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SCP_THREAT_REGISTRY_PATH", raising=False)
     fake_home = tmp_path / "home"
