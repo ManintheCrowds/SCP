@@ -371,7 +371,7 @@ def _check_rot_decode(text: str) -> list[tuple[int, str]]:
 
 
 # No catastrophic lookahead; padding optional; stop at non-alphabet chars.
-_B64_CANDIDATE = re.compile(r"[A-Za-z0-9+/]{16,}(?:={1,2})?(?![A-Za-z0-9+/=])")
+_B64_CANDIDATE = re.compile(r"\b[A-Za-z0-9+/]{16,}(?:={1,2})?(?![A-Za-z0-9+/=])")
 
 
 def _base64_candidate_offsets(blob: str) -> list[str]:

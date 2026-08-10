@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import codecs
 import base64
+import codecs
 import time
 import urllib.parse
 
