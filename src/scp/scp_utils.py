@@ -19,6 +19,8 @@ from . import scp_semantic_judge
 from . import encounter_auto_log
 
 _QUARANTINE_ID_RE = re.compile(r"^[a-f0-9-]{1,36}$")
+_ROLE_PREFIX_RE = re.compile(r"^(?:SYSTEM|ASSISTANT|HUMAN):\s*", re.MULTILINE)
+_DEVELOPER_MODE_RE = re.compile(r"\byou\s+are\s+now\s+in\s+developer\s+mode\b", re.IGNORECASE)
 
 # Layout used only by registry_fetch → apply_merge; not exposed on core MCP scp_quarantine.
 REGISTRY_FETCH_LAYOUT = "registry_fetch"
@@ -60,6 +62,13 @@ def inspect(content: str, context: str | None = None) -> dict:
             result["tier"] = "reversal"
         else:
             result["risk_score"] = min(1.0, result.get("risk_score", 0.0) + risk_boost)
+        if _ROLE_PREFIX_RE.search(content) and _DEVELOPER_MODE_RE.search(content):
+            result["tier"] = "injection"
+            result["risk_score"] = 1.0
+            result.setdefault("categories", []).append("override_phrases")
+            result.setdefault("findings", {}).setdefault("override_phrases", []).append(
+                (0, "role_delimited_developer_mode")
+            )
     result["structural"] = structural
 
     tier = result.get("tier", "clean")
