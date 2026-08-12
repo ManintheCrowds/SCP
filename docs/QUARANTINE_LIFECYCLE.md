@@ -14,10 +14,10 @@ Companion stance: [OpenHarness — Patient ≠ Threat ≠ Content](https://githu
 |-------|----------------|------------------|
 | **1. Write** | Suspect or blocked payload isolated under quarantine storage | `scp_quarantine`; registry fetches use `{SCP_QUARANTINE_DIR}/registry_fetch/` |
 | **2. List / inspect** | Operator reviews what is held | `scp_list_quarantine` |
-| **3. Retain under caps** | Per-entry and total byte limits; optional age purge on write; optional oldest-first eviction under pressure | `SCP_QUARANTINE_MAX_CONTENT_BYTES`, `SCP_QUARANTINE_MAX_TOTAL_BYTES`, `SCP_QUARANTINE_RETENTION_DAYS_ON_WRITE`, `SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE` |
-| **4. Purge** | Explicit delete by id and/or age | `scp_purge_quarantine` |
+| **3. Retain under caps** | Per-entry and total byte limits (root **and** allowlisted layouts such as `registry_fetch/`); optional age purge on write; optional oldest-first eviction under pressure | `SCP_QUARANTINE_MAX_CONTENT_BYTES`, `SCP_QUARANTINE_MAX_TOTAL_BYTES`, `SCP_QUARANTINE_RETENTION_DAYS_ON_WRITE`, `SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE` |
+| **4. Purge** | Explicit delete by id and/or age (includes allowlisted layout subdirs) | `scp_purge_quarantine` |
 
-Default directory (`scp_quarantine/` or `SCP_QUARANTINE_DIR`) must not be committed (see repo `.gitignore`). Env defaults: [README.md](../README.md) § Environment.
+Default directory (`scp_quarantine/` or `SCP_QUARANTINE_DIR`) must not be committed (see repo `.gitignore`). Env defaults: [README.md](../README.md) § Environment. `scp_list_quarantine` / total-byte accounting walk the same allowlisted layout set as writes.
 
 ---
 
