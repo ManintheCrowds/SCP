@@ -8,11 +8,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from scp import http_body
+from scp import quarantine_limits
 from scp import registry_fetch as rf
 from scp.antigen_nostr import FetchError
 from scp import antigen_nostr as nostr
+from scp import scp_utils
 
 
 @pytest.fixture(autouse=True)
@@ -103,9 +106,17 @@ def test_read_response_json_under_cap():
     assert http_body.read_response_json(resp, max_bytes=10_000) == payload
 
 
-def test_read_response_bytes_transport_error_is_not_size_error():
-    import requests
+def test_read_response_json_invalid_utf8_is_invalid_json():
+    resp = MagicMock()
+    resp.headers = {"Content-Length": "1"}
+    resp.iter_content = lambda chunk_size=65536: iter([b"\xff"])
+    resp.close = MagicMock()
 
+    with pytest.raises(json.JSONDecodeError):
+        http_body.read_response_json(resp, max_bytes=10_000)
+
+
+def test_read_response_bytes_transport_error_is_not_size_error():
     resp = MagicMock()
     resp.headers = {}
 
@@ -120,9 +131,39 @@ def test_read_response_bytes_transport_error_is_not_size_error():
     assert exc.value.reason == "fetch_failed"
 
 
-def test_registry_https_maps_transport_error_to_fetch_failed(monkeypatch):
-    import requests
+def test_antigen_fetch_closes_l402_challenge_response(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    mock_resp = MagicMock()
+    mock_resp.status_code = 402
+    mock_resp.headers = {}
+    mock_resp.close = MagicMock()
 
+    with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
+        with pytest.raises(FetchError) as exc:
+            nostr.fetch_payload("https://example.com/antigen.json", "a" * 64)
+
+    assert exc.value.reason == "payment_required"
+    mock_resp.close.assert_called_once()
+
+
+def test_antigen_process_fetch_closes_non_200_response():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    mock_resp.headers = {}
+    mock_resp.close = MagicMock()
+
+    with pytest.raises(FetchError) as exc:
+        nostr._process_fetch_response(
+            mock_resp,
+            url_host="example.com",
+            expected_hash_bare_hex="a" * 64,
+        )
+
+    assert exc.value.reason == "http_error"
+    mock_resp.close.assert_called_once()
+
+
+def test_registry_https_maps_transport_error_to_fetch_failed(monkeypatch):
     monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
     mock_resp = MagicMock()
     mock_resp.status_code = 200
@@ -139,6 +180,27 @@ def test_registry_https_maps_transport_error_to_fetch_failed(monkeypatch):
         with pytest.raises(rf.RegistryFetchError) as exc:
             rf._fetch_https("https://example.com/snap.json", ["example.com"])
     assert exc.value.reason == "fetch_failed"
+
+
+def test_registry_fetch_layout_counts_against_total_quarantine_quota(monkeypatch):
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "200")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
+
+    scp_utils.quarantine(
+        "x" * 80,
+        reason="registry_fetch",
+        source="https://example.com/one.json",
+        layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+    )
+
+    assert quarantine_limits.total_quarantine_bytes(scp_utils.quarantine_dir()) > 0
+    with pytest.raises(ValueError, match="SCP_QUARANTINE_MAX_TOTAL_BYTES"):
+        scp_utils.quarantine(
+            "y" * 80,
+            reason="registry_fetch",
+            source="https://example.com/two.json",
+            layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
 
 
 def test_parse_nostr_snapshot_rejects_oversized_content(monkeypatch):
