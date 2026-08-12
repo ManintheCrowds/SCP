@@ -14,6 +14,7 @@ _ENV_EVICT = "SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE"
 _DEFAULT_MAX_CONTENT = 1_048_576  # 1 MiB per entry
 _DEFAULT_MAX_TOTAL = 100 * 1024 * 1024  # 100 MiB total stored
 _HARD_MAX_TOTAL = 512 * 1024 * 1024 * 1024  # 512 GiB sanity ceiling
+_KNOWN_LAYOUT_DIRS = ("registry_fetch",)
 
 
 def _parse_positive_int(env_key: str, default: int, *, hard_max: int | None = None) -> int:
@@ -59,9 +60,18 @@ def evict_oldest_on_pressure() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
-def _pair_disk_bytes_and_mtime(qdir: Path, qid: str) -> tuple[int, float]:
-    txt = qdir / f"{qid}.txt"
-    js = qdir / f"{qid}.json"
+def _iter_meta_paths(qdir: Path):
+    yield from qdir.glob("*.json")
+    for layout in _KNOWN_LAYOUT_DIRS:
+        layout_dir = qdir / layout
+        if layout_dir.is_dir():
+            yield from layout_dir.glob("*.json")
+
+
+def _pair_disk_bytes_and_mtime(meta_path: Path) -> tuple[int, float]:
+    qid = meta_path.stem
+    txt = meta_path.with_name(f"{qid}.txt")
+    js = meta_path
     sz = 0
     mt = 0.0
     for p in (txt, js):
@@ -76,9 +86,8 @@ def total_quarantine_bytes(qdir: Path) -> int:
     if not qdir.is_dir():
         return 0
     total = 0
-    for meta_path in qdir.glob("*.json"):
-        qid = meta_path.stem
-        sz, _ = _pair_disk_bytes_and_mtime(qdir, qid)
+    for meta_path in _iter_meta_paths(qdir):
+        sz, _ = _pair_disk_bytes_and_mtime(meta_path)
         total += sz
     return total
 
@@ -89,11 +98,11 @@ def purge_older_than(qdir: Path, days: int) -> int:
         return 0
     cutoff = time.time() - days * 86400
     purged = 0
-    for meta_path in list(qdir.glob("*.json")):
+    for meta_path in list(_iter_meta_paths(qdir)):
         qid = meta_path.stem
         try:
             if meta_path.stat().st_mtime < cutoff:
-                (qdir / f"{qid}.txt").unlink(missing_ok=True)
+                meta_path.with_name(f"{qid}.txt").unlink(missing_ok=True)
                 meta_path.unlink(missing_ok=True)
                 purged += 1
         except OSError:
@@ -105,19 +114,18 @@ def evict_oldest_until_under(qdir: Path, target_total: int) -> int:
     """Delete oldest-by-mtime pairs until ``total_quarantine_bytes(qdir) <= target_total`` or stuck."""
     freed = 0
     while qdir.is_dir() and total_quarantine_bytes(qdir) > target_total:
-        pairs: list[tuple[str, float]] = []
-        for meta_path in qdir.glob("*.json"):
-            qid = meta_path.stem
-            _, mt = _pair_disk_bytes_and_mtime(qdir, qid)
-            pairs.append((qid, mt))
+        pairs: list[tuple[Path, float]] = []
+        for meta_path in _iter_meta_paths(qdir):
+            _, mt = _pair_disk_bytes_and_mtime(meta_path)
+            pairs.append((meta_path, mt))
         if not pairs:
             break
         pairs.sort(key=lambda x: x[1])
         victim = pairs[0][0]
-        sz_before, _ = _pair_disk_bytes_and_mtime(qdir, victim)
+        sz_before, _ = _pair_disk_bytes_and_mtime(victim)
         try:
-            (qdir / f"{victim}.json").unlink(missing_ok=True)
-            (qdir / f"{victim}.txt").unlink(missing_ok=True)
+            victim.unlink(missing_ok=True)
+            victim.with_suffix(".txt").unlink(missing_ok=True)
             freed += sz_before
         except OSError:
             break

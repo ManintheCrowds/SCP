@@ -665,56 +665,59 @@ def _process_fetch_response(
     l402_retry: bool = False,
 ) -> dict:
     expected = f"sha256:{expected_hash_bare_hex}"
-    if resp.status_code != 200:
-        antigen._audit(
-            "fetch_rejected",
-            url_host=url_host,
-            payload_hash=expected,
-            status=resp.status_code,
-            antigen_id=antigen_id,
-        )
-        raise FetchError("http_error", status=resp.status_code)
-
-    if l402_retry:
-        antigen._audit(
-            "fetch_l402_retry",
-            url_host=url_host,
-            payload_hash=expected,
-            antigen_id=antigen_id,
-        )
-
-    max_bytes = int(
-        os.environ.get("SCP_ANTIGEN_MAX_PAYLOAD_BYTES", antigen.DEFAULT_MAX_PAYLOAD_BYTES)
-    )
     try:
-        body = http_body.read_response_json(resp, max_bytes)
-    except http_body.ResponseTooLargeError as exc:
-        antigen._audit(
-            "fetch_rejected",
-            url_host=url_host,
-            payload_hash=expected,
-            reason="response_too_large",
-            antigen_id=antigen_id,
+        if resp.status_code != 200:
+            antigen._audit(
+                "fetch_rejected",
+                url_host=url_host,
+                payload_hash=expected,
+                status=resp.status_code,
+                antigen_id=antigen_id,
+            )
+            raise FetchError("http_error", status=resp.status_code)
+
+        if l402_retry:
+            antigen._audit(
+                "fetch_l402_retry",
+                url_host=url_host,
+                payload_hash=expected,
+                antigen_id=antigen_id,
+            )
+
+        max_bytes = int(
+            os.environ.get(
+                "SCP_ANTIGEN_MAX_PAYLOAD_BYTES", antigen.DEFAULT_MAX_PAYLOAD_BYTES
+            )
         )
-        raise FetchError("response_too_large") from exc
-    except http_body.ResponseReadError as exc:
-        antigen._audit(
-            "fetch_rejected",
-            url_host=url_host,
-            payload_hash=expected,
-            reason=exc.reason,
-            antigen_id=antigen_id,
-        )
-        raise FetchError(exc.reason) from exc
-    except json.JSONDecodeError as exc:
-        antigen._audit(
-            "fetch_rejected",
-            url_host=url_host,
-            payload_hash=expected,
-            reason="invalid_json",
-            antigen_id=antigen_id,
-        )
-        raise FetchError("invalid_json") from exc
+        try:
+            body = http_body.read_response_json(resp, max_bytes)
+        except http_body.ResponseTooLargeError as exc:
+            antigen._audit(
+                "fetch_rejected",
+                url_host=url_host,
+                payload_hash=expected,
+                reason="response_too_large",
+                antigen_id=antigen_id,
+            )
+            raise FetchError("response_too_large") from exc
+        except http_body.ResponseReadError as exc:
+            antigen._audit(
+                "fetch_rejected",
+                url_host=url_host,
+                payload_hash=expected,
+                reason=exc.reason,
+                antigen_id=antigen_id,
+            )
+            raise FetchError(exc.reason) from exc
+        except json.JSONDecodeError as exc:
+            antigen._audit(
+                "fetch_rejected",
+                url_host=url_host,
+                payload_hash=expected,
+                reason="invalid_json",
+                antigen_id=antigen_id,
+            )
+            raise FetchError("invalid_json") from exc
     finally:
         resp.close()
 
@@ -783,23 +786,26 @@ def fetch_payload(
         raise FetchError("invalid_l402_token") from exc
 
     if resp.status_code == 402:
-        meta = _build_l402_metadata(resp)
-        antigen._audit(
-            "fetch_l402_challenge",
-            url_host=parsed.netloc,
-            payload_hash=f"sha256:{expected_hash_bare_hex}",
-            invoice_hint=meta.get("invoice_hint"),
-            antigen_id=antigen_id,
-        )
-        if token:
+        try:
+            meta = _build_l402_metadata(resp)
             antigen._audit(
-                "fetch_l402_retry_failed",
+                "fetch_l402_challenge",
                 url_host=parsed.netloc,
                 payload_hash=f"sha256:{expected_hash_bare_hex}",
                 invoice_hint=meta.get("invoice_hint"),
                 antigen_id=antigen_id,
             )
-        raise FetchError("payment_required", status=402, l402=meta)
+            if token:
+                antigen._audit(
+                    "fetch_l402_retry_failed",
+                    url_host=parsed.netloc,
+                    payload_hash=f"sha256:{expected_hash_bare_hex}",
+                    invoice_hint=meta.get("invoice_hint"),
+                    antigen_id=antigen_id,
+                )
+            raise FetchError("payment_required", status=402, l402=meta)
+        finally:
+            resp.close()
 
     return _process_fetch_response(
         resp,
