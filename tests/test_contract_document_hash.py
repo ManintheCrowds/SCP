@@ -20,7 +20,7 @@ EXPECTED_SCP_MCP_V1_1_SHA256 = (
 
 # Synced with OpenHarness docs/contracts/scp_antigen_mcp_v1.md (SCP vendor — AppSec quarantine path + body caps)
 EXPECTED_SCP_ANTIGEN_MCP_V1_SHA256 = (
-    "027973a6e4f1fb86f18c64994e2ee506df14ba4b8ed0d9b8fae0d99c2729e0a0"
+    "6c7bdcec8f82f12054abc87b71e85a331ce728aed875164da3692b486cc3d8fa"
 )
 
 

@@ -93,6 +93,7 @@ Core inspect load order documented in [scp_mcp_v1.1.md](scp_mcp_v1.1.md).
 
 ## Changelog
 
+- **1.3** — AppSec: apply quarantine limited to egistry_fetch/\ paths from \scp_fetch_registry\ (core quarantine rejected); HTTPS body caps before parse/quarantine write.
 - **1.2** — AppSec: remove MCP `tls_verify`; registry TLS via `SCP_REGISTRY_TLS_VERIFY` only (CLI `--no-tls-verify` retained).
 - **1.1** — AppSec hardening: env-only hosts, publish/merge consent, MCP L402/seckey refusal, relay allowlist.
 - **1.0** — Initial antigen + mycelium MCP contract.
