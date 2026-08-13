@@ -49,6 +49,16 @@ def test_inspect_uses_projection_after_merge(isolated_registry: Path) -> None:
     assert any(token.lower() in m.lower() for m in matched)
 
 
+def test_projection_preserves_packaged_power_words(isolated_registry: Path) -> None:
+    _merge_token("r5inspectunique", isolated_registry)
+
+    result = sanitize_input.classify("This is an authorized override.")
+
+    assert result["tier"] == "reversal"
+    matched = [f[1] for f in result["findings"]["power_words"]]
+    assert any("authorized override" in m.lower() for m in matched)
+
+
 def test_load_packaged_when_no_projection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SCP_THREAT_REGISTRY_PATH", raising=False)
     fake_home = tmp_path / "home"
@@ -72,3 +82,4 @@ def test_env_override_wins_over_packaged(tmp_path: Path, monkeypatch: pytest.Mon
     assert registry_paths.resolve_threat_registry_path() == custom
     findings = sanitize_input.scan_power_words("envoverrideonlytoken in text")
     assert findings
+    assert not sanitize_input.scan_power_words("authorized override")
