@@ -22,6 +22,7 @@ from . import antigen_l402 as l402
 from . import http_body
 from . import http_policy
 from . import operator_consent
+from . import quarantine_limits
 
 # Parameterized-replaceable kind (30000–39999); ADR 2026-06-29 / operator lock 2026-06-30.
 ANTIGEN_NOSTR_KIND = 30078
@@ -407,11 +408,39 @@ def _require_websocket_client():
     return websocket
 
 
+def _relay_publish_error(raw: str | bytes, event_id: str) -> str | None:
+    try:
+        http_body.assert_content_within_cap(raw, quarantine_limits.max_content_bytes())
+        frame = json.loads(raw)
+    except http_body.ResponseTooLargeError:
+        return "relay_response_too_large"
+    except json.JSONDecodeError:
+        return "invalid_relay_response"
+
+    if not isinstance(frame, list) or not frame:
+        return "invalid_relay_response"
+    frame_type = frame[0]
+    if frame_type == "OK":
+        if len(frame) >= 3 and frame[1] == event_id and frame[2] is True:
+            return None
+        if len(frame) >= 4:
+            return str(frame[3])
+        return "relay_rejected_event"
+    if frame_type == "ERROR":
+        if len(frame) >= 3:
+            return str(frame[2])
+        if len(frame) >= 2:
+            return str(frame[1])
+        return "relay_error"
+    return "unexpected_relay_response"
+
+
 class WebSocketRelayTransport:
     def publish(self, event: dict, *, relays: tuple[str, ...]) -> None:
         ws = _require_websocket_client()
         msg = json.dumps(["EVENT", event])
         errors: list[str] = []
+        accepted = 0
         for relay in relays:
             if not http_policy.relay_url_safe(relay):
                 errors.append(f"{relay}: relay_blocked")
@@ -420,13 +449,18 @@ class WebSocketRelayTransport:
                 conn = ws.create_connection(relay, timeout=10)
                 try:
                     conn.send(msg)
-                    conn.recv()
+                    error = _relay_publish_error(conn.recv(), str(event.get("id", "")))
+                    if error:
+                        errors.append(f"{relay}: {error}")
+                        continue
+                    accepted += 1
                 finally:
                     conn.close()
             except Exception as exc:
                 errors.append(f"{relay}: {exc}")
-        if errors and len(errors) == len(relays):
-            raise RuntimeError("publish failed on all relays: " + "; ".join(errors))
+        if accepted == 0:
+            detail = "; ".join(errors) if errors else "no relays attempted"
+            raise RuntimeError("publish failed on all relays: " + detail)
 
     def subscribe(
         self, filters: list[dict], *, relays: tuple[str, ...], timeout_s: float
@@ -436,6 +470,7 @@ class WebSocketRelayTransport:
         req = json.dumps(["REQ", sub_id, *filters])
         seen: dict[str, dict] = {}
         deadline = time.time() + timeout_s
+        max_frame_bytes = quarantine_limits.max_content_bytes()
         for relay in relays:
             if time.time() >= deadline:
                 break
@@ -452,6 +487,10 @@ class WebSocketRelayTransport:
                         except Exception:
                             break
                         if not raw:
+                            break
+                        try:
+                            http_body.assert_content_within_cap(raw, max_frame_bytes)
+                        except http_body.ResponseTooLargeError:
                             break
                         try:
                             frame = json.loads(raw)

@@ -51,6 +51,20 @@ def inspect(content: str, context: str | None = None) -> dict:
         return {"tier": "clean", "findings": {}, "risk_score": 0.0, "categories": [], "error": "classify failed"}
 
     structural = scp_structural.run_all(content)
+    delimiter_injection = any(
+        a.get("type") == "delimiter_injection"
+        for a in structural.get("anomalies", [])
+        if isinstance(a, dict)
+    )
+    reversal_phrases = result.get("findings", {}).get("reversal_phrases", [])
+    role_prefixed_developer_mode = delimiter_injection and any(
+        "developer mode" in str(phrase).lower()
+        for _, phrase in reversal_phrases
+    )
+    if result.get("tier") == "reversal" and role_prefixed_developer_mode:
+        result["tier"] = "injection"
+        result["risk_score"] = 1.0
+        result.setdefault("categories", []).append("injection")
     if structural.get("anomalies"):
         result.setdefault("findings", {})["structural_anomalies"] = structural["anomalies"]
         result.setdefault("categories", []).append("structural_anomalies")

@@ -154,6 +154,31 @@ def test_apply_merge_rolls_back_projection_when_ssot_write_fails(
         assert proj_path.read_text(encoding="utf-8") == before
 
 
+def test_apply_merge_preserves_projection_when_backup_read_fails(
+    isolated_ssot,
+    monkeypatch,
+):
+    proj_path = isolated_ssot / "projection.json"
+    original_projection = json.dumps({"version": "old", "power_words": ["old-token"]})
+    proj_path.write_text(original_projection, encoding="utf-8")
+    qfile = _stage_fetch_quarantine(_snap([_rec("merge.backupreadfail.001")]))
+
+    original_read_text = Path.read_text
+
+    def fail_projection_backup_read(self, *args, **kwargs):
+        if self == proj_path:
+            raise OSError("projection backup unreadable")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_projection_backup_read)
+
+    with pytest.raises(OSError, match="projection backup unreadable"):
+        registry_ssot.apply_merge(qfile, approve=True)
+
+    assert proj_path.is_file()
+    assert original_read_text(proj_path, encoding="utf-8") == original_projection
+
+
 def test_dev_auto_low_risk_only(isolated_ssot, monkeypatch):
     monkeypatch.setenv("SCP_REGISTRY_MERGE_DEV_AUTO", "1")
     monkeypatch.setenv("SCP_REGISTRY_MAX_DRIFT", "0.15")

@@ -145,6 +145,72 @@ def test_cli_publish_rejects_filtered_empty_relay_list(issuer, monkeypatch):
     assert out.get("reason") == "empty_relay_allowlist"
 
 
+def test_websocket_publish_rejects_relay_error(issuer, monkeypatch):
+    bundle = _signed_bundle(issuer)
+    event = nostr.build_announcement_event(bundle, seckey_hex=SECKEY)
+
+    class FakeConnection:
+        def send(self, _msg):
+            return None
+
+        def recv(self):
+            return json.dumps(["ERROR", event["id"], "blocked"])
+
+        def close(self):
+            return None
+
+    fake_ws = MagicMock()
+    fake_ws.create_connection.return_value = FakeConnection()
+    monkeypatch.setattr(nostr, "_require_websocket_client", lambda: fake_ws)
+
+    with pytest.raises(RuntimeError, match="publish failed on all relays"):
+        nostr.WebSocketRelayTransport().publish(
+            event,
+            relays=("wss://allowed.example",),
+        )
+
+
+def test_websocket_subscribe_skips_oversized_frame(issuer, monkeypatch):
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "100")
+    oversized_event = {
+        "id": "e" * 64,
+        "kind": nostr.ANTIGEN_NOSTR_KIND,
+        "content": "x" * 200,
+    }
+    oversized_frame = json.dumps(["EVENT", "sub", oversized_event])
+
+    class FakeConnection:
+        def __init__(self):
+            self.calls = 0
+
+        def settimeout(self, _timeout):
+            return None
+
+        def send(self, _msg):
+            return None
+
+        def recv(self):
+            self.calls += 1
+            if self.calls == 1:
+                return oversized_frame
+            raise TimeoutError("done")
+
+        def close(self):
+            return None
+
+    fake_ws = MagicMock()
+    fake_ws.create_connection.return_value = FakeConnection()
+    monkeypatch.setattr(nostr, "_require_websocket_client", lambda: fake_ws)
+
+    events = nostr.WebSocketRelayTransport().subscribe(
+        [{}],
+        relays=("wss://allowed.example",),
+        timeout_s=0.1,
+    )
+
+    assert events == []
+
+
 def test_fetch_payload_hash_match(issuer):
     payload = {"patterns": _patterns()}
     bare = antigen.compute_payload_hash(payload)[7:]
