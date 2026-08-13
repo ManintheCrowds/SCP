@@ -182,6 +182,7 @@ _TAG_CHAR_END = 0xE007F
 _B64_MAX_LAYERS = 3
 # Bounded decode depth for nested URL/HTML evasion (#12 curated).
 _CANONICALIZATION_MAX_LAYERS = 8
+_GENERIC_ROT_MIN_ALPHA = 16
 
 
 def _strip_null_bytes(text: str) -> str:
@@ -359,7 +360,7 @@ def _check_rot_decode(text: str) -> list[tuple[int, str]]:
         _add(_match_override_phrases(decoder(text), label))
 
     alpha_chars = sum(1 for c in text if c.isalpha())
-    if alpha_chars >= 20:
+    if alpha_chars >= _GENERIC_ROT_MIN_ALPHA:
         # Match Caesar-encoded phrases in place (linear) instead of decoding
         # every alpha run (quadratic stall on long benign input).
         for shift in range(1, 26):

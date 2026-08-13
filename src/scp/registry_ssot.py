@@ -351,10 +351,7 @@ def apply_merge(
     proj_path = _projection_path()
     previous_projection: str | None = None
     if proj_path.is_file():
-        try:
-            previous_projection = proj_path.read_text(encoding="utf-8")
-        except OSError:
-            previous_projection = None
+        previous_projection = proj_path.read_text(encoding="utf-8")
     _write_json_atomic(proj_path, projection)
     try:
         save_ssot(merged_list)
