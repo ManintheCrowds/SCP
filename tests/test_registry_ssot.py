@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from scp import pattern_record as pr
+from scp import quarantine_limits
 from scp import registry_fetch
 from scp import registry_ssot
 from scp import scp_utils
@@ -235,3 +236,76 @@ def test_apply_merge_rejects_wrong_sidecar_reason(isolated_ssot):
     res = registry_ssot.apply_merge(path, approve=True)
     assert res["merged"] is False
     assert res["reason"] == "quarantine_provenance_rejected"
+
+
+def test_apply_merge_rejects_symlinked_registry_fetch_layout(isolated_ssot):
+    """registry_fetch must be a real confined child, not a symlink to the root layout."""
+    quarantine_root = scp_utils.quarantine_dir()
+    quarantine_root.mkdir(parents=True, exist_ok=True)
+    (quarantine_root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(
+        quarantine_root,
+        target_is_directory=True,
+    )
+
+    snap = _snap([_rec("symlink.bypass.001")])
+    forged = json.dumps(
+        {
+            "snapshot": snap,
+            "meta": {"reason": "registry_fetch", "source": "evil"},
+        },
+        indent=2,
+    )
+    q = scp_utils.quarantine(forged, reason="registry_fetch", source="evil")
+
+    res = registry_ssot.apply_merge(q["path"], approve=True)
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_path_rejected"
+
+
+def test_registry_fetch_quarantine_counts_nested_entries_for_total_quota(
+    isolated_ssot,
+    monkeypatch,
+):
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "1100")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "1200")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
+    token = "x" * 180
+    snap1 = _snap([_rec("quota.nested.001", norm=token)])
+    snap2 = _snap([_rec("quota.nested.002", norm=token)])
+
+    _stage_fetch_quarantine(snap1, source="https://example.com/one.json")
+    with pytest.raises(ValueError, match="quarantine storage full"):
+        _stage_fetch_quarantine(snap2, source="https://example.com/two.json")
+
+    assert quarantine_limits.total_quarantine_bytes(scp_utils.quarantine_dir()) > 0
+
+
+def test_apply_merge_aborts_when_projection_backup_unreadable(
+    isolated_ssot,
+    monkeypatch,
+):
+    registry_ssot.save_ssot([_rec("existing.001")])
+    proj_path = isolated_ssot / "projection.json"
+    proj_path.write_text(
+        json.dumps(pr.project_to_registry([_rec("existing.001")])),
+        encoding="utf-8",
+    )
+    before = proj_path.read_text(encoding="utf-8")
+    qfile = _stage_fetch_quarantine(_snap([_rec("merge.backupfail.001")]))
+
+    original_read_text = Path.read_text
+
+    def fail_projection_backup(self, *args, **kwargs):
+        if self == proj_path:
+            raise OSError("projection unreadable")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_projection_backup)
+
+    with pytest.raises(OSError, match="projection unreadable"):
+        registry_ssot.apply_merge(qfile, approve=True)
+
+    ssot = registry_ssot.load_ssot()
+    assert any(p["pattern_id"] == "existing.001" for p in ssot)
+    assert all(p["pattern_id"] != "merge.backupfail.001" for p in ssot)
+    assert original_read_text(proj_path, encoding="utf-8") == before
