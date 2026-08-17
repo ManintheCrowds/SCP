@@ -49,6 +49,19 @@ def test_inspect_uses_projection_after_merge(isolated_registry: Path) -> None:
     assert any(token.lower() in m.lower() for m in matched)
 
 
+def test_projection_merge_preserves_packaged_registry_detections(isolated_registry: Path) -> None:
+    packaged_phrase = "authorized override"
+    assert sanitize_input.scan_power_words(packaged_phrase)
+
+    token = "r5projectionoverlayunique"
+    _merge_token(token, isolated_registry)
+
+    projected_findings = sanitize_input.scan_power_words(f"please use {token} now")
+    packaged_findings = sanitize_input.scan_power_words(packaged_phrase)
+    assert any(token.lower() in match.lower() for _, match in projected_findings)
+    assert any(packaged_phrase.lower() in match.lower() for _, match in packaged_findings)
+
+
 def test_load_packaged_when_no_projection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SCP_THREAT_REGISTRY_PATH", raising=False)
     fake_home = tmp_path / "home"
