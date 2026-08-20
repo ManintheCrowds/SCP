@@ -42,7 +42,13 @@ def test_project_to_registry_preserves_supported_bucket_counts():
     records = pr.records_from_legacy_registry(registry)
     projected = pr.project_to_registry(records)
 
-    for bucket in ("power_words", "jailbreak_nicknames", "hostile_ux"):
+    for bucket in (
+        "power_words",
+        "semantic_aliases",
+        "jailbreak_nicknames",
+        "mythic_framing",
+        "hostile_ux",
+    ):
         source = registry.get(bucket, [])
         if isinstance(source, list):
             assert len(projected.get(bucket, [])) == len(source)

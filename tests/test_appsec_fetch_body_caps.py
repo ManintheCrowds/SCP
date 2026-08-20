@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scp import http_body
+from scp import quarantine_limits
 from scp import registry_fetch as rf
 from scp.antigen_nostr import FetchError
 from scp import antigen_nostr as nostr
@@ -152,3 +153,30 @@ def test_parse_nostr_snapshot_rejects_oversized_content(monkeypatch):
         with pytest.raises(rf.RegistryFetchError) as exc:
             rf._parse_nostr_snapshot(event, ["a" * 64])
     assert exc.value.reason == "response_too_large"
+
+
+def test_quarantine_total_quota_counts_registry_fetch_layout(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "100")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "120")
+
+    root = tmp_path / "quarantine"
+    nested = root / "registry_fetch"
+    nested.mkdir(parents=True)
+    old_meta = nested / "old.json"
+    old_body = nested / "old.txt"
+    old_meta.write_text("m" * 30, encoding="utf-8")
+    old_body.write_text("x" * 80, encoding="utf-8")
+
+    assert quarantine_limits.total_quarantine_bytes(root) == 110
+    quarantine_limits.prepare_quarantine_write(root, content_utf8_bytes=60, meta_utf8_bytes=10)
+    assert not old_meta.exists()
+    assert not old_body.exists()
+
+
+def test_nostr_relay_frame_rejects_oversized_before_json_parse(monkeypatch):
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "32")
+    monkeypatch.setenv("SCP_ANTIGEN_MAX_PAYLOAD_BYTES", "32")
+    monkeypatch.setattr(nostr, "_RELAY_FRAME_OVERHEAD_BYTES", 8)
+
+    with pytest.raises(http_body.ResponseTooLargeError):
+        nostr._decode_relay_frame("[" + ("x" * 80) + "]")
