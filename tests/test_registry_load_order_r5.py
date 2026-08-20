@@ -53,7 +53,7 @@ def test_projection_preserves_packaged_semantic_alias_detection(isolated_registr
     projection = pr.project_to_registry(
         pr.records_from_legacy_registry(pr.load_packaged_threat_registry())
     )
-    registry_paths.resolve_threat_registry_path().write_text(
+    registry_paths.default_projection_path().write_text(
         json.dumps(projection),
         encoding="utf-8",
     )
