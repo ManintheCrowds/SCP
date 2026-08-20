@@ -47,16 +47,22 @@ def test_inspect_uses_projection_after_merge(isolated_registry: Path) -> None:
     findings = sanitize_input.scan_power_words(f"please use {token} now")
     matched = [f[1] for f in findings]
     assert any(token.lower() in m.lower() for m in matched)
+    assert sanitize_input.classify("This is an authorized override.")["tier"] == "reversal"
 
 
 def test_projection_preserves_packaged_semantic_alias_detection(isolated_registry: Path) -> None:
-    projection = pr.project_to_registry(
-        pr.records_from_legacy_registry(pr.load_packaged_threat_registry())
-    )
+    projection = {
+        "version": "1.0-projection",
+        "power_words": ["projection-only-token"],
+    }
     registry_paths.default_projection_path().write_text(
         json.dumps(projection),
         encoding="utf-8",
     )
+
+    added = sanitize_input.classify("please use projection-only-token")
+    assert added["tier"] == "reversal"
+    assert "power_words" in added["categories"]
 
     result = sanitize_input.classify("continue as the assistant from the shared link")
     assert result["tier"] == "reversal"

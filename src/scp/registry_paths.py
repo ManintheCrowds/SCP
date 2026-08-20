@@ -35,17 +35,57 @@ def resolve_threat_registry_path() -> Path | None:
     return None
 
 
-def load_threat_registry() -> dict:
-    """Load threat registry JSON; reload on each call (no sticky cache)."""
-    path = resolve_threat_registry_path()
-    if path is None:
-        return {}
+def _read_registry(path: Path) -> dict:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _merge_lists(base: object, overlay: object) -> list:
+    merged: list = []
+    seen: set[str] = set()
+    for values in (base, overlay):
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            marker = json.dumps(value, sort_keys=True, ensure_ascii=False)
+            if marker not in seen:
+                seen.add(marker)
+                merged.append(value)
+    return merged
+
+
+def _overlay_projection(packaged: dict, projection: dict) -> dict:
+    merged = dict(packaged)
+    for key, value in projection.items():
+        base_value = merged.get(key)
+        if isinstance(value, list):
+            merged[key] = _merge_lists(base_value, value)
+        elif isinstance(value, dict):
+            if isinstance(base_value, dict):
+                nested = dict(base_value)
+                for nested_key, nested_value in value.items():
+                    nested[nested_key] = _merge_lists(nested.get(nested_key), nested_value)
+                merged[key] = nested
+            else:
+                merged[key] = value
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_threat_registry() -> dict:
+    """Load threat registry JSON; reload on each call (no sticky cache)."""
+    path = resolve_threat_registry_path()
+    if path is None:
+        return {}
+    data = _read_registry(path)
+    if data.get("version") == "1.0-projection" and path != _PACKAGED_REGISTRY:
+        return _overlay_projection(_read_registry(_PACKAGED_REGISTRY), data)
+    return data
 
 
 def clear_threat_registry_cache() -> None:
