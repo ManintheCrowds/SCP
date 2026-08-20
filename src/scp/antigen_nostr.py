@@ -22,6 +22,7 @@ from . import antigen_l402 as l402
 from . import http_body
 from . import http_policy
 from . import operator_consent
+from . import quarantine_limits
 
 # Parameterized-replaceable kind (30000–39999); ADR 2026-06-29 / operator lock 2026-06-30.
 ANTIGEN_NOSTR_KIND = 30078
@@ -31,6 +32,8 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX128 = re.compile(r"^[0-9a-f]{128}$")
 _NSEC_RE = re.compile(r"^nsec1[02-9ac-hj-np-z]{6,}$")
 _SUBSCRIBE_TIMEOUT_S = 8.0
+_RELAY_FRAME_OVERHEAD_BYTES = 16 * 1024
+_MAX_RELAY_EVENTS = 256
 
 
 @dataclass(frozen=True)
@@ -407,6 +410,22 @@ def _require_websocket_client():
     return websocket
 
 
+def _max_relay_frame_bytes() -> int:
+    try:
+        antigen_payload_max = int(
+            os.environ.get("SCP_ANTIGEN_MAX_PAYLOAD_BYTES", antigen.DEFAULT_MAX_PAYLOAD_BYTES)
+        )
+    except ValueError:
+        antigen_payload_max = antigen.DEFAULT_MAX_PAYLOAD_BYTES
+    content_max = max(1, antigen_payload_max, quarantine_limits.max_content_bytes())
+    return content_max + _RELAY_FRAME_OVERHEAD_BYTES
+
+
+def _decode_relay_frame(raw: str | bytes) -> Any:
+    http_body.assert_content_within_cap(raw, _max_relay_frame_bytes())
+    return json.loads(raw)
+
+
 class WebSocketRelayTransport:
     def publish(self, event: dict, *, relays: tuple[str, ...]) -> None:
         ws = _require_websocket_client()
@@ -420,7 +439,7 @@ class WebSocketRelayTransport:
                 conn = ws.create_connection(relay, timeout=10)
                 try:
                     conn.send(msg)
-                    conn.recv()
+                    _decode_relay_frame(conn.recv())
                 finally:
                     conn.close()
             except Exception as exc:
@@ -454,7 +473,9 @@ class WebSocketRelayTransport:
                         if not raw:
                             break
                         try:
-                            frame = json.loads(raw)
+                            frame = _decode_relay_frame(raw)
+                        except http_body.ResponseTooLargeError:
+                            break
                         except json.JSONDecodeError:
                             continue
                         if not isinstance(frame, list) or not frame:
@@ -462,7 +483,11 @@ class WebSocketRelayTransport:
                         if frame[0] == "EVENT" and len(frame) >= 3:
                             ev = frame[2]
                             if isinstance(ev, dict) and ev.get("id"):
-                                seen[str(ev["id"])] = ev
+                                event_id = str(ev["id"])
+                                if event_id not in seen:
+                                    if len(seen) >= _MAX_RELAY_EVENTS:
+                                        break
+                                    seen[event_id] = ev
                         elif frame[0] == "EOSE" and len(frame) >= 2 and frame[1] == sub_id:
                             break
                 finally:

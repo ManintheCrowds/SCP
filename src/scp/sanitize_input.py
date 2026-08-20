@@ -325,6 +325,14 @@ def _caesar_encoded_override_patterns(shift: int) -> tuple[re.Pattern[str], ...]
     )
 
 
+@lru_cache(maxsize=32)
+def _caesar_encoded_reversal_patterns(shift: int) -> tuple[re.Pattern[str], ...]:
+    return tuple(
+        re.compile(_caesar_encode_regex(pattern, shift), re.IGNORECASE)
+        for pattern in REVERSAL_PHRASES
+    )
+
+
 def _match_caesar_encoded_override_phrases(text: str, shift: int) -> list[tuple[int, str]]:
     findings: list[tuple[int, str]] = []
     for pattern in _caesar_encoded_override_patterns(shift):
@@ -333,9 +341,25 @@ def _match_caesar_encoded_override_phrases(text: str, shift: int) -> list[tuple[
     return findings
 
 
+def _match_caesar_encoded_reversal_phrases(text: str, shift: int) -> list[tuple[int, str]]:
+    findings: list[tuple[int, str]] = []
+    for pattern in _caesar_encoded_reversal_patterns(shift):
+        for m in pattern.finditer(text):
+            findings.append((m.start(), f"rot{shift}:{m.group(0)}"))
+    return findings
+
+
 def _match_override_phrases(text: str, label: str) -> list[tuple[int, str]]:
     findings: list[tuple[int, str]] = []
     for pattern in OVERRIDE_PHRASES:
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            findings.append((m.start(), f"{label}:{m.group(0)}"))
+    return findings
+
+
+def _match_reversal_phrases(text: str, label: str) -> list[tuple[int, str]]:
+    findings: list[tuple[int, str]] = []
+    for pattern in REVERSAL_PHRASES:
         for m in re.finditer(pattern, text, re.IGNORECASE):
             findings.append((m.start(), f"{label}:{m.group(0)}"))
     return findings
@@ -356,7 +380,9 @@ def _check_rot_decode(text: str) -> list[tuple[int, str]]:
         (lambda t: codecs.decode(t, 'rot_13'), 'rot13'),
         (_rot47, 'rot47'),
     ]:
-        _add(_match_override_phrases(decoder(text), label))
+        decoded = decoder(text)
+        _add(_match_override_phrases(decoded, label))
+        _add(_match_reversal_phrases(decoded, label))
 
     alpha_chars = sum(1 for c in text if c.isalpha())
     if alpha_chars >= 20:
@@ -366,6 +392,7 @@ def _check_rot_decode(text: str) -> list[tuple[int, str]]:
             if shift == 13:
                 continue
             _add(_match_caesar_encoded_override_phrases(text, shift))
+            _add(_match_caesar_encoded_reversal_phrases(text, shift))
     return findings
 
 
