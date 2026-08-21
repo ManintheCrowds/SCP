@@ -154,6 +154,37 @@ def test_apply_merge_rolls_back_projection_when_ssot_write_fails(
         assert proj_path.read_text(encoding="utf-8") == before
 
 
+def test_apply_merge_aborts_when_existing_projection_backup_fails(
+    isolated_ssot,
+    monkeypatch,
+):
+    registry_ssot.save_ssot([_rec("existing.001")])
+    proj_path = isolated_ssot / "projection.json"
+    before = '{"power_words": ["keep-existing"]}'
+    proj_path.write_text(before, encoding="utf-8")
+    qfile = _stage_fetch_quarantine(_snap([_rec("merge.backupfail.001")]))
+
+    original_read_text = Path.read_text
+    fail_projection_backup = True
+
+    def fail_projection_read(self, *args, **kwargs):
+        if fail_projection_backup and self == proj_path:
+            raise OSError("projection unreadable")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_projection_read)
+
+    res = registry_ssot.apply_merge(qfile, approve=True)
+
+    fail_projection_backup = False
+    assert res["merged"] is False
+    assert res["reason"] == "projection_backup_failed"
+    assert proj_path.read_text(encoding="utf-8") == before
+    ssot = registry_ssot.load_ssot()
+    assert any(p["pattern_id"] == "existing.001" for p in ssot)
+    assert all(p["pattern_id"] != "merge.backupfail.001" for p in ssot)
+
+
 def test_dev_auto_low_risk_only(isolated_ssot, monkeypatch):
     monkeypatch.setenv("SCP_REGISTRY_MERGE_DEV_AUTO", "1")
     monkeypatch.setenv("SCP_REGISTRY_MAX_DRIFT", "0.15")
