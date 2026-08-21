@@ -278,3 +278,23 @@ def test_cli_export_verify_roundtrip(issuer, tmp_path, capsys):
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] is True, out["errors"]
+
+
+def test_cli_publish_returns_nonzero_when_publish_fails(tmp_path, capsys):
+    bundle_file = tmp_path / "bundle.json"
+    bundle = antigen.export_bundle(
+        _patterns(),
+        antigen_id="inj.cli.publish.001",
+        seckey_hex=SECKEY,
+        sign=True,
+    )
+    bundle_file.write_text(json.dumps(bundle), encoding="utf-8")
+
+    rc = antigen_cli.main([
+        "publish", "--bundle", str(bundle_file), "--seckey-hex", SECKEY,
+    ])
+
+    assert rc == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["published"] is False
+    assert out["reason"] in {"consent_required", "empty_relay_allowlist"}

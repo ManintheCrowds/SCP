@@ -177,14 +177,17 @@ def _dev_auto_categories() -> frozenset[str]:
 
 def _path_under_registry_fetch(path: Path) -> bool:
     """True iff path resolves under {QUARANTINE_DIR}/registry_fetch/."""
+    fetch_root_path = scp_utils.registry_fetch_quarantine_dir()
     try:
+        if fetch_root_path.is_symlink():
+            return False
         resolved = path.resolve()
-        fetch_root = scp_utils.registry_fetch_quarantine_dir().resolve()
+        fetch_root = fetch_root_path.resolve()
         quarantine_root = scp_utils.quarantine_dir().resolve()
     except OSError:
         return False
     try:
-        if not fetch_root.is_relative_to(quarantine_root):
+        if fetch_root == quarantine_root or not fetch_root.is_relative_to(quarantine_root):
             return False
         return resolved.is_relative_to(fetch_root)
     except (ValueError, AttributeError):
@@ -353,8 +356,13 @@ def apply_merge(
     if proj_path.is_file():
         try:
             previous_projection = proj_path.read_text(encoding="utf-8")
-        except OSError:
-            previous_projection = None
+        except OSError as exc:
+            return {
+                "merged": False,
+                "reason": "projection_backup_failed",
+                "error": str(exc),
+                "proposal": diff_info,
+            }
     _write_json_atomic(proj_path, projection)
     try:
         save_ssot(merged_list)
