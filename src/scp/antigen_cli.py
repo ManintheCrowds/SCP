@@ -277,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(out, dict) and (
         out.get("ok") is False or out.get("rejected") is True
         or (out.get("merged") is False and out.get("reason"))
+        or (out.get("published") is False and out.get("reason"))
     ):
         return 2
     return 0

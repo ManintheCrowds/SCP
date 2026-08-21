@@ -98,19 +98,23 @@ def announce_snapshot(
         skip_consent_check=True,  # operator CLI; consent is running this script
     )
     event = pub.get("event") or {}
-    return {
-        "ok": True,
+    published = pub.get("published", False)
+    result = {
+        "ok": dry_run or published is True,
         "dry_run": dry_run,
         "signed": pub.get("signed", not dry_run),
         "payload_url": payload_url,
         "antigen_id": antigen_id,
         "issuer_pubkey": issuer_pubkey,
         "event_id": pub.get("event_id") or event.get("id", ""),
-        "published": pub.get("published", False),
+        "published": published,
         "relays": pub.get("relays", []),
         "pattern_count": len(records),
         "etag": snapshot.get("etag"),
     }
+    if pub.get("reason"):
+        result["reason"] = pub["reason"]
+    return result
 
 
 def _emit(result: dict[str, Any], *, as_json: bool) -> None:
@@ -121,7 +125,7 @@ def _emit(result: dict[str, Any], *, as_json: bool) -> None:
         print(f"{key}: {value}")
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Announce scp-mycelium-registry snapshot on nostr (kind 30078)")
     parser.add_argument("--version", default="0.1.0", help="Semver for antigen_id and default URL")
     parser.add_argument("--payload-url", default=None, help="HTTPS raw snapshot URL (default: tag-scoped GitHub raw)")
@@ -141,7 +145,10 @@ def main() -> None:
         dry_run=dry_run,
     )
     _emit(result, as_json=args.json)
+    if result.get("ok") is False or (not dry_run and result.get("published") is False):
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

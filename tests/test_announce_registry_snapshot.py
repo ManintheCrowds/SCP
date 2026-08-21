@@ -14,7 +14,7 @@ if str(_REPO_ROOT / "src") not in sys.path:
 if str(_REPO_ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 
-from announce_registry_snapshot import announce_snapshot  # noqa: E402
+from announce_registry_snapshot import announce_snapshot, main  # noqa: E402
 
 from scp import antigen
 from scp import antigen_nostr as nostr
@@ -84,6 +84,63 @@ def test_announce_snapshot_publish_uses_relay_transport():
     assert result["ok"] is True
     assert result["published"] is True
     assert len(mem.events) == 1
+
+
+def test_announce_snapshot_reports_failed_live_publish():
+    snapshot = _minimal_snapshot()
+    session = MagicMock()
+    session.get.return_value = MagicMock(status_code=200)
+    session.get.return_value.json.return_value = snapshot
+    session.get.return_value.raise_for_status = MagicMock()
+
+    with patch(
+        "announce_registry_snapshot.nostr.publish_announcement",
+        return_value={
+            "published": False,
+            "reason": "empty_relay_allowlist",
+            "relays": [],
+        },
+    ):
+        result = announce_snapshot(
+            payload_url=PAYLOAD_URL,
+            version="0.1.0",
+            seckey_hex=SECKEY,
+            dry_run=False,
+            session=session,
+        )
+
+    assert result["ok"] is False
+    assert result["published"] is False
+    assert result["reason"] == "empty_relay_allowlist"
+
+
+def test_announce_main_returns_nonzero_for_failed_live_publish(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "announce_registry_snapshot.py",
+            "--payload-url",
+            PAYLOAD_URL,
+            "--version",
+            "0.1.0",
+            "--seckey-hex",
+            SECKEY,
+            "--publish",
+            "--json",
+        ],
+    )
+    with patch(
+        "announce_registry_snapshot.announce_snapshot",
+        return_value={
+            "ok": False,
+            "published": False,
+            "reason": "empty_relay_allowlist",
+        },
+    ):
+        rc = main()
+
+    assert rc == 2
 
 
 def test_announce_snapshot_rejects_bad_schema():
