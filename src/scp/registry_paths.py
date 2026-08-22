@@ -10,6 +10,7 @@ from pathlib import Path
 
 _PKG_DIR = Path(__file__).resolve().parent
 _PACKAGED_REGISTRY = _PKG_DIR / "scp_threat_registry.json"
+_PROJECTION_VERSION = "1.0-projection"
 
 
 def default_projection_path() -> Path:
@@ -35,17 +36,58 @@ def resolve_threat_registry_path() -> Path | None:
     return None
 
 
-def load_threat_registry() -> dict:
-    """Load threat registry JSON; reload on each call (no sticky cache)."""
-    path = resolve_threat_registry_path()
-    if path is None:
-        return {}
+def _read_registry(path: Path) -> dict:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _merge_unique(base: list, overlay: list) -> list:
+    merged = list(base)
+    seen = {str(item) for item in merged}
+    for item in overlay:
+        marker = str(item)
+        if marker not in seen:
+            seen.add(marker)
+            merged.append(item)
+    return merged
+
+
+def _overlay_projection(packaged: dict, projection: dict) -> dict:
+    merged = dict(packaged)
+    for key, value in projection.items():
+        existing = merged.get(key)
+        if isinstance(existing, list) and isinstance(value, list):
+            merged[key] = _merge_unique(existing, value)
+        elif isinstance(existing, dict) and isinstance(value, dict):
+            nested = dict(existing)
+            for nested_key, nested_value in value.items():
+                nested_existing = nested.get(nested_key)
+                if isinstance(nested_existing, list) and isinstance(nested_value, list):
+                    nested[nested_key] = _merge_unique(nested_existing, nested_value)
+                else:
+                    nested[nested_key] = nested_value
+            merged[key] = nested
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_threat_registry() -> dict:
+    """Load threat registry JSON; reload on each call (no sticky cache)."""
+    path = resolve_threat_registry_path()
+    if path is None:
+        return {}
+    data = _read_registry(path)
+    if data.get("version") != _PROJECTION_VERSION:
+        return data
+    packaged = _read_registry(_PACKAGED_REGISTRY)
+    if not packaged:
+        return data
+    return _overlay_projection(packaged, data)
 
 
 def clear_threat_registry_cache() -> None:

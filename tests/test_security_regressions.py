@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from scp import mask_secrets, sanitize_input, scp_utils
+from scp import mask_secrets, quarantine_limits, sanitize_input, scp_utils
 
 
 def test_contain_markdown_uses_longer_fence_than_payload() -> None:
@@ -117,6 +117,25 @@ def test_quarantine_impossible_write_does_not_evict_existing_entries(tmp_path, m
 
     assert old_txt.read_text(encoding="utf-8") == "old quarantine evidence"
     assert old_json.is_file()
+
+
+def test_quarantine_total_counts_registry_fetch_layout(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "600")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
+    fetch_dir = tmp_path / scp_utils.REGISTRY_FETCH_LAYOUT
+    fetch_dir.mkdir(parents=True)
+    (fetch_dir / "aaaaaaaa.txt").write_text("a" * 420, encoding="utf-8")
+    (fetch_dir / "aaaaaaaa.json").write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "registry_fetch", "source": "t"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="quarantine storage full"):
+        scp_utils.quarantine("n" * 120, reason="r", source="s")
+
+    assert quarantine_limits.total_quarantine_bytes(tmp_path) > 420
 
 
 def test_run_pipeline_quarantine_failure_still_blocked(tmp_path, monkeypatch) -> None:

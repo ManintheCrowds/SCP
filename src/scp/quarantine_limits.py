@@ -72,13 +72,24 @@ def _pair_disk_bytes_and_mtime(qdir: Path, qid: str) -> tuple[int, float]:
     return sz, mt
 
 
+def _iter_quarantine_meta_paths(qdir: Path):
+    if not qdir.is_dir():
+        return
+    for dirpath, dirnames, filenames in os.walk(qdir, followlinks=False):
+        current = Path(dirpath)
+        dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
+        for filename in filenames:
+            if filename.endswith(".json"):
+                yield current / filename
+
+
 def total_quarantine_bytes(qdir: Path) -> int:
     if not qdir.is_dir():
         return 0
     total = 0
-    for meta_path in qdir.glob("*.json"):
+    for meta_path in _iter_quarantine_meta_paths(qdir):
         qid = meta_path.stem
-        sz, _ = _pair_disk_bytes_and_mtime(qdir, qid)
+        sz, _ = _pair_disk_bytes_and_mtime(meta_path.parent, qid)
         total += sz
     return total
 
@@ -89,11 +100,12 @@ def purge_older_than(qdir: Path, days: int) -> int:
         return 0
     cutoff = time.time() - days * 86400
     purged = 0
-    for meta_path in list(qdir.glob("*.json")):
+    for meta_path in list(_iter_quarantine_meta_paths(qdir)):
         qid = meta_path.stem
+        pair_dir = meta_path.parent
         try:
             if meta_path.stat().st_mtime < cutoff:
-                (qdir / f"{qid}.txt").unlink(missing_ok=True)
+                (pair_dir / f"{qid}.txt").unlink(missing_ok=True)
                 meta_path.unlink(missing_ok=True)
                 purged += 1
         except OSError:
@@ -105,19 +117,21 @@ def evict_oldest_until_under(qdir: Path, target_total: int) -> int:
     """Delete oldest-by-mtime pairs until ``total_quarantine_bytes(qdir) <= target_total`` or stuck."""
     freed = 0
     while qdir.is_dir() and total_quarantine_bytes(qdir) > target_total:
-        pairs: list[tuple[str, float]] = []
-        for meta_path in qdir.glob("*.json"):
+        pairs: list[tuple[Path, float]] = []
+        for meta_path in _iter_quarantine_meta_paths(qdir):
             qid = meta_path.stem
-            _, mt = _pair_disk_bytes_and_mtime(qdir, qid)
-            pairs.append((qid, mt))
+            _, mt = _pair_disk_bytes_and_mtime(meta_path.parent, qid)
+            pairs.append((meta_path, mt))
         if not pairs:
             break
         pairs.sort(key=lambda x: x[1])
-        victim = pairs[0][0]
-        sz_before, _ = _pair_disk_bytes_and_mtime(qdir, victim)
+        victim_meta = pairs[0][0]
+        victim = victim_meta.stem
+        victim_dir = victim_meta.parent
+        sz_before, _ = _pair_disk_bytes_and_mtime(victim_dir, victim)
         try:
-            (qdir / f"{victim}.json").unlink(missing_ok=True)
-            (qdir / f"{victim}.txt").unlink(missing_ok=True)
+            victim_meta.unlink(missing_ok=True)
+            (victim_dir / f"{victim}.txt").unlink(missing_ok=True)
             freed += sz_before
         except OSError:
             break

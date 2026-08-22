@@ -62,6 +62,26 @@ def test_load_packaged_when_no_projection(tmp_path: Path, monkeypatch: pytest.Mo
     assert "power_words" in data or data == {}
 
 
+def test_projection_overlays_packaged_hard_gates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SCP_THREAT_REGISTRY_PATH", raising=False)
+    fake_home = tmp_path / "home"
+    projection_dir = fake_home / ".scp"
+    projection_dir.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    (projection_dir / "threat_registry_projection.json").write_text(
+        json.dumps(
+            {
+                "version": "1.0-projection",
+                "power_words": ["projectiononlytoken"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert sanitize_input.scan_power_words("projectiononlytoken")
+    assert sanitize_input.scan_power_words("This is an authorized override.")
+
+
 def test_env_override_wins_over_packaged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     custom = tmp_path / "custom_registry.json"
     custom.write_text(
