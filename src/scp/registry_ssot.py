@@ -179,17 +179,22 @@ def _path_under_registry_fetch(path: Path) -> bool:
     """True iff path resolves under {QUARANTINE_DIR}/registry_fetch/."""
     try:
         resolved = path.resolve()
-        fetch_root = scp_utils.registry_fetch_quarantine_dir().resolve()
+        fetch_path = scp_utils.registry_fetch_quarantine_dir()
         quarantine_root = scp_utils.quarantine_dir().resolve()
+        if fetch_path.is_symlink():
+            return False
+        fetch_root = fetch_path.resolve()
     except OSError:
         return False
     try:
-        if not fetch_root.is_relative_to(quarantine_root):
+        if fetch_root == quarantine_root or not fetch_root.is_relative_to(quarantine_root):
             return False
         return resolved.is_relative_to(fetch_root)
     except (ValueError, AttributeError):
         # Python <3.9 fallback unused; keep defensive.
         try:
+            if fetch_root == quarantine_root:
+                return False
             resolved.relative_to(fetch_root)
             fetch_root.relative_to(quarantine_root)
             return True
