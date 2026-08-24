@@ -25,6 +25,15 @@ def isolated_env(tmp_path: Path, monkeypatch) -> Path:
     return tmp_path
 
 
+def _mock_raw_response(raw: bytes, *, status: int = 200) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status
+    resp.headers = {"Content-Length": str(len(raw))}
+    resp.iter_content = lambda chunk_size=65536: iter([raw])
+    resp.close = MagicMock()
+    return resp
+
+
 def test_read_response_bytes_rejects_content_length():
     resp = MagicMock()
     resp.headers = {"Content-Length": "999999"}
@@ -101,6 +110,47 @@ def test_read_response_json_under_cap():
     resp.iter_content = lambda chunk_size=65536: iter([raw])
     resp.close = MagicMock()
     assert http_body.read_response_json(resp, max_bytes=10_000) == payload
+
+
+def test_read_response_json_rejects_invalid_utf8_as_invalid_json():
+    resp = _mock_raw_response(b"\xff")
+    with pytest.raises(json.JSONDecodeError):
+        http_body.read_response_json(resp, max_bytes=10_000)
+
+
+def test_registry_https_maps_invalid_utf8_to_invalid_json(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    mock_resp = _mock_raw_response(b"\xff")
+
+    with patch("scp.registry_fetch.requests.Session.get", return_value=mock_resp):
+        with pytest.raises(rf.RegistryFetchError) as exc:
+            rf._fetch_https("https://example.com/snap.json", ["example.com"])
+    assert exc.value.reason == "invalid_json"
+    mock_resp.close.assert_called()
+
+
+def test_antigen_process_fetch_maps_invalid_utf8_to_invalid_json():
+    mock_resp = _mock_raw_response(b"\xff")
+    with pytest.raises(FetchError) as exc:
+        nostr._process_fetch_response(
+            mock_resp,
+            url_host="example.com",
+            expected_hash_bare_hex="a" * 64,
+        )
+    assert exc.value.reason == "invalid_json"
+    mock_resp.close.assert_called()
+
+
+def test_antigen_process_fetch_closes_non_200_streamed_response():
+    mock_resp = _mock_raw_response(b"", status=500)
+    with pytest.raises(FetchError) as exc:
+        nostr._process_fetch_response(
+            mock_resp,
+            url_host="example.com",
+            expected_hash_bare_hex="a" * 64,
+        )
+    assert exc.value.reason == "http_error"
+    mock_resp.close.assert_called_once()
 
 
 def test_read_response_bytes_transport_error_is_not_size_error():
