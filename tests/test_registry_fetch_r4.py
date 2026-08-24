@@ -5,7 +5,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -85,6 +85,26 @@ def test_fetch_failure_unchanged_ssot(isolated_env, monkeypatch):
     assert res["ok"] is False
     assert res["local_registry_unchanged"] is True
     assert registry_ssot.load_ssot() == []
+
+
+def test_quarantine_write_failure_fails_closed(isolated_env, monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    body = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    raw = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", str(len(raw) + 20))
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"Content-Length": str(len(raw))}
+    mock_resp.iter_content = lambda chunk_size=65536: iter([raw])
+    mock_resp.close = MagicMock()
+
+    with patch("scp.registry_fetch.requests.Session.get", return_value=mock_resp):
+        res = registry_fetch.fetch_registry("https://example.com/snap.json", [])
+
+    assert res["ok"] is False
+    assert res["error"] == "quarantine_failed"
+    assert res["local_registry_unchanged"] is True
 
 
 def test_regtest_localhost_guard(isolated_env, monkeypatch):
