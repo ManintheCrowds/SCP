@@ -22,6 +22,7 @@ from . import antigen_l402 as l402
 from . import http_body
 from . import http_policy
 from . import operator_consent
+from . import quarantine_limits
 
 # Parameterized-replaceable kind (30000–39999); ADR 2026-06-29 / operator lock 2026-06-30.
 ANTIGEN_NOSTR_KIND = 30078
@@ -31,6 +32,47 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX128 = re.compile(r"^[0-9a-f]{128}$")
 _NSEC_RE = re.compile(r"^nsec1[02-9ac-hj-np-z]{6,}$")
 _SUBSCRIBE_TIMEOUT_S = 8.0
+_RELAY_FRAME_OVERHEAD_BYTES = 16 * 1024
+
+
+def _antigen_max_payload_bytes() -> int:
+    raw = os.environ.get("SCP_ANTIGEN_MAX_PAYLOAD_BYTES")
+    if raw is None:
+        return antigen.DEFAULT_MAX_PAYLOAD_BYTES
+    try:
+        n = int(raw)
+    except ValueError:
+        return antigen.DEFAULT_MAX_PAYLOAD_BYTES
+    return n if n > 0 else antigen.DEFAULT_MAX_PAYLOAD_BYTES
+
+
+def _relay_frame_cap_bytes() -> int:
+    return (
+        max(_antigen_max_payload_bytes(), quarantine_limits.max_content_bytes())
+        + _RELAY_FRAME_OVERHEAD_BYTES
+    )
+
+
+def _encoded_size(value: str | bytes) -> int:
+    return len(value) if isinstance(value, bytes) else len(value.encode("utf-8", errors="replace"))
+
+
+def _relay_value_within_cap(value: str | bytes) -> bool:
+    return _encoded_size(value) <= _relay_frame_cap_bytes()
+
+
+def _event_within_relay_cap(event: dict) -> bool:
+    content = event.get("content", "")
+    if not isinstance(content, str) or not _relay_value_within_cap(content):
+        return False
+    try:
+        template = _event_template(
+            event["pubkey"], event["created_at"], event["kind"], event["tags"], content
+        )
+        raw = _serialize_event_template(template).encode("utf-8")
+    except (KeyError, TypeError, ValueError):
+        return False
+    return len(raw) <= _relay_frame_cap_bytes()
 
 
 @dataclass(frozen=True)
@@ -175,6 +217,8 @@ def verify_event_signature(event: dict) -> bool:
     sig = str(event.get("sig", ""))
     event_id = str(event.get("id", ""))
     if not _HEX64.match(pubkey) or not _HEX128.match(sig) or not _HEX64.match(event_id):
+        return False
+    if not _event_within_relay_cap(event):
         return False
     if event_id != compute_event_id(event):
         return False
@@ -420,7 +464,9 @@ class WebSocketRelayTransport:
                 conn = ws.create_connection(relay, timeout=10)
                 try:
                     conn.send(msg)
-                    conn.recv()
+                    raw = conn.recv()
+                    if raw and not _relay_value_within_cap(raw):
+                        raise ValueError("relay_response_too_large")
                 finally:
                     conn.close()
             except Exception as exc:
@@ -453,6 +499,8 @@ class WebSocketRelayTransport:
                             break
                         if not raw:
                             break
+                        if not _relay_value_within_cap(raw):
+                            break
                         try:
                             frame = json.loads(raw)
                         except json.JSONDecodeError:
@@ -461,7 +509,11 @@ class WebSocketRelayTransport:
                             continue
                         if frame[0] == "EVENT" and len(frame) >= 3:
                             ev = frame[2]
-                            if isinstance(ev, dict) and ev.get("id"):
+                            if (
+                                isinstance(ev, dict)
+                                and ev.get("id")
+                                and _event_within_relay_cap(ev)
+                            ):
                                 seen[str(ev["id"])] = ev
                         elif frame[0] == "EOSE" and len(frame) >= 2 and frame[1] == sub_id:
                             break
