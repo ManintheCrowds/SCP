@@ -175,6 +175,7 @@ def test_fetch_402_surfaces_metadata(issuer):
     mock_resp.status_code = 402
     mock_resp.headers = {"WWW-Authenticate": "L402"}
     mock_resp.json.side_effect = ValueError("no json")
+    mock_resp.close = MagicMock()
 
     with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
         with pytest.raises(nostr.FetchError) as exc:
@@ -182,6 +183,7 @@ def test_fetch_402_surfaces_metadata(issuer):
     assert exc.value.reason == "payment_required"
     assert exc.value.l402 is not None
     assert exc.value.l402["status"] == 402
+    mock_resp.close.assert_called_once()
 
 
 def test_e2e_discover_fetch_import_quarantine_only(issuer):
