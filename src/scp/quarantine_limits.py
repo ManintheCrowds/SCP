@@ -65,6 +65,8 @@ def _pair_disk_bytes_and_mtime(qdir: Path, qid: str) -> tuple[int, float]:
     sz = 0
     mt = 0.0
     for p in (txt, js):
+        if p.is_symlink():
+            continue
         if p.is_file():
             st = p.stat()
             sz += st.st_size
@@ -72,13 +74,30 @@ def _pair_disk_bytes_and_mtime(qdir: Path, qid: str) -> tuple[int, float]:
     return sz, mt
 
 
+def _iter_meta_paths(qdir: Path):
+    """Yield quarantine metadata files under qdir without following symlinked dirs."""
+    if not qdir.is_dir():
+        return
+    for root, dirnames, filenames in os.walk(qdir, followlinks=False):
+        root_path = Path(root)
+        dirnames[:] = [
+            name for name in dirnames if not (root_path / name).is_symlink()
+        ]
+        for filename in filenames:
+            if not filename.endswith(".json"):
+                continue
+            meta_path = root_path / filename
+            if not meta_path.is_symlink() and meta_path.is_file():
+                yield meta_path
+
+
 def total_quarantine_bytes(qdir: Path) -> int:
     if not qdir.is_dir():
         return 0
     total = 0
-    for meta_path in qdir.glob("*.json"):
+    for meta_path in _iter_meta_paths(qdir):
         qid = meta_path.stem
-        sz, _ = _pair_disk_bytes_and_mtime(qdir, qid)
+        sz, _ = _pair_disk_bytes_and_mtime(meta_path.parent, qid)
         total += sz
     return total
 
@@ -89,11 +108,12 @@ def purge_older_than(qdir: Path, days: int) -> int:
         return 0
     cutoff = time.time() - days * 86400
     purged = 0
-    for meta_path in list(qdir.glob("*.json")):
+    for meta_path in list(_iter_meta_paths(qdir)):
         qid = meta_path.stem
+        parent = meta_path.parent
         try:
             if meta_path.stat().st_mtime < cutoff:
-                (qdir / f"{qid}.txt").unlink(missing_ok=True)
+                (parent / f"{qid}.txt").unlink(missing_ok=True)
                 meta_path.unlink(missing_ok=True)
                 purged += 1
         except OSError:
@@ -105,19 +125,21 @@ def evict_oldest_until_under(qdir: Path, target_total: int) -> int:
     """Delete oldest-by-mtime pairs until ``total_quarantine_bytes(qdir) <= target_total`` or stuck."""
     freed = 0
     while qdir.is_dir() and total_quarantine_bytes(qdir) > target_total:
-        pairs: list[tuple[str, float]] = []
-        for meta_path in qdir.glob("*.json"):
+        pairs: list[tuple[Path, float]] = []
+        for meta_path in _iter_meta_paths(qdir):
             qid = meta_path.stem
-            _, mt = _pair_disk_bytes_and_mtime(qdir, qid)
-            pairs.append((qid, mt))
+            _, mt = _pair_disk_bytes_and_mtime(meta_path.parent, qid)
+            pairs.append((meta_path, mt))
         if not pairs:
             break
         pairs.sort(key=lambda x: x[1])
-        victim = pairs[0][0]
-        sz_before, _ = _pair_disk_bytes_and_mtime(qdir, victim)
+        victim_meta = pairs[0][0]
+        victim = victim_meta.stem
+        victim_dir = victim_meta.parent
+        sz_before, _ = _pair_disk_bytes_and_mtime(victim_dir, victim)
         try:
-            (qdir / f"{victim}.json").unlink(missing_ok=True)
-            (qdir / f"{victim}.txt").unlink(missing_ok=True)
+            (victim_dir / f"{victim}.json").unlink(missing_ok=True)
+            (victim_dir / f"{victim}.txt").unlink(missing_ok=True)
             freed += sz_before
         except OSError:
             break

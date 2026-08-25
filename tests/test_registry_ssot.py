@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -235,3 +237,81 @@ def test_apply_merge_rejects_wrong_sidecar_reason(isolated_ssot):
     res = registry_ssot.apply_merge(path, approve=True)
     assert res["merged"] is False
     assert res["reason"] == "quarantine_provenance_rejected"
+
+
+def test_registry_fetch_layout_counts_against_total_quota(isolated_ssot, monkeypatch):
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "200")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "260")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
+
+    scp_utils.quarantine(
+        "x" * 120,
+        reason="registry_fetch",
+        source="https://example.com/one.json",
+        layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+    )
+
+    with pytest.raises(ValueError, match="quarantine storage full"):
+        scp_utils.quarantine(
+            "y" * 120,
+            reason="registry_fetch",
+            source="https://example.com/two.json",
+            layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+
+
+def test_registry_fetch_layout_oldest_eviction_crosses_subdirs(isolated_ssot, monkeypatch):
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "200")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "320")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+
+    old = scp_utils.quarantine(
+        "x" * 120,
+        reason="registry_fetch",
+        source="https://example.com/old.json",
+        layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+    )
+    old_path = Path(old["path"])
+    old_meta = old_path.with_suffix(".json")
+    old_mtime = time.time() - 60
+    os.utime(old_path, (old_mtime, old_mtime))
+    os.utime(old_meta, (old_mtime, old_mtime))
+
+    new = scp_utils.quarantine(
+        "y" * 120,
+        reason="registry_fetch",
+        source="https://example.com/new.json",
+        layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+    )
+
+    assert not old_path.exists()
+    assert not old_meta.exists()
+    assert Path(new["path"]).is_file()
+
+
+def test_registry_fetch_layout_retention_purges_subdir_entries(isolated_ssot, monkeypatch):
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "200")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "10000")
+
+    old = scp_utils.quarantine(
+        "x" * 120,
+        reason="registry_fetch",
+        source="https://example.com/old.json",
+        layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+    )
+    old_path = Path(old["path"])
+    old_meta = old_path.with_suffix(".json")
+    old_mtime = time.time() - 3 * 86400
+    os.utime(old_path, (old_mtime, old_mtime))
+    os.utime(old_meta, (old_mtime, old_mtime))
+
+    monkeypatch.setenv("SCP_QUARANTINE_RETENTION_DAYS_ON_WRITE", "1")
+    scp_utils.quarantine(
+        "fresh",
+        reason="registry_fetch",
+        source="https://example.com/fresh.json",
+        layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+    )
+
+    assert not old_path.exists()
+    assert not old_meta.exists()
