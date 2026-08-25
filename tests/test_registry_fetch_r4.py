@@ -148,3 +148,64 @@ def test_invalid_snapshot_rejected(isolated_env):
     assert res["ok"] is False
     assert res["error"] == "invalid_snapshot"
     assert res["local_registry_unchanged"] is True
+
+
+def test_fetch_fails_closed_when_ssot_is_corrupt(isolated_env, monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "127.0.0.1")
+    ssot_path = isolated_env / "ssot.json"
+    ssot_path.write_text('{"patterns": [', encoding="utf-8")
+    body = json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode("utf-8"))
+
+        def log_message(self, *_args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    res = registry_fetch.fetch_registry(f"http://127.0.0.1:{port}/registry.json", [])
+    server.shutdown()
+
+    assert res["ok"] is False
+    assert res["error"] == "ssot_corrupt"
+    assert res["local_registry_unchanged"] is True
+    assert ssot_path.read_text(encoding="utf-8") == '{"patterns": ['
+
+
+def test_fetch_fails_closed_when_quarantine_write_fails(isolated_env, monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "127.0.0.1")
+    body = json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode("utf-8"))
+
+        def log_message(self, *_args):
+            return
+
+    def raise_disk_full(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(registry_fetch.scp_utils, "quarantine", raise_disk_full)
+
+    res = registry_fetch.fetch_registry(f"http://127.0.0.1:{port}/registry.json", [])
+    server.shutdown()
+
+    assert res["ok"] is False
+    assert res["error"] == "quarantine_failed"
+    assert res["local_registry_unchanged"] is True

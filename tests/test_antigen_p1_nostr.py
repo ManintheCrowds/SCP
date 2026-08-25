@@ -145,6 +145,81 @@ def test_cli_publish_rejects_filtered_empty_relay_list(issuer, monkeypatch):
     assert out.get("reason") == "empty_relay_allowlist"
 
 
+def test_parse_announcement_rejects_oversized_content_before_hash(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_MAX_PAYLOAD_BYTES", "32")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "32")
+    event = {
+        "id": "a" * 64,
+        "pubkey": "b" * 64,
+        "created_at": 1,
+        "kind": nostr.ANTIGEN_NOSTR_KIND,
+        "tags": [],
+        "content": "x" * 20_000,
+        "sig": "c" * 128,
+    }
+
+    def fail_compute_event_id(_event):
+        raise AssertionError("oversized event must be rejected before hashing")
+
+    monkeypatch.setattr(nostr, "compute_event_id", fail_compute_event_id)
+
+    assert nostr.parse_announcement_event(event) is None
+
+
+def test_websocket_subscribe_drops_oversized_event_frame(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_MAX_PAYLOAD_BYTES", "32")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "32")
+    event = {
+        "id": "a" * 64,
+        "pubkey": "b" * 64,
+        "created_at": 1,
+        "kind": nostr.ANTIGEN_NOSTR_KIND,
+        "tags": [],
+        "content": "x" * 20_000,
+        "sig": "c" * 128,
+    }
+    raw = json.dumps(["EVENT", "sub", event])
+    conn = MagicMock()
+    conn.recv.side_effect = [raw]
+
+    class FakeWebSocket:
+        @staticmethod
+        def create_connection(_relay, timeout):
+            return conn
+
+    monkeypatch.setattr(nostr, "_require_websocket_client", lambda: FakeWebSocket)
+
+    out = nostr.WebSocketRelayTransport().subscribe(
+        [{"kinds": [nostr.ANTIGEN_NOSTR_KIND]}],
+        relays=("wss://relay.example",),
+        timeout_s=1.0,
+    )
+
+    assert out == []
+    conn.close.assert_called_once()
+
+
+def test_websocket_publish_rejects_oversized_ack(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_MAX_PAYLOAD_BYTES", "32")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "32")
+    conn = MagicMock()
+    conn.recv.return_value = "x" * 20_000
+
+    class FakeWebSocket:
+        @staticmethod
+        def create_connection(_relay, timeout):
+            return conn
+
+    monkeypatch.setattr(nostr, "_require_websocket_client", lambda: FakeWebSocket)
+
+    with pytest.raises(RuntimeError, match="relay_response_too_large"):
+        nostr.WebSocketRelayTransport().publish(
+            {"kind": nostr.ANTIGEN_NOSTR_KIND},
+            relays=("wss://relay.example",),
+        )
+    conn.close.assert_called_once()
+
+
 def test_fetch_payload_hash_match(issuer):
     payload = {"patterns": _patterns()}
     bare = antigen.compute_payload_hash(payload)[7:]
@@ -175,6 +250,7 @@ def test_fetch_402_surfaces_metadata(issuer):
     mock_resp.status_code = 402
     mock_resp.headers = {"WWW-Authenticate": "L402"}
     mock_resp.json.side_effect = ValueError("no json")
+    mock_resp.close = MagicMock()
 
     with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
         with pytest.raises(nostr.FetchError) as exc:
@@ -182,6 +258,7 @@ def test_fetch_402_surfaces_metadata(issuer):
     assert exc.value.reason == "payment_required"
     assert exc.value.l402 is not None
     assert exc.value.l402["status"] == 402
+    mock_resp.close.assert_called_once()
 
 
 def test_e2e_discover_fetch_import_quarantine_only(issuer):

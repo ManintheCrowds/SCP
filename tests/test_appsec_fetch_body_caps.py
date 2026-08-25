@@ -103,6 +103,67 @@ def test_read_response_json_under_cap():
     assert http_body.read_response_json(resp, max_bytes=10_000) == payload
 
 
+def test_read_response_json_rejects_invalid_utf8_as_json_decode():
+    resp = MagicMock()
+    resp.headers = {"Content-Length": "1"}
+    resp.iter_content = lambda chunk_size=65536: iter([b"\xff"])
+    resp.close = MagicMock()
+
+    with pytest.raises(json.JSONDecodeError):
+        http_body.read_response_json(resp, max_bytes=10_000)
+
+
+def test_registry_https_maps_invalid_utf8_to_invalid_json(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"Content-Length": "1"}
+    mock_resp.iter_content = lambda chunk_size=65536: iter([b"\xff"])
+    mock_resp.close = MagicMock()
+
+    with patch("scp.registry_fetch.requests.Session.get", return_value=mock_resp):
+        with pytest.raises(rf.RegistryFetchError) as exc:
+            rf._fetch_https("https://example.com/snap.json", ["example.com"])
+
+    assert exc.value.reason == "invalid_json"
+    mock_resp.close.assert_called()
+
+
+def test_antigen_process_fetch_rejects_scalar_payload_shape():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"Content-Length": "3"}
+    mock_resp.iter_content = lambda chunk_size=65536: iter([b"123"])
+    mock_resp.close = MagicMock()
+
+    with pytest.raises(FetchError) as exc:
+        nostr._process_fetch_response(
+            mock_resp,
+            url_host="example.com",
+            expected_hash_bare_hex="a" * 64,
+        )
+
+    assert exc.value.reason == "unrecognized_payload_shape"
+    mock_resp.close.assert_called()
+
+
+def test_antigen_process_fetch_closes_non_200_response():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    mock_resp.headers = {}
+    mock_resp.close = MagicMock()
+
+    with pytest.raises(FetchError) as exc:
+        nostr._process_fetch_response(
+            mock_resp,
+            url_host="example.com",
+            expected_hash_bare_hex="a" * 64,
+        )
+
+    assert exc.value.reason == "http_error"
+    mock_resp.close.assert_called_once()
+
+
 def test_read_response_bytes_transport_error_is_not_size_error():
     import requests
 

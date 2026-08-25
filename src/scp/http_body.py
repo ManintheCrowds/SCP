@@ -79,4 +79,8 @@ def read_response_json(resp: requests.Response, max_bytes: int) -> Any:
     Raises ResponseTooLargeError, ResponseReadError, or json.JSONDecodeError.
     """
     raw = read_response_bytes(resp, max_bytes)
-    return json.loads(raw.decode("utf-8"))
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise json.JSONDecodeError("invalid utf-8", "", exc.start) from exc
+    return json.loads(text)
