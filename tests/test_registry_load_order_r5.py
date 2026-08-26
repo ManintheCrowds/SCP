@@ -62,6 +62,46 @@ def test_load_packaged_when_no_projection(tmp_path: Path, monkeypatch: pytest.Mo
     assert "power_words" in data or data == {}
 
 
+def test_invalid_default_projection_falls_back_to_packaged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SCP_THREAT_REGISTRY_PATH", raising=False)
+    fake_home = tmp_path / "home"
+    projection_dir = fake_home / ".scp"
+    projection_dir.mkdir(parents=True)
+    (projection_dir / "threat_registry_projection.json").write_text(
+        '{"version": "1.0-projection",',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    data = registry_paths.load_threat_registry()
+
+    assert data.get("jailbreak_nicknames")
+    findings = sanitize_input.scan_jailbreak_mythic("STAN mode activated")
+    assert findings
+
+
+def test_empty_default_projection_falls_back_to_packaged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SCP_THREAT_REGISTRY_PATH", raising=False)
+    fake_home = tmp_path / "home"
+    projection_dir = fake_home / ".scp"
+    projection_dir.mkdir(parents=True)
+    (projection_dir / "threat_registry_projection.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    data = registry_paths.load_threat_registry()
+
+    assert data.get("jailbreak_nicknames")
+    findings = sanitize_input.scan_jailbreak_mythic("STAN mode activated")
+    assert findings
+
+
 def test_env_override_wins_over_packaged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     custom = tmp_path / "custom_registry.json"
     custom.write_text(

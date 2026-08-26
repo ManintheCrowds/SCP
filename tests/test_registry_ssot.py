@@ -235,3 +235,21 @@ def test_apply_merge_rejects_wrong_sidecar_reason(isolated_ssot):
     res = registry_ssot.apply_merge(path, approve=True)
     assert res["merged"] is False
     assert res["reason"] == "quarantine_provenance_rejected"
+
+
+def test_registry_fetch_quarantine_is_listed_and_purgeable(isolated_ssot):
+    qfile = _stage_fetch_quarantine(_snap([_rec("visible.purgeable.001")]))
+    qid = qfile.stem
+
+    entries = scp_utils.list_quarantine()
+
+    assert any(entry["quarantine_id"] == qid and entry["path"] == str(qfile) for entry in entries)
+
+    purged = scp_utils.purge_quarantine(quarantine_id=qid)
+
+    assert purged == {"purged": 1, "ids": [qid]}
+    assert not qfile.exists()
+    assert not qfile.with_suffix(".json").exists()
+    res = registry_ssot.apply_merge(qfile, approve=True)
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_file_not_found"
