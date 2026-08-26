@@ -166,16 +166,35 @@ def quarantine(
     return {"quarantine_id": qid, "path": str(content_path)}
 
 
+def _quarantine_layout_dirs(root: Path) -> list[Path]:
+    dirs = [root]
+    for layout in sorted(_ALLOWED_QUARANTINE_LAYOUTS):
+        dirs.append(root / layout)
+    return dirs
+
+
+def _quarantine_meta_paths(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for qdir in _quarantine_layout_dirs(root):
+        if qdir.is_dir():
+            paths.extend(qdir.glob("*.json"))
+    return paths
+
+
+def _quarantine_pair_paths(meta_path: Path, qid: str) -> tuple[Path, Path]:
+    return meta_path.parent / f"{qid}.json", meta_path.parent / f"{qid}.txt"
+
+
 def list_quarantine() -> list[dict]:
     qdir = _quarantine_dir()
     if not qdir.exists():
         return []
     entries = []
-    for meta_path in qdir.glob("*.json"):
+    for meta_path in _quarantine_meta_paths(qdir):
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             qid = meta.get("quarantine_id") or meta_path.stem
-            content_path = qdir / f"{qid}.txt"
+            content_path = meta_path.parent / f"{qid}.txt"
             entries.append({
                 "quarantine_id": qid,
                 "reason": meta.get("reason", ""),
@@ -196,18 +215,20 @@ def purge_quarantine(quarantine_id: str | None = None, older_than_days: int | No
     cutoff = time.time() - (older_than_days * 86400) if older_than_days else None
     purged = []
     if quarantine_id:
-        meta_path = qdir / f"{quarantine_id}.json"
-        content_path = qdir / f"{quarantine_id}.txt"
-        if meta_path.exists() or content_path.exists():
+        for layout_dir in _quarantine_layout_dirs(qdir):
+            meta_path = layout_dir / f"{quarantine_id}.json"
+            content_path = layout_dir / f"{quarantine_id}.txt"
+            if not (meta_path.exists() or content_path.exists()):
+                continue
             if cutoff:
                 mtime = meta_path.stat().st_mtime if meta_path.exists() else content_path.stat().st_mtime
                 if mtime >= cutoff:
-                    return {"purged": 0, "ids": []}
+                    continue
             meta_path.unlink(missing_ok=True)
             content_path.unlink(missing_ok=True)
             purged.append(quarantine_id)
     else:
-        for meta_path in list(qdir.glob("*.json")):
+        for meta_path in list(_quarantine_meta_paths(qdir)):
             qid = meta_path.stem
             if cutoff:
                 try:
@@ -215,7 +236,7 @@ def purge_quarantine(quarantine_id: str | None = None, older_than_days: int | No
                         continue
                 except OSError:
                     continue
-            content_path = qdir / f"{qid}.txt"
+            meta_path, content_path = _quarantine_pair_paths(meta_path, qid)
             meta_path.unlink(missing_ok=True)
             content_path.unlink(missing_ok=True)
             purged.append(qid)

@@ -10,6 +10,7 @@ from pathlib import Path
 
 _PKG_DIR = Path(__file__).resolve().parent
 _PACKAGED_REGISTRY = _PKG_DIR / "scp_threat_registry.json"
+_DEFAULT_PROJECTION = Path(".scp") / "threat_registry_projection.json"
 
 
 def default_projection_path() -> Path:
@@ -35,17 +36,56 @@ def resolve_threat_registry_path() -> Path | None:
     return None
 
 
-def load_threat_registry() -> dict:
-    """Load threat registry JSON; reload on each call (no sticky cache)."""
-    path = resolve_threat_registry_path()
-    if path is None:
-        return {}
+def _home_projection_path() -> Path:
+    return Path.home() / _DEFAULT_PROJECTION
+
+
+def _registry_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    env = os.environ.get("SCP_THREAT_REGISTRY_PATH")
+    if env:
+        p = Path(env)
+        if p.is_file():
+            candidates.append(p)
+    else:
+        proj = _home_projection_path()
+        if proj.is_file():
+            candidates.append(proj)
+    if _PACKAGED_REGISTRY.is_file():
+        candidates.append(_PACKAGED_REGISTRY)
+
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            key = path.resolve()
+        except OSError:
+            key = path
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _read_registry(path: Path) -> dict | None:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
-        return {}
+        return None
+    if not isinstance(data, dict) or not data:
+        return None
+    return data
+
+
+def load_threat_registry() -> dict:
+    """Load threat registry JSON; reload on each call and fall back safely."""
+    for path in _registry_candidates():
+        data = _read_registry(path)
+        if data is not None:
+            return data
+    return {}
 
 
 def clear_threat_registry_cache() -> None:
