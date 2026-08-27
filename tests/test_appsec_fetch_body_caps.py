@@ -141,6 +141,85 @@ def test_registry_https_maps_transport_error_to_fetch_failed(monkeypatch):
     assert exc.value.reason == "fetch_failed"
 
 
+def test_registry_https_maps_invalid_utf8_to_invalid_json(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"Content-Length": "1"}
+    mock_resp.iter_content = lambda chunk_size=65536: iter([b"\xff"])
+    mock_resp.close = MagicMock()
+
+    with patch("scp.registry_fetch.requests.Session.get", return_value=mock_resp):
+        with pytest.raises(rf.RegistryFetchError) as exc:
+            rf._fetch_https("https://example.com/snap.json", ["example.com"])
+    assert exc.value.reason == "invalid_json"
+    assert mock_resp.close.called
+
+
+def test_antigen_process_fetch_maps_invalid_utf8_to_invalid_json():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"Content-Length": "1"}
+    mock_resp.iter_content = lambda chunk_size=65536: iter([b"\xff"])
+    mock_resp.close = MagicMock()
+
+    with pytest.raises(FetchError) as exc:
+        nostr._process_fetch_response(
+            mock_resp,
+            url_host="example.com",
+            expected_hash_bare_hex="a" * 64,
+        )
+    assert exc.value.reason == "invalid_json"
+    assert mock_resp.close.called
+
+
+def test_antigen_process_fetch_rejects_scalar_json_shape():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"Content-Length": "3"}
+    mock_resp.iter_content = lambda chunk_size=65536: iter([b"123"])
+    mock_resp.close = MagicMock()
+
+    with pytest.raises(FetchError) as exc:
+        nostr._process_fetch_response(
+            mock_resp,
+            url_host="example.com",
+            expected_hash_bare_hex="a" * 64,
+        )
+    assert exc.value.reason == "unrecognized_payload_shape"
+    assert mock_resp.close.called
+
+
+def test_antigen_process_fetch_closes_non_200_response():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    mock_resp.headers = {}
+    mock_resp.close = MagicMock()
+
+    with pytest.raises(FetchError) as exc:
+        nostr._process_fetch_response(
+            mock_resp,
+            url_host="example.com",
+            expected_hash_bare_hex="a" * 64,
+        )
+    assert exc.value.reason == "http_error"
+    assert mock_resp.close.called
+
+
+def test_antigen_fetch_payload_closes_l402_challenge(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    mock_resp = MagicMock()
+    mock_resp.status_code = 402
+    mock_resp.headers = {"WWW-Authenticate": "L402 macaroon=\"abc\", invoice=\"lnbc\""}
+    mock_resp.close = MagicMock()
+
+    with patch("scp.antigen_nostr.requests.Session.get", return_value=mock_resp):
+        with pytest.raises(FetchError) as exc:
+            nostr.fetch_payload("https://example.com/payload.json", "a" * 64)
+    assert exc.value.reason == "payment_required"
+    assert mock_resp.close.called
+
+
 def test_parse_nostr_snapshot_rejects_oversized_content(monkeypatch):
     monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "50")
     event = {

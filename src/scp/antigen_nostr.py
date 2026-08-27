@@ -605,7 +605,9 @@ def discover_announcements(
 
 # --------------------------------------------------------------------------- HTTPS fetch + bundle compose
 
-def _extract_payload_obj(body: dict) -> dict:
+def _extract_payload_obj(body: Any) -> dict:
+    if not isinstance(body, dict):
+        raise FetchError("unrecognized_payload_shape")
     if "payload" in body and "manifest" in body:
         return body["payload"]
     if "patterns" in body:
@@ -666,14 +668,17 @@ def _process_fetch_response(
 ) -> dict:
     expected = f"sha256:{expected_hash_bare_hex}"
     if resp.status_code != 200:
-        antigen._audit(
-            "fetch_rejected",
-            url_host=url_host,
-            payload_hash=expected,
-            status=resp.status_code,
-            antigen_id=antigen_id,
-        )
-        raise FetchError("http_error", status=resp.status_code)
+        try:
+            antigen._audit(
+                "fetch_rejected",
+                url_host=url_host,
+                payload_hash=expected,
+                status=resp.status_code,
+                antigen_id=antigen_id,
+            )
+            raise FetchError("http_error", status=resp.status_code)
+        finally:
+            resp.close()
 
     if l402_retry:
         antigen._audit(
@@ -783,23 +788,26 @@ def fetch_payload(
         raise FetchError("invalid_l402_token") from exc
 
     if resp.status_code == 402:
-        meta = _build_l402_metadata(resp)
-        antigen._audit(
-            "fetch_l402_challenge",
-            url_host=parsed.netloc,
-            payload_hash=f"sha256:{expected_hash_bare_hex}",
-            invoice_hint=meta.get("invoice_hint"),
-            antigen_id=antigen_id,
-        )
-        if token:
+        try:
+            meta = _build_l402_metadata(resp)
             antigen._audit(
-                "fetch_l402_retry_failed",
+                "fetch_l402_challenge",
                 url_host=parsed.netloc,
                 payload_hash=f"sha256:{expected_hash_bare_hex}",
                 invoice_hint=meta.get("invoice_hint"),
                 antigen_id=antigen_id,
             )
-        raise FetchError("payment_required", status=402, l402=meta)
+            if token:
+                antigen._audit(
+                    "fetch_l402_retry_failed",
+                    url_host=parsed.netloc,
+                    payload_hash=f"sha256:{expected_hash_bare_hex}",
+                    invoice_hint=meta.get("invoice_hint"),
+                    antigen_id=antigen_id,
+                )
+            raise FetchError("payment_required", status=402, l402=meta)
+        finally:
+            resp.close()
 
     return _process_fetch_response(
         resp,
