@@ -79,6 +79,36 @@ def test_fetch_https_quarantine(isolated_env, monkeypatch):
     assert merge["merged"] is True
 
 
+def test_fetch_fails_closed_when_ssot_is_corrupt(isolated_env, monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "127.0.0.1")
+    (isolated_env / "ssot.json").write_text('{"patterns": [', encoding="utf-8")
+    body = json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode("utf-8"))
+
+        def log_message(self, *_args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        res = registry_fetch.fetch_registry(f"http://127.0.0.1:{port}/registry.json", [])
+    finally:
+        server.shutdown()
+
+    assert res["ok"] is False
+    assert res["error"] == "ssot_corrupt"
+    assert res["local_registry_unchanged"] is True
+
+
 def test_fetch_failure_unchanged_ssot(isolated_env, monkeypatch):
     monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "127.0.0.1")
     res = registry_fetch.fetch_registry("https://127.0.0.1:59999/nope.json", [])

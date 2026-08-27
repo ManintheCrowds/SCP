@@ -166,24 +166,34 @@ def quarantine(
     return {"quarantine_id": qid, "path": str(content_path)}
 
 
-def list_quarantine() -> list[dict]:
-    qdir = _quarantine_dir()
+def _quarantine_scan_dirs(qdir: Path) -> list[Path]:
     if not qdir.exists():
         return []
+    dirs = [qdir]
+    for layout in _ALLOWED_QUARANTINE_LAYOUTS:
+        child = qdir / layout
+        if child.is_dir() and not child.is_symlink():
+            dirs.append(child)
+    return dirs
+
+
+def list_quarantine() -> list[dict]:
+    qdir = _quarantine_dir()
     entries = []
-    for meta_path in qdir.glob("*.json"):
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            qid = meta.get("quarantine_id") or meta_path.stem
-            content_path = qdir / f"{qid}.txt"
-            entries.append({
-                "quarantine_id": qid,
-                "reason": meta.get("reason", ""),
-                "source": meta.get("source", ""),
-                "path": str(content_path) if content_path.exists() else "",
-            })
-        except (json.JSONDecodeError, OSError):
-            continue
+    for scan_dir in _quarantine_scan_dirs(qdir):
+        for meta_path in scan_dir.glob("*.json"):
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                qid = meta.get("quarantine_id") or meta_path.stem
+                content_path = scan_dir / f"{qid}.txt"
+                entries.append({
+                    "quarantine_id": qid,
+                    "reason": meta.get("reason", ""),
+                    "source": meta.get("source", ""),
+                    "path": str(content_path) if content_path.exists() else "",
+                })
+            except (json.JSONDecodeError, OSError):
+                continue
     return entries
 
 
@@ -196,29 +206,33 @@ def purge_quarantine(quarantine_id: str | None = None, older_than_days: int | No
     cutoff = time.time() - (older_than_days * 86400) if older_than_days else None
     purged = []
     if quarantine_id:
-        meta_path = qdir / f"{quarantine_id}.json"
-        content_path = qdir / f"{quarantine_id}.txt"
-        if meta_path.exists() or content_path.exists():
+        for scan_dir in _quarantine_scan_dirs(qdir):
+            meta_path = scan_dir / f"{quarantine_id}.json"
+            content_path = scan_dir / f"{quarantine_id}.txt"
+            if not (meta_path.exists() or content_path.exists()):
+                continue
             if cutoff:
                 mtime = meta_path.stat().st_mtime if meta_path.exists() else content_path.stat().st_mtime
                 if mtime >= cutoff:
-                    return {"purged": 0, "ids": []}
+                    continue
             meta_path.unlink(missing_ok=True)
             content_path.unlink(missing_ok=True)
             purged.append(quarantine_id)
+            break
     else:
-        for meta_path in list(qdir.glob("*.json")):
-            qid = meta_path.stem
-            if cutoff:
-                try:
-                    if meta_path.stat().st_mtime >= cutoff:
+        for scan_dir in _quarantine_scan_dirs(qdir):
+            for meta_path in list(scan_dir.glob("*.json")):
+                qid = meta_path.stem
+                if cutoff:
+                    try:
+                        if meta_path.stat().st_mtime >= cutoff:
+                            continue
+                    except OSError:
                         continue
-                except OSError:
-                    continue
-            content_path = qdir / f"{qid}.txt"
-            meta_path.unlink(missing_ok=True)
-            content_path.unlink(missing_ok=True)
-            purged.append(qid)
+                content_path = scan_dir / f"{qid}.txt"
+                meta_path.unlink(missing_ok=True)
+                content_path.unlink(missing_ok=True)
+                purged.append(qid)
     return {"purged": len(purged), "ids": purged}
 
 

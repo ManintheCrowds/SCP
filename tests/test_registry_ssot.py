@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from scp import pattern_record as pr
+from scp import quarantine_limits
 from scp import registry_fetch
 from scp import registry_ssot
 from scp import scp_utils
@@ -235,3 +236,54 @@ def test_apply_merge_rejects_wrong_sidecar_reason(isolated_ssot):
     res = registry_ssot.apply_merge(path, approve=True)
     assert res["merged"] is False
     assert res["reason"] == "quarantine_provenance_rejected"
+
+
+def test_apply_merge_rejects_symlinked_registry_fetch_root(isolated_ssot):
+    snap = _snap([_rec("symlink.poison.001")])
+    forged = json.dumps(
+        {
+            "snapshot": snap,
+            "meta": {"reason": "registry_fetch", "source": "evil"},
+        },
+        indent=2,
+    )
+    q = scp_utils.quarantine(forged, reason="registry_fetch", source="evil")
+    fetch_dir = scp_utils.registry_fetch_quarantine_dir()
+    fetch_dir.symlink_to(scp_utils.quarantine_dir(), target_is_directory=True)
+
+    res = registry_ssot.apply_merge(q["path"], approve=True)
+
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_path_rejected"
+    assert registry_ssot.load_ssot() == []
+
+
+def test_registry_fetch_quarantine_is_visible_and_purgeable(isolated_ssot):
+    qfile = _stage_fetch_quarantine(_snap([_rec("quarantine.visible.001")]))
+    qid = qfile.stem
+
+    entries = scp_utils.list_quarantine()
+    assert any(e["quarantine_id"] == qid and e["path"] == str(qfile) for e in entries)
+
+    purged = scp_utils.purge_quarantine(qid)
+    assert purged == {"purged": 1, "ids": [qid]}
+    assert not qfile.exists()
+    assert not qfile.with_suffix(".json").exists()
+
+
+def test_registry_fetch_quarantine_counts_against_root_quota(isolated_ssot):
+    qfile = _stage_fetch_quarantine(_snap([_rec("quarantine.quota.001")]))
+
+    assert quarantine_limits.total_quarantine_bytes(scp_utils.quarantine_dir()) >= (
+        qfile.stat().st_size + qfile.with_suffix(".json").stat().st_size
+    )
+
+
+def test_registry_fetch_quarantine_pressure_includes_layout(isolated_ssot, monkeypatch):
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "900")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "1000")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
+
+    _stage_fetch_quarantine(_snap([_rec("quarantine.pressure.001")]))
+    with pytest.raises(ValueError, match="quarantine storage full"):
+        _stage_fetch_quarantine(_snap([_rec("quarantine.pressure.002")]))
