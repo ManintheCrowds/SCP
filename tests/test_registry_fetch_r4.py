@@ -9,12 +9,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from stream_response_mock import mock_json_response
+
+from scp import antigen
+from scp import antigen_nostr as nostr
 from scp import pattern_record as pr
+from scp import registry_contribute
 from scp import registry_fetch
 from scp import registry_ssot
 
 FIXTURE = Path(__file__).parent / "fixtures" / "registry_snapshot_v1.json"
-EVENT_ID = "b" * 64
+SECKEY = "0000000000000000000000000000000000000000000000000000000000000003"
 
 
 @pytest.fixture(autouse=True)
@@ -97,30 +102,144 @@ def test_regtest_localhost_guard(isolated_env, monkeypatch):
 
 def test_fetch_nostr_registry_mock(isolated_env):
     snapshot = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    event = {
-        "id": EVENT_ID,
-        "pubkey": "a" * 64,
-        "created_at": 1,
-        "kind": 30079,
-        "tags": [],
-        "content": json.dumps(snapshot),
-        "sig": "c" * 128,
-    }
+    event = nostr.sign_event(
+        {
+            "kind": registry_fetch.REGISTRY_NOSTR_KIND,
+            "tags": [],
+            "content": json.dumps(snapshot),
+            "created_at": 1,
+        },
+        seckey_hex=SECKEY,
+    )
 
     transport = MagicMock()
     transport.subscribe.return_value = [event]
 
+    issuer = antigen._pubkey_hex(bytes.fromhex(SECKEY))
+    res = registry_fetch.fetch_registry(
+        event["id"],
+        [issuer],
+        transport=transport,
+    )
+
+    assert res["ok"] is True
+    assert res["merged"] is False
+    assert res["diff_summary"]["add_count"] >= 1
+
+
+def test_fetch_nostr_registry_announcement_follows_payload_url(isolated_env, monkeypatch):
+    monkeypatch.setenv("SCP_REGISTRY_FETCH_HOST_ALLOWLIST", "raw.githubusercontent.com")
+    snapshot = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    payload_url = "https://raw.githubusercontent.com/ManintheCrowds/scp-mycelium-registry/v0.1.0/snapshots/v0.1.0/registry.json"
+    issuer = antigen._pubkey_hex(bytes.fromhex(SECKEY))
+    bundle = antigen.export_bundle(
+        registry_contribute._to_bundle_patterns(snapshot["patterns"]),
+        antigen_id="registry.v0.1.0",
+        seckey_hex=SECKEY,
+        sign=True,
+        payload_urls=[payload_url],
+    )
+    event = nostr.build_announcement_event(
+        bundle,
+        seckey_hex=SECKEY,
+        created_at=1,
+    )
+    transport = MagicMock()
+    transport.subscribe.return_value = [event]
+    mock_resp = mock_json_response(snapshot)
+    get_mock = MagicMock(return_value=mock_resp)
+
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(registry_fetch.nostr, "verify_event_signature", lambda _e: True)
+        mp.setattr(registry_fetch.requests.Session, "get", get_mock)
         res = registry_fetch.fetch_registry(
-            EVENT_ID,
-            [event["pubkey"]],
+            event["id"],
+            [issuer],
             transport=transport,
         )
 
     assert res["ok"] is True
     assert res["merged"] is False
     assert res["diff_summary"]["add_count"] >= 1
+    assert Path(res["quarantine_path"]).is_file()
+    assert get_mock.call_args.kwargs["verify"] is True
+
+
+def test_fetch_nostr_registry_announcement_honors_tls_verify_arg(
+    isolated_env,
+    monkeypatch,
+):
+    monkeypatch.setenv("SCP_REGISTRY_FETCH_HOST_ALLOWLIST", "raw.githubusercontent.com")
+    snapshot = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    payload_url = "https://raw.githubusercontent.com/ManintheCrowds/scp-mycelium-registry/v0.1.0/snapshots/v0.1.0/registry.json"
+    issuer = antigen._pubkey_hex(bytes.fromhex(SECKEY))
+    bundle = antigen.export_bundle(
+        registry_contribute._to_bundle_patterns(snapshot["patterns"]),
+        antigen_id="registry.v0.1.0",
+        seckey_hex=SECKEY,
+        sign=True,
+        payload_urls=[payload_url],
+    )
+    event = nostr.build_announcement_event(
+        bundle,
+        seckey_hex=SECKEY,
+        created_at=1,
+    )
+    transport = MagicMock()
+    transport.subscribe.return_value = [event]
+    mock_resp = mock_json_response(snapshot)
+    get_mock = MagicMock(return_value=mock_resp)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(registry_fetch.requests.Session, "get", get_mock)
+        res = registry_fetch.fetch_registry(
+            event["id"],
+            [issuer],
+            transport=transport,
+            tls_verify=False,
+        )
+
+    assert res["ok"] is True
+    assert get_mock.call_args.kwargs["verify"] is False
+
+
+def test_fetch_nostr_registry_rejects_announcement_payload_hash_mismatch(
+    isolated_env,
+    monkeypatch,
+):
+    monkeypatch.setenv("SCP_REGISTRY_FETCH_HOST_ALLOWLIST", "raw.githubusercontent.com")
+    snapshot = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    announced_snapshot = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    announced_snapshot["patterns"] = [announced_snapshot["patterns"][0]]
+    payload_url = "https://raw.githubusercontent.com/ManintheCrowds/scp-mycelium-registry/v0.1.0/snapshots/v0.1.0/registry.json"
+    issuer = antigen._pubkey_hex(bytes.fromhex(SECKEY))
+    bundle = antigen.export_bundle(
+        registry_contribute._to_bundle_patterns(announced_snapshot["patterns"]),
+        antigen_id="registry.v0.1.0",
+        seckey_hex=SECKEY,
+        sign=True,
+        payload_urls=[payload_url],
+    )
+    event = nostr.build_announcement_event(
+        bundle,
+        seckey_hex=SECKEY,
+        created_at=1,
+    )
+
+    transport = MagicMock()
+    transport.subscribe.return_value = [event]
+    mock_resp = mock_json_response(snapshot)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(registry_fetch.requests.Session, "get", MagicMock(return_value=mock_resp))
+        res = registry_fetch.fetch_registry(
+            event["id"],
+            [issuer],
+            transport=transport,
+        )
+
+    assert res["ok"] is False
+    assert res["error"] == "hash_mismatch"
+    assert res["local_registry_unchanged"] is True
 
 
 def test_invalid_snapshot_rejected(isolated_env):

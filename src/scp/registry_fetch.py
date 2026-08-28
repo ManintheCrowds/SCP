@@ -22,7 +22,9 @@ from . import registry_ssot
 from . import scp_utils
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_HEX128 = re.compile(r"^[0-9a-f]{128}$")
 _NEVENT_RE = re.compile(r"^nevent1[02-9ac-hj-np-z]+$", re.I)
+REGISTRY_NOSTR_KIND = 30079
 
 
 class RegistryFetchError(Exception):
@@ -170,11 +172,85 @@ def _fetch_https(
     return {"body": body, "etag": etag_header or body.get("etag")}
 
 
+def _snapshot_with_etag(snapshot: dict, etag: str | None) -> dict:
+    if etag and not snapshot.get("etag"):
+        snapshot = dict(snapshot)
+        if not str(etag).startswith("sha256:"):
+            etag = f"sha256:{etag}" if _HEX64.match(str(etag)) else etag
+        snapshot["etag"] = etag
+    return snapshot
+
+
+def _verify_nostr_event_signature(event: dict) -> bool:
+    if event.get("kind") not in (nostr.ANTIGEN_NOSTR_KIND, REGISTRY_NOSTR_KIND):
+        return False
+    pubkey = str(event.get("pubkey", "")).lower()
+    sig = str(event.get("sig", ""))
+    event_id = str(event.get("id", "")).lower()
+    if not _HEX64.match(pubkey) or not _HEX128.match(sig) or not _HEX64.match(event_id):
+        return False
+    if event_id != nostr.compute_event_id(event):
+        return False
+    return antigen._verify_schnorr(bytes.fromhex(event_id), pubkey, sig)
+
+
+def _bundle_payload_hash_from_snapshot(snapshot: dict) -> str | None:
+    patterns = snapshot.get("patterns")
+    if not isinstance(patterns, list):
+        return None
+    bundle_patterns = []
+    for rec in patterns:
+        if not isinstance(rec, dict):
+            return None
+        try:
+            detector = rec.get("detector") or {}
+            if not isinstance(detector, dict):
+                return None
+            pat: dict[str, Any] = {
+                "pattern_id": rec["pattern_id"],
+                "category": rec["category"],
+                "detector": dict(detector),
+                "severity": rec.get("risk_tier", rec.get("severity", "medium")),
+            }
+        except KeyError:
+            return None
+        if rec.get("containment"):
+            pat["containment"] = rec["containment"]
+        bundle_patterns.append(pat)
+    return antigen.compute_payload_hash({"patterns": bundle_patterns})
+
+
+def _fetch_announcement_snapshot(
+    event: dict,
+    allowlist: list[str],
+    *,
+    tls_verify: bool = True,
+    session: requests.Session | None = None,
+) -> dict | None:
+    ann = nostr.parse_announcement_event(event)
+    if ann is None:
+        return None
+    if ann.issuer_pubkey not in {a.lower() for a in allowlist}:
+        raise RegistryFetchError("issuer_not_on_allowlist")
+
+    hosts = http_policy.env_registry_host_allowlist()
+    if not hosts:
+        raise RegistryFetchError("empty_host_allowlist")
+    fetched = _fetch_https(ann.payload_urls[0], hosts, tls_verify=tls_verify, session=session)
+    snapshot = _snapshot_with_etag(fetched["body"], fetched.get("etag"))
+
+    announced_hash = f"sha256:{ann.payload_hash_bare}"
+    actual_hash = _bundle_payload_hash_from_snapshot(snapshot)
+    if actual_hash is not None and actual_hash != announced_hash:
+        raise RegistryFetchError("hash_mismatch")
+    return snapshot
+
+
 def _parse_nostr_snapshot(event: dict, allowlist: list[str]) -> dict:
     pubkey = str(event.get("pubkey", ""))
     if not _issuer_allowed(pubkey, allowlist):
         raise RegistryFetchError("issuer_not_on_allowlist")
-    if not nostr.verify_event_signature(event):
+    if not _verify_nostr_event_signature(event):
         raise RegistryFetchError("invalid_nostr_signature")
 
     content = event.get("content", "")
@@ -206,6 +282,8 @@ def fetch_nostr_registry(
     *,
     relays: list[str] | None = None,
     transport: nostr.RelayTransport | None = None,
+    tls_verify: bool = True,
+    session: requests.Session | None = None,
 ) -> dict:
     """Fetch registry snapshot from nostr event content."""
     eid = _resolve_event_id(event_id)
@@ -217,6 +295,11 @@ def fetch_nostr_registry(
     event = events[0]
     if str(event.get("id", "")).lower() != eid:
         raise RegistryFetchError("nostr_event_mismatch")
+    announced = _fetch_announcement_snapshot(
+        event, allowlist, tls_verify=tls_verify, session=session
+    )
+    if announced is not None:
+        return announced
     return _parse_nostr_snapshot(event, allowlist)
 
 
@@ -261,13 +344,7 @@ def fetch_registry(
                     "local_registry_unchanged": True,
                     "merged": False,
                 }
-            snapshot = fetched["body"]
-            if fetched.get("etag") and not snapshot.get("etag"):
-                snapshot = dict(snapshot)
-                etag = fetched["etag"]
-                if not str(etag).startswith("sha256:"):
-                    etag = f"sha256:{etag}" if _HEX64.match(str(etag)) else etag
-                snapshot["etag"] = etag
+            snapshot = _snapshot_with_etag(fetched["body"], fetched.get("etag"))
         else:
             if not issuer_allow:
                 return {
@@ -276,7 +353,12 @@ def fetch_registry(
                     "local_registry_unchanged": True,
                 }
             snapshot = fetch_nostr_registry(
-                source, issuer_allow, relays=relays, transport=transport
+                source,
+                issuer_allow,
+                relays=relays,
+                transport=transport,
+                tls_verify=tls_verify,
+                session=session,
             )
     except RegistryFetchError as exc:
         return {
