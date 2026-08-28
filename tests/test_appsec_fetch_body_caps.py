@@ -143,12 +143,16 @@ def test_registry_https_maps_transport_error_to_fetch_failed(monkeypatch):
 
 def test_parse_nostr_snapshot_rejects_oversized_content(monkeypatch):
     monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "50")
-    event = {
-        "pubkey": "a" * 64,
-        "content": "{" + ("x" * 80) + "}",
-        "sig": "c" * 128,
-    }
-    with patch.object(rf.nostr, "verify_event_signature", return_value=True):
-        with pytest.raises(rf.RegistryFetchError) as exc:
-            rf._parse_nostr_snapshot(event, ["a" * 64])
+    seckey = "0000000000000000000000000000000000000000000000000000000000000003"
+    event = nostr.sign_event(
+        {
+            "kind": rf.REGISTRY_NOSTR_KIND,
+            "tags": [],
+            "content": "{" + ("x" * 80) + "}",
+            "created_at": 1,
+        },
+        seckey_hex=seckey,
+    )
+    with pytest.raises(rf.RegistryFetchError) as exc:
+        rf._parse_nostr_snapshot(event, [event["pubkey"]])
     assert exc.value.reason == "response_too_large"
