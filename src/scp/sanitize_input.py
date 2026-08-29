@@ -391,6 +391,7 @@ def _decode_base64_snippets_once(text: str) -> tuple[str, bool]:
             snippet = decoded.decode("utf-8")
         except UnicodeDecodeError:
             continue
+        snippet = _normalize_non_base64_scan_layers(snippet)
         if snippet and all(c.isprintable() or c in "\n\r\t" for c in snippet):
             extras.append(snippet)
     if extras:
@@ -421,8 +422,7 @@ def _canonicalize_scan_layer(text: str) -> str:
     return prepared
 
 
-def _prepare_text_for_scan(text: str) -> str:
-    """Normalize unicode, encoding evasion, fragmentation, and short base64 before pattern scans."""
+def _normalize_non_base64_scan_layers(text: str) -> str:
     prepared = text
     for _ in range(_CANONICALIZATION_MAX_LAYERS):
         canonical = _canonicalize_scan_layer(prepared)
@@ -432,7 +432,14 @@ def _prepare_text_for_scan(text: str) -> str:
     prepared = _collapse_spaced_hex(prepared)
     prepared = _collapse_fragmented_tokens(prepared)
     prepared = _collapse_json_letter_arrays(prepared)
+    return prepared
+
+
+def _prepare_text_for_scan(text: str) -> str:
+    """Normalize unicode, encoding evasion, fragmentation, and short base64 before pattern scans."""
+    prepared = _normalize_non_base64_scan_layers(text)
     prepared = _append_decoded_base64_snippets(prepared)
+    prepared = _normalize_non_base64_scan_layers(prepared)
     return prepared
 
 # Hostile UX: swearing, insults, abrasive feedback. Classified but passes (same as clean).

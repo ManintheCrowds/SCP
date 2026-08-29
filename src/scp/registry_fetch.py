@@ -214,8 +214,8 @@ def fetch_nostr_registry(
     events = tx.subscribe([{"ids": [eid]}], relays=relay_list, timeout_s=5.0)
     if not events:
         raise RegistryFetchError("nostr_event_not_found")
-    event = events[0]
-    if str(event.get("id", "")).lower() != eid:
+    event = next((ev for ev in events if str(ev.get("id", "")).lower() == eid), None)
+    if event is None:
         raise RegistryFetchError("nostr_event_mismatch")
     return _parse_nostr_snapshot(event, allowlist)
 
