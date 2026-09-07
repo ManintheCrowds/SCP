@@ -119,6 +119,151 @@ def test_quarantine_impossible_write_does_not_evict_existing_entries(tmp_path, m
     assert old_json.is_file()
 
 
+def test_registry_fetch_layout_counts_toward_total_quota(tmp_path, monkeypatch) -> None:
+    """AppSec: registry_fetch/ writes must count toward SCP_QUARANTINE_MAX_TOTAL_BYTES."""
+    from scp import quarantine_limits
+
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "2500")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
+    layouts = frozenset({scp_utils.REGISTRY_FETCH_LAYOUT})
+
+    first = scp_utils.quarantine(
+        "a" * 200,
+        reason="registry_fetch",
+        source="https://example.test/reg",
+        layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+    )
+    assert first.get("quarantine_id")
+    assert quarantine_limits.total_quarantine_bytes(tmp_path, layout_subdirs=layouts) > 0
+
+    raised = False
+    for _ in range(20):
+        try:
+            scp_utils.quarantine(
+                "b" * 200,
+                reason="registry_fetch",
+                source="https://example.test/reg",
+                layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+            )
+        except ValueError as exc:
+            assert "SCP_QUARANTINE_MAX_TOTAL_BYTES" in str(exc)
+            raised = True
+            break
+    assert raised, "layout writes must eventually hit total quota fail-closed"
+
+
+def test_registry_fetch_layout_eviction_makes_room(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "1000")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    layout_dir = tmp_path / scp_utils.REGISTRY_FETCH_LAYOUT
+    layout_dir.mkdir(parents=True, exist_ok=True)
+    for qid, body in (("aaaaaaaa", "a" * 400), ("bbbbbbbb", "b" * 400)):
+        (layout_dir / f"{qid}.txt").write_text(body, encoding="utf-8")
+        (layout_dir / f"{qid}.json").write_text(
+            '{"quarantine_id": "%s", "reason": "old", "source": "t"}' % qid,
+            encoding="utf-8",
+        )
+        # Ensure deterministic oldest-first: first pair older.
+        ts = 1_700_000_000 if qid == "aaaaaaaa" else 1_700_000_100
+        os.utime(layout_dir / f"{qid}.txt", (ts, ts))
+        os.utime(layout_dir / f"{qid}.json", (ts, ts))
+
+    out = scp_utils.quarantine(
+        "new" * 30,
+        reason="registry_fetch",
+        source="s",
+        layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+    )
+    assert out.get("quarantine_id")
+    assert (layout_dir / f"{out['quarantine_id']}.txt").is_file()
+    assert not (layout_dir / "aaaaaaaa.txt").exists()
+    assert not (layout_dir / "aaaaaaaa.json").exists()
+
+
+def test_prepare_quarantine_write_requires_layout_subdirs(tmp_path) -> None:
+    """Omit / None must fail loud — never silently root-only (quota bypass footgun)."""
+    from scp import quarantine_limits
+
+    with pytest.raises(TypeError, match="layout_subdirs"):
+        quarantine_limits.prepare_quarantine_write(tmp_path, 10, 10)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="layout_subdirs is required"):
+        quarantine_limits.prepare_quarantine_write(
+            tmp_path, 10, 10, layout_subdirs=None  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="layout_subdirs"):
+        quarantine_limits.total_quarantine_bytes(tmp_path)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="layout_subdirs is required"):
+        quarantine_limits.total_quarantine_bytes(
+            tmp_path, layout_subdirs=None  # type: ignore[arg-type]
+        )
+
+
+def test_root_write_evicts_oldest_registry_fetch_layout(tmp_path, monkeypatch) -> None:
+    """Total pressure on a root write must evict oldest pairs under registry_fetch/."""
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "1000")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    layout_dir = tmp_path / scp_utils.REGISTRY_FETCH_LAYOUT
+    layout_dir.mkdir(parents=True, exist_ok=True)
+    for qid, body in (("aaaaaaaa", "a" * 400), ("bbbbbbbb", "b" * 400)):
+        (layout_dir / f"{qid}.txt").write_text(body, encoding="utf-8")
+        (layout_dir / f"{qid}.json").write_text(
+            '{"quarantine_id": "%s", "reason": "old", "source": "t"}' % qid,
+            encoding="utf-8",
+        )
+        ts = 1_700_000_000 if qid == "aaaaaaaa" else 1_700_000_100
+        os.utime(layout_dir / f"{qid}.txt", (ts, ts))
+        os.utime(layout_dir / f"{qid}.json", (ts, ts))
+
+    out = scp_utils.quarantine("new" * 30, reason="r", source="s")
+    assert out.get("quarantine_id")
+    assert (tmp_path / f"{out['quarantine_id']}.txt").is_file()
+    assert not (layout_dir / "aaaaaaaa.txt").exists()
+    assert not (layout_dir / "aaaaaaaa.json").exists()
+    assert (layout_dir / "bbbbbbbb.txt").is_file()
+
+
+def test_list_and_purge_include_registry_fetch_layout(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
+    q = scp_utils.quarantine(
+        "layout payload",
+        reason="registry_fetch",
+        source="https://example.test/reg",
+        layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+    )
+    qid = q["quarantine_id"]
+    layout_txt = tmp_path / scp_utils.REGISTRY_FETCH_LAYOUT / f"{qid}.txt"
+    assert layout_txt.is_file()
+
+    listed = scp_utils.list_quarantine()
+    assert any(e["quarantine_id"] == qid for e in listed)
+    assert any(scp_utils.REGISTRY_FETCH_LAYOUT in e.get("path", "") for e in listed if e["quarantine_id"] == qid)
+
+    purged = scp_utils.purge_quarantine(quarantine_id=qid)
+    assert purged["purged"] == 1
+    assert qid in purged["ids"]
+    assert not layout_txt.exists()
+    assert not (tmp_path / scp_utils.REGISTRY_FETCH_LAYOUT / f"{qid}.json").exists()
+
+    # Bulk purge also covers layout leftovers.
+    q2 = scp_utils.quarantine(
+        "another",
+        reason="registry_fetch",
+        source="s",
+        layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+    )
+    bulk = scp_utils.purge_quarantine()
+    assert bulk["purged"] >= 1
+    assert q2["quarantine_id"] in bulk["ids"]
+    assert scp_utils.list_quarantine() == []
+
+
 def test_run_pipeline_quarantine_failure_still_blocked(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
     monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "10")
