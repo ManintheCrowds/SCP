@@ -182,3 +182,4 @@ SCP operates at the **content layer** (inspect, sanitize, contain, quarantine). 
 
 - **NVIDIA OpenShell / NemoClaw** — Sandboxed agent runtime with Landlock, seccomp, network namespaces; declarative YAML policy. [NVIDIA NemoClaw docs](https://docs.nvidia.com/nemoclaw/)
 - **Docker** — Container isolation for agent processes
+- **Windows host trust (accidental execution)** — Defender, SmartScreen, WDAC or AppLocker belong to the host security owner, not to SCP. Do not add process suspend, kill, or shutdown tools to this MCP. Do not vendor third-party GPL process-watchers into this MIT tree. Untrusted files used as LLM or handoff requirements stay on the inspect → sanitize → contain path plus a human gate; they are not a background process killer.
