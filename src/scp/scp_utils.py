@@ -44,13 +44,44 @@ def registry_fetch_quarantine_dir() -> Path:
     return _quarantine_dir() / REGISTRY_FETCH_LAYOUT
 
 
+def _path_strictly_under(child: Path, parent: Path) -> bool:
+    if child == parent:
+        return False
+    try:
+        return child.is_relative_to(parent)
+    except AttributeError:
+        try:
+            child.relative_to(parent)
+            return True
+        except ValueError:
+            return False
+
+
+def _safe_layout_dir(root: Path, name: str) -> Path | None:
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        return None
+    sub = root / name
+    try:
+        if sub.is_symlink():
+            return None
+        resolved_root = root.resolve()
+        if not sub.exists():
+            return sub
+        resolved_sub = sub.resolve()
+    except OSError:
+        return None
+    if not _path_strictly_under(resolved_sub, resolved_root):
+        return None
+    return sub if sub.is_dir() else None
+
+
 def _quarantine_pair_dirs() -> list[Path]:
     """Root plus allowlisted layout dirs that exist (quota / list / purge scope)."""
     root = _quarantine_dir()
     dirs = [root]
     for name in sorted(_ALLOWED_QUARANTINE_LAYOUTS):
-        sub = root / name
-        if sub.is_dir():
+        sub = _safe_layout_dir(root, name)
+        if sub is not None:
             dirs.append(sub)
     return dirs
 
@@ -159,10 +190,14 @@ def quarantine(
     if layout is None:
         qdir = root
     elif layout in _ALLOWED_QUARANTINE_LAYOUTS:
-        qdir = root / layout
+        qdir = _safe_layout_dir(root, layout)
+        if qdir is None:
+            raise ValueError(f"unsafe quarantine layout: {layout!r}")
     else:
         raise ValueError(f"unsupported quarantine layout: {layout!r}")
     qdir.mkdir(parents=True, exist_ok=True)
+    if layout is not None and _safe_layout_dir(root, layout) != qdir:
+        raise ValueError(f"unsafe quarantine layout: {layout!r}")
     qid = str(uuid.uuid4())[:8]
     meta = {"quarantine_id": qid, "reason": reason, "source": source}
     meta_json = json.dumps(meta, indent=2)

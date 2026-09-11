@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from scp import mask_secrets, sanitize_input, scp_utils
+from scp import mask_secrets, quarantine_limits, sanitize_input, scp_utils
 
 
 def test_contain_markdown_uses_longer_fence_than_payload() -> None:
@@ -262,6 +262,71 @@ def test_list_and_purge_include_registry_fetch_layout(tmp_path, monkeypatch) -> 
     assert bulk["purged"] >= 1
     assert q2["quarantine_id"] in bulk["ids"]
     assert scp_utils.list_quarantine() == []
+
+
+def test_quarantine_rejects_symlinked_registry_fetch_layout(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(root))
+
+    with pytest.raises(ValueError, match="unsafe quarantine layout"):
+        scp_utils.quarantine(
+            "payload",
+            reason="registry_fetch",
+            source="s",
+            layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+
+    assert list(outside.iterdir()) == []
+
+
+def test_list_and_purge_skip_symlinked_registry_fetch_layout(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    outside_txt = outside / "aaaaaaaa.txt"
+    outside_json = outside / "aaaaaaaa.json"
+    outside_txt.write_text("external evidence", encoding="utf-8")
+    outside_json.write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "external", "source": "outside"}',
+        encoding="utf-8",
+    )
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(root))
+
+    assert scp_utils.list_quarantine() == []
+    assert scp_utils.purge_quarantine(quarantine_id="aaaaaaaa") == {"purged": 0, "ids": []}
+    assert outside_txt.read_text(encoding="utf-8") == "external evidence"
+    assert outside_json.is_file()
+
+
+def test_quarantine_quota_eviction_skips_symlinked_layout(tmp_path) -> None:
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    outside_txt = outside / "aaaaaaaa.txt"
+    outside_json = outside / "aaaaaaaa.json"
+    outside_txt.write_text("external evidence", encoding="utf-8")
+    outside_json.write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "external", "source": "outside"}',
+        encoding="utf-8",
+    )
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+    layouts = frozenset({scp_utils.REGISTRY_FETCH_LAYOUT})
+
+    assert quarantine_limits.total_quarantine_bytes(root, layout_subdirs=layouts) == 0
+    assert quarantine_limits.evict_oldest_until_under(
+        root,
+        target_total=0,
+        layout_subdirs=layouts,
+    ) == 0
+    assert outside_txt.read_text(encoding="utf-8") == "external evidence"
+    assert outside_json.is_file()
 
 
 def test_run_pipeline_quarantine_failure_still_blocked(tmp_path, monkeypatch) -> None:
