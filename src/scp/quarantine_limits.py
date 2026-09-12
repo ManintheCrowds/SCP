@@ -89,14 +89,42 @@ def _require_layout_subdirs(layout_subdirs: frozenset[str]) -> frozenset[str]:
     return layout_subdirs
 
 
+def _path_strictly_under(child: Path, parent: Path) -> bool:
+    if child == parent:
+        return False
+    try:
+        return child.is_relative_to(parent)
+    except AttributeError:
+        try:
+            child.relative_to(parent)
+            return True
+        except ValueError:
+            return False
+
+
+def safe_existing_layout_dir(root: Path, name: str) -> Path | None:
+    """Return an existing real layout dir strictly under root, rejecting symlink escapes."""
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        return None
+    sub = root / name
+    try:
+        if sub.is_symlink() or not sub.exists():
+            return None
+        resolved_root = root.resolve()
+        resolved_sub = sub.resolve()
+    except OSError:
+        return None
+    if not _path_strictly_under(resolved_sub, resolved_root):
+        return None
+    return sub if sub.is_dir() else None
+
+
 def _pair_dirs(qdir: Path, layout_subdirs: frozenset[str]) -> list[Path]:
     """Root plus allowlisted layout subdirs that exist (no path traversal / unbounded rglob)."""
     dirs = [qdir]
     for name in sorted(layout_subdirs):
-        if not name or "/" in name or "\\" in name or name in (".", ".."):
-            continue
-        sub = qdir / name
-        if sub.is_dir():
+        sub = safe_existing_layout_dir(qdir, name)
+        if sub is not None:
             dirs.append(sub)
     return dirs
 

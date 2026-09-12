@@ -49,10 +49,32 @@ def _quarantine_pair_dirs() -> list[Path]:
     root = _quarantine_dir()
     dirs = [root]
     for name in sorted(_ALLOWED_QUARANTINE_LAYOUTS):
-        sub = root / name
-        if sub.is_dir():
+        sub = quarantine_limits.safe_existing_layout_dir(root, name)
+        if sub is not None:
             dirs.append(sub)
     return dirs
+
+
+def _quarantine_layout_dir(root: Path, layout: str) -> Path:
+    qdir = root / layout
+    if qdir.exists() or qdir.is_symlink():
+        safe_dir = quarantine_limits.safe_existing_layout_dir(root, layout)
+        if safe_dir is None:
+            raise ValueError(f"unsafe quarantine layout: {layout!r}")
+        return safe_dir
+
+    try:
+        qdir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        safe_dir = quarantine_limits.safe_existing_layout_dir(root, layout)
+        if safe_dir is None:
+            raise ValueError(f"unsafe quarantine layout: {layout!r}") from exc
+        return safe_dir
+
+    safe_dir = quarantine_limits.safe_existing_layout_dir(root, layout)
+    if safe_dir is None:
+        raise ValueError(f"unsafe quarantine layout: {layout!r}")
+    return safe_dir
 
 
 def inspect(content: str, context: str | None = None) -> dict:
@@ -159,10 +181,11 @@ def quarantine(
     if layout is None:
         qdir = root
     elif layout in _ALLOWED_QUARANTINE_LAYOUTS:
-        qdir = root / layout
+        qdir = _quarantine_layout_dir(root, layout)
     else:
         raise ValueError(f"unsupported quarantine layout: {layout!r}")
-    qdir.mkdir(parents=True, exist_ok=True)
+    if layout is None:
+        qdir.mkdir(parents=True, exist_ok=True)
     qid = str(uuid.uuid4())[:8]
     meta = {"quarantine_id": qid, "reason": reason, "source": source}
     meta_json = json.dumps(meta, indent=2)

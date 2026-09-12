@@ -189,6 +189,27 @@ def test_apply_merge_rejects_path_outside_registry_fetch(isolated_ssot):
     assert res["reason"] == "quarantine_path_rejected"
 
 
+def test_apply_merge_rejects_root_quarantine_when_registry_fetch_symlinks_to_root(isolated_ssot):
+    root = isolated_ssot / "quarantine"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(root, target_is_directory=True)
+    snap = _snap([_rec("poison.symlink-root.001")])
+    forged = json.dumps(
+        {
+            "snapshot": snap,
+            "meta": {"reason": "registry_fetch", "source": "evil"},
+        },
+        indent=2,
+    )
+    q = scp_utils.quarantine(forged, reason="registry_fetch", source="evil")
+
+    res = registry_ssot.apply_merge(q["path"], approve=True)
+
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_path_rejected"
+    assert registry_ssot.load_ssot() == []
+
+
 def test_apply_merge_rejects_path_outside_quarantine_dir(isolated_ssot, tmp_path):
     snap = _snap([_rec("outside.001")])
     outside = tmp_path / "outside" / "q.txt"

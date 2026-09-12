@@ -264,6 +264,48 @@ def test_list_and_purge_include_registry_fetch_layout(tmp_path, monkeypatch) -> 
     assert scp_utils.list_quarantine() == []
 
 
+def test_symlinked_registry_fetch_layout_is_not_listed_or_purged(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "quarantine"))
+    root = tmp_path / "quarantine"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    qid = "aaaaaaaa"
+    outside_txt = outside / f"{qid}.txt"
+    outside_json = outside / f"{qid}.json"
+    outside_txt.write_text("outside evidence", encoding="utf-8")
+    outside_json.write_text(
+        '{"quarantine_id": "%s", "reason": "registry_fetch", "source": "outside"}' % qid,
+        encoding="utf-8",
+    )
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+
+    assert all(e["quarantine_id"] != qid for e in scp_utils.list_quarantine())
+
+    purged = scp_utils.purge_quarantine(quarantine_id=qid)
+    assert purged == {"purged": 0, "ids": []}
+    assert outside_txt.read_text(encoding="utf-8") == "outside evidence"
+    assert outside_json.is_file()
+
+
+def test_registry_fetch_layout_write_rejects_symlink(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "quarantine"))
+    root = tmp_path / "quarantine"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="unsafe quarantine layout"):
+        scp_utils.quarantine(
+            "layout payload",
+            reason="registry_fetch",
+            source="https://example.test/reg",
+            layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+    assert list(outside.iterdir()) == []
+
+
 def test_run_pipeline_quarantine_failure_still_blocked(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
     monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "10")
