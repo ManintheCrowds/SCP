@@ -13,6 +13,7 @@ from typing import Any
 from . import antigen
 from . import operator_consent
 from . import pattern_record as pr
+from . import quarantine_limits
 from . import registry_paths
 from . import scp_utils
 
@@ -179,20 +180,23 @@ def _path_under_registry_fetch(path: Path) -> bool:
     """True iff path resolves under {QUARANTINE_DIR}/registry_fetch/."""
     try:
         resolved = path.resolve()
-        fetch_root = scp_utils.registry_fetch_quarantine_dir().resolve()
-        quarantine_root = scp_utils.quarantine_dir().resolve()
+        quarantine_root = scp_utils.quarantine_dir()
+        safe_fetch_root = quarantine_limits.safe_existing_layout_dir(
+            quarantine_root,
+            scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+        if safe_fetch_root is None:
+            return False
+        fetch_root = safe_fetch_root.resolve()
     except OSError:
         return False
     try:
-        if not fetch_root.is_relative_to(quarantine_root):
-            return False
-        return resolved.is_relative_to(fetch_root)
+        return resolved != fetch_root and resolved.is_relative_to(fetch_root)
     except (ValueError, AttributeError):
         # Python <3.9 fallback unused; keep defensive.
         try:
             resolved.relative_to(fetch_root)
-            fetch_root.relative_to(quarantine_root)
-            return True
+            return resolved != fetch_root
         except ValueError:
             return False
 
