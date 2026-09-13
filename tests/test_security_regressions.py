@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from scp import mask_secrets, sanitize_input, scp_utils
+from scp import mask_secrets, quarantine_limits, sanitize_input, scp_utils
 
 
 def test_contain_markdown_uses_longer_fence_than_payload() -> None:
@@ -121,8 +121,6 @@ def test_quarantine_impossible_write_does_not_evict_existing_entries(tmp_path, m
 
 def test_registry_fetch_layout_counts_toward_total_quota(tmp_path, monkeypatch) -> None:
     """AppSec: registry_fetch/ writes must count toward SCP_QUARANTINE_MAX_TOTAL_BYTES."""
-    from scp import quarantine_limits
-
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
     monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
     monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "2500")
@@ -186,8 +184,6 @@ def test_registry_fetch_layout_eviction_makes_room(tmp_path, monkeypatch) -> Non
 
 def test_prepare_quarantine_write_requires_layout_subdirs(tmp_path) -> None:
     """Omit / None must fail loud — never silently root-only (quota bypass footgun)."""
-    from scp import quarantine_limits
-
     with pytest.raises(TypeError, match="layout_subdirs"):
         quarantine_limits.prepare_quarantine_write(tmp_path, 10, 10)  # type: ignore[call-arg]
     with pytest.raises(TypeError, match="layout_subdirs is required"):
@@ -262,6 +258,46 @@ def test_list_and_purge_include_registry_fetch_layout(tmp_path, monkeypatch) -> 
     assert bulk["purged"] >= 1
     assert q2["quarantine_id"] in bulk["ids"]
     assert scp_utils.list_quarantine() == []
+
+
+def test_symlinked_registry_fetch_layout_is_not_listed_or_purged_outside_root(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "quarantine"))
+    root = tmp_path / "quarantine"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+    (outside / "aaaaaaaa.txt").write_text("outside evidence", encoding="utf-8")
+    (outside / "aaaaaaaa.json").write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "outside", "source": "attacker"}',
+        encoding="utf-8",
+    )
+
+    assert scp_utils.list_quarantine() == []
+    assert scp_utils.purge_quarantine()["purged"] == 0
+    assert (outside / "aaaaaaaa.txt").read_text(encoding="utf-8") == "outside evidence"
+    assert (outside / "aaaaaaaa.json").is_file()
+
+
+def test_registry_fetch_quarantine_rejects_symlinked_layout_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "quarantine"))
+    root = tmp_path / "quarantine"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="unsafe quarantine layout"):
+        scp_utils.quarantine(
+            "registry payload",
+            reason="registry_fetch",
+            source="https://example.test/reg",
+            layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+
+    assert list(outside.iterdir()) == []
 
 
 def test_run_pipeline_quarantine_failure_still_blocked(tmp_path, monkeypatch) -> None:

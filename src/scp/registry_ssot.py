@@ -13,6 +13,7 @@ from typing import Any
 from . import antigen
 from . import operator_consent
 from . import pattern_record as pr
+from . import quarantine_limits
 from . import registry_paths
 from . import scp_utils
 
@@ -179,8 +180,15 @@ def _path_under_registry_fetch(path: Path) -> bool:
     """True iff path resolves under {QUARANTINE_DIR}/registry_fetch/."""
     try:
         resolved = path.resolve()
-        fetch_root = scp_utils.registry_fetch_quarantine_dir().resolve()
-        quarantine_root = scp_utils.quarantine_dir().resolve()
+        quarantine_root_path = scp_utils.quarantine_dir()
+        fetch_root_path = quarantine_limits.safe_layout_subdir(
+            quarantine_root_path,
+            scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+        if fetch_root_path is None:
+            return False
+        fetch_root = fetch_root_path.resolve()
+        quarantine_root = quarantine_root_path.resolve()
     except OSError:
         return False
     try:

@@ -89,14 +89,57 @@ def _require_layout_subdirs(layout_subdirs: frozenset[str]) -> frozenset[str]:
     return layout_subdirs
 
 
+def _valid_layout_subdir_name(name: str) -> bool:
+    return bool(name) and "/" not in name and "\\" not in name and name not in (".", "..")
+
+
+def safe_layout_subdir(qdir: Path, name: str) -> Path | None:
+    """Return a trusted existing layout dir, rejecting symlink/path escapes."""
+    if not _valid_layout_subdir_name(name):
+        return None
+    sub = qdir / name
+    if sub.is_symlink() or not sub.is_dir():
+        return None
+    try:
+        root_resolved = qdir.resolve()
+        sub_resolved = sub.resolve()
+    except OSError:
+        return None
+    try:
+        if sub_resolved == root_resolved or not sub_resolved.is_relative_to(root_resolved):
+            return None
+    except AttributeError:
+        try:
+            sub_resolved.relative_to(root_resolved)
+        except ValueError:
+            return None
+        if sub_resolved == root_resolved:
+            return None
+    return sub
+
+
+def ensure_layout_subdir(qdir: Path, name: str) -> Path:
+    """Create or return a trusted layout dir, failing closed on unsafe existing paths."""
+    if not _valid_layout_subdir_name(name):
+        raise ValueError("unsafe quarantine layout")
+    qdir.mkdir(parents=True, exist_ok=True)
+    sub = qdir / name
+    try:
+        sub.mkdir()
+    except FileExistsError:
+        pass
+    safe = safe_layout_subdir(qdir, name)
+    if safe is None:
+        raise ValueError("unsafe quarantine layout")
+    return safe
+
+
 def _pair_dirs(qdir: Path, layout_subdirs: frozenset[str]) -> list[Path]:
     """Root plus allowlisted layout subdirs that exist (no path traversal / unbounded rglob)."""
     dirs = [qdir]
     for name in sorted(layout_subdirs):
-        if not name or "/" in name or "\\" in name or name in (".", ".."):
-            continue
-        sub = qdir / name
-        if sub.is_dir():
+        sub = safe_layout_subdir(qdir, name)
+        if sub is not None:
             dirs.append(sub)
     return dirs
 
