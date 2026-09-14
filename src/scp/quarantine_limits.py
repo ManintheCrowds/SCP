@@ -141,7 +141,11 @@ def purge_older_than(qdir: Path, days: int, *, layout_subdirs: frozenset[str]) -
 
 
 def evict_oldest_until_under(
-    qdir: Path, target_total: int, *, layout_subdirs: frozenset[str]
+    qdir: Path,
+    target_total: int,
+    *,
+    layout_subdirs: frozenset[str],
+    protected_qids: frozenset[str] = frozenset(),
 ) -> int:
     """Delete oldest-by-mtime pairs until total bytes <= ``target_total`` or stuck."""
     layouts = _require_layout_subdirs(layout_subdirs)
@@ -149,6 +153,8 @@ def evict_oldest_until_under(
     while qdir.is_dir() and total_quarantine_bytes(qdir, layout_subdirs=layouts) > target_total:
         pairs: list[tuple[str, float, Path]] = []
         for pair_dir, qid in _iter_pairs(qdir, layouts):
+            if qid in protected_qids:
+                continue
             _, mt = _pair_disk_bytes_and_mtime(pair_dir, qid)
             pairs.append((qid, mt, pair_dir))
         if not pairs:
@@ -172,7 +178,7 @@ def prepare_quarantine_write(
     *,
     layout_subdirs: frozenset[str],
 ) -> None:
-    """Raise ``ValueError`` if the write would violate limits (after optional retention/eviction).
+    """Raise ``ValueError`` when a write is impossible without destructive cleanup.
 
     ``layout_subdirs`` is required: pass allowlisted layout names (e.g. registry_fetch) so
     total/eviction cover those dirs; use ``frozenset()`` only when root-only is intentional.
@@ -198,24 +204,55 @@ def prepare_quarantine_write(
             f"SCP_QUARANTINE_MAX_TOTAL_BYTES ({max_t})"
         )
 
-    days = retention_days_on_write()
-    if days is not None:
-        purge_older_than(qdir, days, layout_subdirs=layouts)
-
     total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
     if total + incoming <= max_t:
         return
 
     if evict_oldest_on_pressure():
-        evict_oldest_until_under(
-            qdir, max(0, max_t - incoming), layout_subdirs=layouts
-        )
-        total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
-        if total + incoming <= max_t:
-            return
+        return
 
     raise ValueError(
         f"quarantine storage full (current {total} bytes, need {incoming} more; "
+        f"limit {max_t} bytes per SCP_QUARANTINE_MAX_TOTAL_BYTES). "
+        "Purge entries, raise limits, or set SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE=1."
+    )
+
+
+def enforce_quarantine_limits_after_write(
+    qdir: Path,
+    *,
+    layout_subdirs: frozenset[str],
+    protected_qids: frozenset[str] = frozenset(),
+) -> None:
+    """Apply retention and eviction after the new entry is on disk."""
+    layouts = _require_layout_subdirs(layout_subdirs)
+
+    days = retention_days_on_write()
+    if days is not None:
+        purge_older_than(qdir, days, layout_subdirs=layouts)
+
+    max_t = max_total_bytes()
+    total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
+    if total <= max_t:
+        return
+
+    if evict_oldest_on_pressure():
+        evict_oldest_until_under(
+            qdir,
+            max_t,
+            layout_subdirs=layouts,
+            protected_qids=protected_qids,
+        )
+        total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
+        if total <= max_t:
+            return
+        # The new entry is already durable. If cleanup was only partially
+        # possible, prefer returning the quarantined evidence over converting
+        # the call into a failure after deleting older entries.
+        return
+
+    raise ValueError(
+        f"quarantine storage full (current {total} bytes; "
         f"limit {max_t} bytes per SCP_QUARANTINE_MAX_TOTAL_BYTES). "
         "Purge entries, raise limits, or set SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE=1."
     )

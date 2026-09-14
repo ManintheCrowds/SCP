@@ -168,7 +168,8 @@ def quarantine(
     meta_json = json.dumps(meta, indent=2)
     content_bytes = len(content.encode("utf-8", errors="replace"))
     meta_bytes = len(meta_json.encode("utf-8"))
-    # Quota accounts against the quarantine root (all allowlisted layouts).
+    # Validate entry size before writing; destructive quota cleanup runs only
+    # after the replacement pair is safely on disk.
     quarantine_limits.prepare_quarantine_write(
         root,
         content_bytes,
@@ -177,8 +178,25 @@ def quarantine(
     )
     content_path = qdir / f"{qid}.txt"
     meta_path = qdir / f"{qid}.json"
-    content_path.write_text(content, encoding="utf-8", errors="replace")
-    meta_path.write_text(meta_json, encoding="utf-8")
+    tmp_content_path = qdir / f".{qid}.{os.getpid()}.txt.tmp"
+    tmp_meta_path = qdir / f".{qid}.{os.getpid()}.json.tmp"
+    try:
+        tmp_content_path.write_text(content, encoding="utf-8", errors="replace")
+        tmp_meta_path.write_text(meta_json, encoding="utf-8")
+        os.replace(tmp_content_path, content_path)
+        os.replace(tmp_meta_path, meta_path)
+    except Exception:
+        for path in (tmp_content_path, tmp_meta_path, content_path, meta_path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+    quarantine_limits.enforce_quarantine_limits_after_write(
+        root,
+        layout_subdirs=_ALLOWED_QUARANTINE_LAYOUTS,
+        protected_qids=frozenset({qid}),
+    )
     return {"quarantine_id": qid, "path": str(content_path)}
 
 
