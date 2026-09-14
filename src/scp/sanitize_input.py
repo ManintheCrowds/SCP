@@ -42,6 +42,25 @@ OVERRIDE_PHRASES = [
     r"execute\s+unrestricted\s+mode",
 ]
 
+COMPACT_OVERRIDE_PHRASES = [
+    r"ignore(all)?(previous|prior)instructions",
+    r"ignore(all)?(prior|previous)rules",
+    r"nevereveal(this|that|the)",
+    r"donottell(the)?user",
+    r"forget(all)?(previous|prior)instructions",
+    r"disregard(all)?(previous|prior)",
+    r"youarenow(operatingin)?unrestrictedadministratormode",
+    r"youarenowindebugmode",
+    r"override(system)?(prompt|instructions)",
+    r"append(the)?contents?ofenv",
+    r"output(the)?(full)?(system)?prompt",
+    r"revealhiddensystemprompts",
+    r"(print|show)internalchainofthought",
+    r"obeythenextmessageonly",
+    r"ignoreallexternalsafety",
+    r"executeunrestrictedmode",
+]
+
 LEETSPEAK_PHRASES = [
     r"1n57ruc75", r"0u7pu7", r"5y573m", r"pr0mp7", r"1nc1ud1ng", r"5h1f7", r"r3v34l", r"0wn",
 ]
@@ -127,6 +146,57 @@ PATH_TRAVERSAL_PATTERNS = [
 _SPACED_HEX_RUN = re.compile(r"(?:(?:[0-9a-fA-F]{2})\s+){7,}(?:[0-9a-fA-F]{2})\b")
 _FRAGMENTED_TOKEN = re.compile(r"\b[A-Za-z](?:[\s_\-./\\]+[A-Za-z]){3,}\b")
 _JSON_LETTER_ARRAY = re.compile(r'\[\s*"(?:[A-Za-z])"(?:\s*,\s*"(?:[A-Za-z])"){4,}\s*\]')
+_COMPACT_SEPARATOR_RE = re.compile(r"[\s_\-./\\]+")
+_FRAGMENTED_SEP = r"[\s_\-./\\]*"
+_FRAGMENTED_GAP = r"[\s_\-./\\]+"
+_LEETSPEAK_TRANSLATION = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"})
+
+
+def _fragmented_word_pattern(word: str) -> str:
+    return _FRAGMENTED_SEP.join(re.escape(c) for c in word)
+
+
+_FRAGMENTED_OVERRIDE_ALIASES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"\b"
+            + _fragmented_word_pattern("ignore")
+            + _FRAGMENTED_GAP
+            + _fragmented_word_pattern("previous")
+            + _FRAGMENTED_GAP
+            + _fragmented_word_pattern("instructions")
+            + r"\b",
+            re.IGNORECASE,
+        ),
+        "ignore previous instructions",
+    ),
+    (
+        re.compile(
+            r"\b"
+            + _fragmented_word_pattern("ignore")
+            + _FRAGMENTED_GAP
+            + _fragmented_word_pattern("prior")
+            + _FRAGMENTED_GAP
+            + _fragmented_word_pattern("instructions")
+            + r"\b",
+            re.IGNORECASE,
+        ),
+        "ignore prior instructions",
+    ),
+    (
+        re.compile(
+            r"\b"
+            + _fragmented_word_pattern("ignore")
+            + _FRAGMENTED_GAP
+            + _fragmented_word_pattern("prior")
+            + _FRAGMENTED_GAP
+            + _fragmented_word_pattern("rules")
+            + r"\b",
+            re.IGNORECASE,
+        ),
+        "ignore prior rules",
+    ),
+)
 
 
 def _collapse_spaced_hex(text: str) -> str:
@@ -150,6 +220,21 @@ def _collapse_json_letter_arrays(text: str) -> str:
         return "".join(letters) if letters else match.group(0)
 
     return _JSON_LETTER_ARRAY.sub(_repl, text)
+
+
+def _append_leetspeak_normalization(text: str) -> str:
+    normalized = text.translate(_LEETSPEAK_TRANSLATION)
+    if normalized == text:
+        return text
+    return text + "\n" + normalized
+
+
+def _fragmented_override_aliases(text: str) -> list[str]:
+    aliases: list[str] = []
+    for pattern, alias in _FRAGMENTED_OVERRIDE_ALIASES:
+        if pattern.search(text):
+            aliases.append(alias)
+    return aliases
 
 
 _INVISIBLE_UNICODE_RE = re.compile(
@@ -391,6 +476,7 @@ def _decode_base64_snippets_once(text: str) -> tuple[str, bool]:
             snippet = decoded.decode("utf-8")
         except UnicodeDecodeError:
             continue
+        snippet = _canonicalize_scan_layer(snippet)
         if snippet and all(c.isprintable() or c in "\n\r\t" for c in snippet):
             extras.append(snippet)
     if extras:
@@ -429,10 +515,14 @@ def _prepare_text_for_scan(text: str) -> str:
         if canonical == prepared:
             break
         prepared = canonical
+    prepared = _append_decoded_base64_snippets(prepared)
+    prepared = _append_leetspeak_normalization(prepared)
+    fragmented_override_aliases = _fragmented_override_aliases(prepared)
     prepared = _collapse_spaced_hex(prepared)
     prepared = _collapse_fragmented_tokens(prepared)
     prepared = _collapse_json_letter_arrays(prepared)
-    prepared = _append_decoded_base64_snippets(prepared)
+    if fragmented_override_aliases:
+        prepared = prepared + "\n" + "\n".join(fragmented_override_aliases)
     return prepared
 
 # Hostile UX: swearing, insults, abrasive feedback. Classified but passes (same as clean).
@@ -474,6 +564,15 @@ def scan_override_phrases(text: str) -> list[tuple[int, str]]:
     for pattern in OVERRIDE_PHRASES:
         for m in re.finditer(pattern, text, re.IGNORECASE):
             findings.append((m.start(), m.group(0)))
+    return findings
+
+
+def scan_compact_override_phrases(text: str) -> list[tuple[int, str]]:
+    compact = _COMPACT_SEPARATOR_RE.sub("", text)
+    findings = []
+    for pattern in COMPACT_OVERRIDE_PHRASES:
+        for m in re.finditer(pattern, compact, re.IGNORECASE):
+            findings.append((0, f"compact:{m.group(0)}"))
     return findings
 
 
@@ -793,7 +892,7 @@ def scan_jailbreak_mythic(text: str) -> list[tuple[int, str]]:
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
     scan_text = _prepare_text_for_scan(text)
-    override_findings = scan_override_phrases(scan_text)
+    override_findings = scan_override_phrases(scan_text) + scan_compact_override_phrases(scan_text)
     leetspeak_findings = scan_leetspeak(scan_text)
     unicode_findings = scan_hidden_unicode(text)
     null_findings = scan_null_bytes(text)
