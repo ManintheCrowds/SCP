@@ -308,7 +308,14 @@ def fetch_registry(
         }
 
     diff_summary = registry_ssot.diff_snapshot(snapshot["patterns"])
-    q = _write_registry_quarantine(snapshot, source=source, diff_summary=diff_summary)
+    try:
+        q = _write_registry_quarantine(snapshot, source=source, diff_summary=diff_summary)
+    except (OSError, ValueError):
+        return {
+            "ok": False,
+            "error": "quarantine_failed",
+            "local_registry_unchanged": True,
+        }
 
     return {
         "ok": True,
