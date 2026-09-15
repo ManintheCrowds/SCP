@@ -87,6 +87,59 @@ def test_fetch_failure_unchanged_ssot(isolated_env, monkeypatch):
     assert registry_ssot.load_ssot() == []
 
 
+def test_fetch_fails_closed_when_quarantine_envelope_exceeds_cap(isolated_env, monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "127.0.0.1")
+    records = [pr.legacy_token_record(f"large-token-{i}") for i in range(20)]
+    snapshot = pr.build_registry_snapshot(records, registry_version="cap-test")
+    body = json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    url = f"http://127.0.0.1:{server.server_address[1]}/registry.json"
+    diff_summary = registry_ssot.diff_snapshot(snapshot["patterns"])
+    envelope = {
+        "snapshot": snapshot,
+        "meta": {
+            "reason": "registry_fetch",
+            "source": url,
+            "etag": snapshot.get("etag"),
+            "registry_version": snapshot.get("registry_version"),
+            "schema_revision": snapshot.get("schema_revision"),
+            "diff_summary": {
+                "add_count": diff_summary.get("add_count", 0),
+                "conflict_count": diff_summary.get("conflict_count", 0),
+                "drift_max": diff_summary.get("drift_max", 0.0),
+                "risk_breakdown": diff_summary.get("risk_breakdown", {}),
+            },
+        },
+    }
+    envelope_bytes = len(json.dumps(envelope, indent=2, ensure_ascii=False).encode("utf-8"))
+    assert len(body) < envelope_bytes
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", str((len(body) + envelope_bytes) // 2))
+
+    try:
+        res = registry_fetch.fetch_registry(url, [])
+    finally:
+        server.shutdown()
+
+    assert res["ok"] is False
+    assert res["error"] == "quarantine_failed"
+    assert res["local_registry_unchanged"] is True
+    assert registry_ssot.load_ssot() == []
+
+
 def test_regtest_localhost_guard(isolated_env, monkeypatch):
     monkeypatch.setenv("SCP_ANTIGEN_REGTEST_E2E", "1")
     monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
