@@ -292,7 +292,9 @@ def project_to_registry(records: list[dict]) -> dict:
     """Compile pattern_record list into legacy scp_threat_registry.json bucket shape."""
     buckets: dict[str, Any] = {
         "power_words": [],
+        "semantic_aliases": [],
         "jailbreak_nicknames": [],
+        "mythic_framing": [],
         "hostile_ux": [],
         "bitcoin_inscription_override": [],
         "bitcoin_tx_mempool_override": [],

@@ -25,6 +25,7 @@ from . import http_policy
 from . import operator_consent
 from . import pattern_record as pr
 from . import sanitize_input
+from . import scp_limits
 from . import scp_utils
 
 _CATEGORY_ABBREV: dict[str, str] = {
@@ -123,6 +124,7 @@ def anonymize_raw_content(
     risk_tier: str = "medium",
 ) -> dict:
     """Rule-only pipeline: classify, strip, abstract, validate → pattern_record."""
+    scp_limits.assert_within_limit(raw, what="raw_content")
     if risk_tier not in pr.RISK_TIERS:
         raise ContributeError("invalid_risk_tier", reasons=["invalid_risk_tier"])
 
@@ -175,6 +177,7 @@ def anonymize_raw_content(
 
 
 def _parse_patterns_json(patterns_json: str) -> list[dict]:
+    scp_limits.assert_within_limit(patterns_json, what="patterns_json")
     data = json.loads(patterns_json)
     if isinstance(data, dict) and "patterns" in data:
         data = data["patterns"]
@@ -324,6 +327,10 @@ def prepare_contribution(
     issuer_pubkey: str | None = None,
 ) -> dict:
     """Build bundle, snapshot, and staging quarantine (no network I/O)."""
+    if patterns_json is not None:
+        scp_limits.assert_within_limit(patterns_json, what="patterns_json")
+    if raw_content is not None:
+        scp_limits.assert_within_limit(raw_content, what="raw_content")
     has_patterns = patterns_json is not None and patterns_json.strip() != ""
     has_raw = raw_content is not None and raw_content.strip() != ""
     if has_patterns and has_raw:

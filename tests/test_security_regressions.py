@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 
 import pytest
 
-from scp import mask_secrets, sanitize_input, scp_utils
+from scp import mask_secrets, sanitize_input, scp_mcp, scp_utils
 
 
 def test_contain_markdown_uses_longer_fence_than_payload() -> None:
@@ -264,6 +265,49 @@ def test_list_and_purge_include_registry_fetch_layout(tmp_path, monkeypatch) -> 
     assert scp_utils.list_quarantine() == []
 
 
+def test_registry_fetch_layout_symlink_is_not_listed_or_purged(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "quarantine"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "aaaaaaaa.txt").write_text("outside evidence", encoding="utf-8")
+    (outside / "aaaaaaaa.json").write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "outside", "source": "outside"}',
+        encoding="utf-8",
+    )
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(root))
+
+    assert scp_utils.list_quarantine() == []
+    purged = scp_utils.purge_quarantine(quarantine_id="aaaaaaaa")
+
+    assert purged == {"purged": 0, "ids": []}
+    assert (outside / "aaaaaaaa.txt").read_text(encoding="utf-8") == "outside evidence"
+    assert (outside / "aaaaaaaa.json").is_file()
+
+
+def test_registry_fetch_layout_write_rejects_symlink(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "quarantine"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(root))
+
+    with pytest.raises(ValueError, match="unsafe quarantine layout"):
+        scp_utils.quarantine(
+            "payload",
+            reason="registry_fetch",
+            source="https://example.test/reg",
+            layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+
+    assert list(outside.iterdir()) == []
+
+
 def test_run_pipeline_quarantine_failure_still_blocked(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
     monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "10")
@@ -293,6 +337,15 @@ def test_run_pipeline_storage_error_still_blocks(monkeypatch) -> None:
     assert out["blocked"] is True
     assert out["result"] is None
     assert "disk unavailable" in out["report"]["quarantine_error"]
+
+
+def test_mcp_run_pipeline_options_obey_shared_size_limit(monkeypatch) -> None:
+    monkeypatch.setenv("SCP_MAX_INPUT_CHARS", "8")
+    options = '{"semantic_judge": false}'
+
+    out = json.loads(scp_mcp.scp_run_pipeline("hello", options=options))
+
+    assert "SCP_MAX_INPUT_CHARS" in out["error"]
 
 
 def _path_traversal_dos_payload(k: int) -> str:

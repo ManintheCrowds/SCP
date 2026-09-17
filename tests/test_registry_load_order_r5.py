@@ -72,3 +72,41 @@ def test_env_override_wins_over_packaged(tmp_path: Path, monkeypatch: pytest.Mon
     assert registry_paths.resolve_threat_registry_path() == custom
     findings = sanitize_input.scan_power_words("envoverrideonlytoken in text")
     assert findings
+
+
+@pytest.mark.parametrize("contents", ['{"power_words": [', "{}"])
+def test_invalid_or_empty_projection_falls_back_to_packaged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    contents: str,
+) -> None:
+    custom = tmp_path / "custom_registry.json"
+    custom.write_text(contents, encoding="utf-8")
+    monkeypatch.setenv("SCP_THREAT_REGISTRY_PATH", str(custom))
+
+    data = registry_paths.load_threat_registry()
+    assert "authorized override" in data["power_words"]
+    assert sanitize_input.scan_power_words("authorized override")
+
+
+def test_generated_projection_overlays_packaged_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custom = tmp_path / "projection.json"
+    custom.write_text(
+        json.dumps(
+            {
+                "version": "1.0-projection",
+                "updated": "projection",
+                "power_words": ["projection-only-token"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SCP_THREAT_REGISTRY_PATH", str(custom))
+
+    data = registry_paths.load_threat_registry()
+
+    assert "projection-only-token" in data["power_words"]
+    assert "authorized override" in data["power_words"]

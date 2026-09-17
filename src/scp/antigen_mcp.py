@@ -18,6 +18,7 @@ from . import operator_consent
 from . import registry_contribute as registry_contribute_mod
 from . import registry_fetch as registry_fetch_mod
 from . import registry_ssot as registry_ssot_mod
+from . import scp_limits
 
 mcp = FastMCP("SCP-Antigen")
 
@@ -46,6 +47,7 @@ def _parse_bundle_object(bundle_json: str) -> dict:
     PURPOSE: Fail closed on type confusion — json.loads of a JSON string yields
     a Python str that _load_bundle historically treated as a filesystem path.
     """
+    scp_limits.assert_within_limit(bundle_json, what="bundle_json")
     obj = json.loads(bundle_json)
     if not isinstance(obj, dict):
         raise ValueError("bundle_json must be a JSON object")
@@ -64,6 +66,7 @@ def scp_antigen_export(patterns_json: str, antigen_id: str, issuer_pubkey: str |
                 return json.dumps({
                     "error": "seckey_hex_not_allowed_on_mcp",
                 })
+            scp_limits.assert_within_limit(patterns_json, what="patterns_json")
             patterns = json.loads(patterns_json)
             if isinstance(patterns, dict) and "patterns" in patterns:
                 patterns = patterns["patterns"]
@@ -239,6 +242,10 @@ def scp_contribute_pattern(
                     "error": "seckey_hex_not_allowed_on_mcp",
                     "submitted": False,
                 })
+            if patterns_json is not None:
+                scp_limits.assert_within_limit(patterns_json, what="patterns_json")
+            if raw_content is not None:
+                scp_limits.assert_within_limit(raw_content, what="raw_content")
             return json.dumps(registry_contribute_mod.submit_contribution(
                 patterns_json=patterns_json,
                 raw_content=raw_content,

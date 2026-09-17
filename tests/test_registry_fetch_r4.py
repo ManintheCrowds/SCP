@@ -12,6 +12,7 @@ import pytest
 from scp import pattern_record as pr
 from scp import registry_fetch
 from scp import registry_ssot
+from stream_response_mock import mock_json_response
 
 FIXTURE = Path(__file__).parent / "fixtures" / "registry_snapshot_v1.json"
 EVENT_ID = "b" * 64
@@ -85,6 +86,46 @@ def test_fetch_failure_unchanged_ssot(isolated_env, monkeypatch):
     assert res["ok"] is False
     assert res["local_registry_unchanged"] is True
     assert registry_ssot.load_ssot() == []
+
+
+def test_fetch_fails_closed_when_ssot_is_corrupt(isolated_env, monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    Path(isolated_env / "ssot.json").write_text('{"patterns": [', encoding="utf-8")
+    body = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    session = MagicMock()
+    session.get.return_value = mock_json_response(body)
+
+    res = registry_fetch.fetch_registry(
+        "https://example.com/snap.json",
+        [],
+        session=session,
+    )
+
+    assert res["ok"] is False
+    assert res["error"] == "ssot_corrupt"
+    assert res["local_registry_unchanged"] is True
+
+
+def test_fetch_fails_closed_when_quarantine_write_fails(isolated_env, monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    body = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    session = MagicMock()
+    session.get.return_value = mock_json_response(body)
+
+    def fail_quarantine(*_args, **_kwargs):
+        raise ValueError("content exceeds quarantine cap")
+
+    monkeypatch.setattr(registry_fetch, "_write_registry_quarantine", fail_quarantine)
+
+    res = registry_fetch.fetch_registry(
+        "https://example.com/snap.json",
+        [],
+        session=session,
+    )
+
+    assert res["ok"] is False
+    assert res["error"] == "quarantine_failed"
+    assert res["local_registry_unchanged"] is True
 
 
 def test_regtest_localhost_guard(isolated_env, monkeypatch):

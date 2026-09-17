@@ -483,6 +483,48 @@ def test_mcp_bundle_json_object_import_and_merge_proposal():
     assert proposal.get("reason") == "approval_required"
 
 
+def test_mcp_antigen_json_inputs_obey_shared_size_limit(monkeypatch):
+    monkeypatch.setenv("SCP_MAX_INPUT_CHARS", "8")
+    too_large = "x" * 16
+
+    export_out = json.loads(
+        antigen_mcp.scp_antigen_export(too_large, antigen_id="inj.large.001")
+    )
+    verify_out = json.loads(antigen_mcp.scp_antigen_verify(too_large))
+    contribute_out = json.loads(
+        antigen_mcp.scp_contribute_pattern(
+            transport="https",
+            patterns_json=too_large,
+            https_url=PAYLOAD_URL,
+        )
+    )
+
+    assert "SCP_MAX_INPUT_CHARS" in export_out["error"]
+    assert "SCP_MAX_INPUT_CHARS" in verify_out["error"]
+    assert "SCP_MAX_INPUT_CHARS" in contribute_out["error"]
+
+
+def test_mcp_contribute_raw_content_is_bounded_before_strip(monkeypatch):
+    class StripBomb(str):
+        def strip(self, chars=None):
+            raise AssertionError("strip must not run before the size check")
+
+    monkeypatch.setenv("SCP_MAX_INPUT_CHARS", "8")
+    too_large = StripBomb("x" * 16)
+
+    out = json.loads(
+        antigen_mcp.scp_contribute_pattern(
+            transport="https",
+            raw_content=too_large,
+            category="injection",
+            https_url=PAYLOAD_URL,
+        )
+    )
+
+    assert "SCP_MAX_INPUT_CHARS" in out["error"]
+    assert "strip must not run" not in out["error"]
+
+
 def test_load_bundle_rejects_str_path_without_read(tmp_path):
     marker = "SECRET_LIBRARY_LOAD_BUNDLE_STR"
     secret = tmp_path / "lib_secret.json"

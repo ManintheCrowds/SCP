@@ -44,13 +44,47 @@ def registry_fetch_quarantine_dir() -> Path:
     return _quarantine_dir() / REGISTRY_FETCH_LAYOUT
 
 
+def _path_is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        return path.is_relative_to(parent)
+    except AttributeError:
+        try:
+            path.relative_to(parent)
+            return True
+        except ValueError:
+            return False
+
+
+def _safe_existing_layout_dir(root: Path, sub: Path) -> bool:
+    if sub.is_symlink() or not sub.is_dir():
+        return False
+    try:
+        root_resolved = root.resolve()
+        sub_resolved = sub.resolve()
+    except OSError:
+        return False
+    return sub_resolved != root_resolved and _path_is_relative_to(sub_resolved, root_resolved)
+
+
+def _prepare_layout_dir(root: Path, layout: str) -> Path:
+    qdir = root / layout
+    if qdir.exists():
+        if not _safe_existing_layout_dir(root, qdir):
+            raise ValueError("unsafe quarantine layout")
+        return qdir
+    qdir.mkdir(parents=True, exist_ok=True)
+    if not _safe_existing_layout_dir(root, qdir):
+        raise ValueError("unsafe quarantine layout")
+    return qdir
+
+
 def _quarantine_pair_dirs() -> list[Path]:
     """Root plus allowlisted layout dirs that exist (quota / list / purge scope)."""
     root = _quarantine_dir()
     dirs = [root]
     for name in sorted(_ALLOWED_QUARANTINE_LAYOUTS):
         sub = root / name
-        if sub.is_dir():
+        if _safe_existing_layout_dir(root, sub):
             dirs.append(sub)
     return dirs
 
@@ -159,7 +193,7 @@ def quarantine(
     if layout is None:
         qdir = root
     elif layout in _ALLOWED_QUARANTINE_LAYOUTS:
-        qdir = root / layout
+        qdir = _prepare_layout_dir(root, layout)
     else:
         raise ValueError(f"unsupported quarantine layout: {layout!r}")
     qdir.mkdir(parents=True, exist_ok=True)

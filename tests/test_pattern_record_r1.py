@@ -58,6 +58,23 @@ def test_project_to_registry_smoke():
     assert proj["version"] == "1.0-projection"
 
 
+def test_project_to_registry_preserves_semantic_and_mythic_buckets():
+    semantic = _valid_record()
+    semantic["pattern_id"] = "inj.semantic.001"
+    semantic["detector"] = {"kind": "token_family", "normalized": "semantic-family"}
+    semantic["registry_bucket"] = "semantic_aliases"
+    mythic = _valid_record()
+    mythic["pattern_id"] = "jb.mythic.001"
+    mythic["category"] = "jailbreak"
+    mythic["detector"] = {"kind": "token_family", "normalized": "mythic-family"}
+    mythic["registry_bucket"] = "mythic_framing"
+
+    proj = pr.project_to_registry([semantic, mythic])
+
+    assert "semantic-family" in proj["semantic_aliases"]
+    assert "mythic-family" in proj["mythic_framing"]
+
+
 def test_validate_snapshot_ok():
     snap = {
         "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,

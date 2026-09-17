@@ -60,6 +60,21 @@ def test_proposal_without_consent_ok(isolated_env):
     assert res["proposal"]["pattern_ids"]
 
 
+def test_prepare_contribution_bounds_raw_content_before_strip(isolated_env, monkeypatch):
+    class StripBomb(str):
+        def strip(self, chars=None):
+            raise AssertionError("strip must not run before the size check")
+
+    monkeypatch.setenv("SCP_MAX_INPUT_CHARS", "8")
+
+    with pytest.raises(ValueError, match="SCP_MAX_INPUT_CHARS"):
+        rc.prepare_contribution(
+            raw_content=StripBomb("x" * 16),
+            category="injection",
+            https_url=PAYLOAD_URL,
+        )
+
+
 def test_opt_in_log_written_on_success(isolated_env, monkeypatch):
     monkeypatch.setenv("SCP_CONTRIBUTE_CONSENT", "1")
     log_path = Path(isolated_env / "contribute_opt_in.jsonl")

@@ -13,6 +13,7 @@ import re
 from mcp.server.fastmcp import FastMCP
 
 from . import registry_paths
+from . import scp_limits
 from . import scp_utils
 
 mcp = FastMCP("SCP")
@@ -144,7 +145,11 @@ def scp_run_pipeline(content: str, sink: str = "handoff", options: str | None = 
     options: JSON string with quarantine_on_block, wrapper, semantic_judge (bool).
     Returns {result, blocked, report}."""
     try:
-        opts = json.loads(options) if options else {}
+        if options:
+            scp_limits.assert_within_limit(options, what="options")
+            opts = json.loads(options)
+        else:
+            opts = {}
         return json.dumps(scp_utils.run_pipeline(content, sink=sink, options=opts))
     except json.JSONDecodeError:
         return _err(ValueError("options must be valid JSON"))
