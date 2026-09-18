@@ -216,6 +216,8 @@ def _load_quarantine_snapshot(quarantine_path: str | Path) -> dict:
     path = Path(quarantine_path)
     if not _path_under_registry_fetch(path):
         raise ValueError("quarantine_path_rejected")
+    if path.suffix != ".txt":
+        raise ValueError("quarantine_provenance_rejected")
     if not path.is_file():
         raise ValueError("quarantine_file_not_found")
 
