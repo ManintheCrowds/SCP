@@ -27,6 +27,16 @@ _ALLOWED_QUARANTINE_LAYOUTS = frozenset({REGISTRY_FETCH_LAYOUT})
 _pkg_dir = Path(__file__).resolve().parent
 
 
+def _new_quarantine_id(qdir: Path) -> str:
+    for _ in range(10):
+        qid = uuid.uuid4().hex
+        content_path = qdir / f"{qid}.txt"
+        meta_path = qdir / f"{qid}.json"
+        if not content_path.exists() and not meta_path.exists():
+            return qid
+    raise ValueError("unable to allocate unique quarantine_id")
+
+
 def _quarantine_dir() -> Path:
     env = os.environ.get("SCP_QUARANTINE_DIR")
     if env:
@@ -163,7 +173,7 @@ def quarantine(
     else:
         raise ValueError(f"unsupported quarantine layout: {layout!r}")
     qdir.mkdir(parents=True, exist_ok=True)
-    qid = str(uuid.uuid4())[:8]
+    qid = _new_quarantine_id(qdir)
     meta = {"quarantine_id": qid, "reason": reason, "source": source}
     meta_json = json.dumps(meta, indent=2)
     content_bytes = len(content.encode("utf-8", errors="replace"))

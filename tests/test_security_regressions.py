@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 
 import pytest
 
@@ -117,6 +118,26 @@ def test_quarantine_impossible_write_does_not_evict_existing_entries(tmp_path, m
 
     assert old_txt.read_text(encoding="utf-8") == "old quarantine evidence"
     assert old_json.is_file()
+
+
+def test_quarantine_uses_full_uuid_to_avoid_prefix_collision(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    ids = iter(
+        [
+            uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001"),
+            uuid.UUID("aaaaaaaa-0000-0000-0000-000000000002"),
+        ]
+    )
+    monkeypatch.setattr(scp_utils.uuid, "uuid4", lambda: next(ids))
+
+    first = scp_utils.quarantine("first quarantine evidence", reason="r1", source="s1")
+    second = scp_utils.quarantine("second quarantine evidence", reason="r2", source="s2")
+
+    assert first["quarantine_id"] != second["quarantine_id"]
+    first_path = tmp_path / f"{first['quarantine_id']}.txt"
+    second_path = tmp_path / f"{second['quarantine_id']}.txt"
+    assert first_path.read_text(encoding="utf-8") == "first quarantine evidence"
+    assert second_path.read_text(encoding="utf-8") == "second quarantine evidence"
 
 
 def test_registry_fetch_layout_counts_toward_total_quota(tmp_path, monkeypatch) -> None:
