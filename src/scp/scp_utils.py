@@ -49,8 +49,8 @@ def _quarantine_pair_dirs() -> list[Path]:
     root = _quarantine_dir()
     dirs = [root]
     for name in sorted(_ALLOWED_QUARANTINE_LAYOUTS):
-        sub = root / name
-        if sub.is_dir():
+        sub = quarantine_limits.safe_layout_dir(root, name, must_exist=True)
+        if sub is not None:
             dirs.append(sub)
     return dirs
 
@@ -159,10 +159,16 @@ def quarantine(
     if layout is None:
         qdir = root
     elif layout in _ALLOWED_QUARANTINE_LAYOUTS:
-        qdir = root / layout
+        qdir = quarantine_limits.safe_layout_dir(root, layout, must_exist=False)
+        if qdir is None:
+            raise ValueError(f"unsafe quarantine layout: {layout!r}")
     else:
         raise ValueError(f"unsupported quarantine layout: {layout!r}")
     qdir.mkdir(parents=True, exist_ok=True)
+    if layout is not None:
+        qdir = quarantine_limits.safe_layout_dir(root, layout, must_exist=True)
+        if qdir is None:
+            raise ValueError(f"unsafe quarantine layout: {layout!r}")
     qid = str(uuid.uuid4())[:8]
     meta = {"quarantine_id": qid, "reason": reason, "source": source}
     meta_json = json.dumps(meta, indent=2)

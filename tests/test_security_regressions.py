@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
+import tomllib
+from pathlib import Path
 
 import pytest
 
-from scp import mask_secrets, sanitize_input, scp_utils
+from scp import mask_secrets, pattern_record as pr, registry_ssot, sanitize_input, scp_utils
+
+
+def test_fastmcp_dependency_stays_on_compatible_mcp_major() -> None:
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
+    mcp_reqs = [dep for dep in project["dependencies"] if dep.startswith("mcp")]
+
+    assert any("<2" in dep for dep in mcp_reqs)
 
 
 def test_contain_markdown_uses_longer_fence_than_payload() -> None:
@@ -262,6 +273,102 @@ def test_list_and_purge_include_registry_fetch_layout(tmp_path, monkeypatch) -> 
     assert bulk["purged"] >= 1
     assert q2["quarantine_id"] in bulk["ids"]
     assert scp_utils.list_quarantine() == []
+
+
+def test_symlinked_registry_fetch_layout_is_not_listed_or_purged(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "q"))
+    qroot = tmp_path / "q"
+    qroot.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (qroot / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+    (outside / "aaaaaaaa.txt").write_text("outside evidence", encoding="utf-8")
+    (outside / "aaaaaaaa.json").write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "registry_fetch", "source": "s"}',
+        encoding="utf-8",
+    )
+
+    assert scp_utils.list_quarantine() == []
+
+    purged = scp_utils.purge_quarantine()
+    assert purged == {"purged": 0, "ids": []}
+    assert (outside / "aaaaaaaa.txt").read_text(encoding="utf-8") == "outside evidence"
+    assert (outside / "aaaaaaaa.json").is_file()
+
+
+def test_registry_fetch_quarantine_write_rejects_symlinked_layout(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "q"))
+    qroot = tmp_path / "q"
+    qroot.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (qroot / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="unsafe quarantine layout"):
+        scp_utils.quarantine(
+            "payload",
+            reason="registry_fetch",
+            source="s",
+            layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+
+    assert list(outside.iterdir()) == []
+
+
+def test_registry_apply_rejects_registry_fetch_symlink_to_root(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    (tmp_path / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(".", target_is_directory=True)
+    snapshot = pr.build_registry_snapshot([pr.legacy_token_record("synthetic override")])
+    quarantine_path = tmp_path / "aaaaaaaa.txt"
+    quarantine_path.write_text(
+        json.dumps(
+            {
+                "meta": {"reason": registry_ssot.REGISTRY_FETCH_REASON},
+                "snapshot": snapshot,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "aaaaaaaa.json").write_text(
+        json.dumps(
+            {
+                "quarantine_id": "aaaaaaaa",
+                "reason": registry_ssot.REGISTRY_FETCH_REASON,
+                "source": "s",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out = registry_ssot.apply_merge(quarantine_path)
+
+    assert out["merged"] is False
+    assert out["reason"] == "quarantine_path_rejected"
+
+
+def test_registry_apply_rejects_json_payload_as_its_own_sidecar(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    fetch_dir = tmp_path / scp_utils.REGISTRY_FETCH_LAYOUT
+    fetch_dir.mkdir()
+    snapshot = pr.build_registry_snapshot([pr.legacy_token_record("synthetic override")])
+    forged_path = fetch_dir / "aaaaaaaa.json"
+    forged_path.write_text(
+        json.dumps(
+            {
+                "quarantine_id": "aaaaaaaa",
+                "reason": registry_ssot.REGISTRY_FETCH_REASON,
+                "source": "s",
+                "meta": {"reason": registry_ssot.REGISTRY_FETCH_REASON},
+                "snapshot": snapshot,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out = registry_ssot.apply_merge(forged_path)
+
+    assert out["merged"] is False
+    assert out["reason"] == "quarantine_path_rejected"
 
 
 def test_run_pipeline_quarantine_failure_still_blocked(tmp_path, monkeypatch) -> None:

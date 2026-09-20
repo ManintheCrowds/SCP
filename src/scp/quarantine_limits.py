@@ -89,14 +89,33 @@ def _require_layout_subdirs(layout_subdirs: frozenset[str]) -> frozenset[str]:
     return layout_subdirs
 
 
+def safe_layout_dir(qdir: Path, name: str, *, must_exist: bool) -> Path | None:
+    """Return a real layout directory path only when it stays under the quarantine root."""
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        return None
+    sub = qdir / name
+    if sub.is_symlink():
+        return None
+    if must_exist and not sub.is_dir():
+        return None
+    if sub.exists() and not sub.is_dir():
+        return None
+    try:
+        root = qdir.resolve()
+        resolved = sub.resolve()
+        if resolved == root or not resolved.is_relative_to(root):
+            return None
+    except (OSError, ValueError):
+        return None
+    return sub
+
+
 def _pair_dirs(qdir: Path, layout_subdirs: frozenset[str]) -> list[Path]:
     """Root plus allowlisted layout subdirs that exist (no path traversal / unbounded rglob)."""
     dirs = [qdir]
     for name in sorted(layout_subdirs):
-        if not name or "/" in name or "\\" in name or name in (".", ".."):
-            continue
-        sub = qdir / name
-        if sub.is_dir():
+        sub = safe_layout_dir(qdir, name, must_exist=True)
+        if sub is not None:
             dirs.append(sub)
     return dirs
 
