@@ -235,3 +235,28 @@ def test_apply_merge_rejects_wrong_sidecar_reason(isolated_ssot):
     res = registry_ssot.apply_merge(path, approve=True)
     assert res["merged"] is False
     assert res["reason"] == "quarantine_provenance_rejected"
+
+
+def test_apply_merge_rejects_json_payload_self_certifying_as_sidecar(isolated_ssot):
+    """A forged JSON payload must not act as both content and sidecar metadata."""
+    snap = _snap([_rec("self.sidecar.001")])
+    forged = scp_utils.registry_fetch_quarantine_dir() / "forged.json"
+    forged.parent.mkdir(parents=True, exist_ok=True)
+    forged.write_text(
+        json.dumps(
+            {
+                "snapshot": snap,
+                "meta": {"reason": "registry_fetch", "source": "evil"},
+                "quarantine_id": "forged",
+                "reason": "registry_fetch",
+                "source": "evil",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    res = registry_ssot.apply_merge(forged, approve=True)
+
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_provenance_rejected"
+    assert registry_ssot.load_ssot() == []
