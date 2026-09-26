@@ -307,7 +307,15 @@ def fetch_registry(
             "local_registry_unchanged": True,
         }
 
-    diff_summary = registry_ssot.diff_snapshot(snapshot["patterns"])
+    try:
+        diff_summary = registry_ssot.diff_snapshot(snapshot["patterns"])
+    except registry_ssot.SsotCorruptError as exc:
+        return {
+            "ok": False,
+            "error": "ssot_corrupt",
+            "message": str(exc),
+            "local_registry_unchanged": True,
+        }
     q = _write_registry_quarantine(snapshot, source=source, diff_summary=diff_summary)
 
     return {

@@ -58,6 +58,16 @@ def test_project_to_registry_smoke():
     assert proj["version"] == "1.0-projection"
 
 
+def test_project_to_registry_preserves_semantic_and_mythic_buckets():
+    semantic = pr.legacy_token_record("semantic-projection-token", bucket="semantic_aliases")
+    mythic = pr.legacy_token_record("mythic-projection-token", bucket="mythic_framing")
+
+    proj = pr.project_to_registry([semantic, mythic])
+
+    assert "semantic-projection-token" in proj["semantic_aliases"]
+    assert "mythic-projection-token" in proj["mythic_framing"]
+
+
 def test_validate_snapshot_ok():
     snap = {
         "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
