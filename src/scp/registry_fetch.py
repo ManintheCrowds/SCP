@@ -316,7 +316,15 @@ def fetch_registry(
             "message": str(exc),
             "local_registry_unchanged": True,
         }
-    q = _write_registry_quarantine(snapshot, source=source, diff_summary=diff_summary)
+    try:
+        q = _write_registry_quarantine(snapshot, source=source, diff_summary=diff_summary)
+    except (OSError, ValueError) as exc:
+        return {
+            "ok": False,
+            "error": "quarantine_failed",
+            "message": str(exc),
+            "local_registry_unchanged": True,
+        }
 
     return {
         "ok": True,
