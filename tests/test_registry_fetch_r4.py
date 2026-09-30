@@ -12,6 +12,7 @@ import pytest
 from scp import pattern_record as pr
 from scp import registry_fetch
 from scp import registry_ssot
+from scp import scp_utils
 
 FIXTURE = Path(__file__).parent / "fixtures" / "registry_snapshot_v1.json"
 EVENT_ID = "b" * 64
@@ -117,6 +118,40 @@ def test_fetch_fails_closed_when_ssot_is_corrupt(isolated_env, monkeypatch):
     assert res["error"] == "ssot_corrupt"
     assert res["local_registry_unchanged"] is True
     assert ssot_path.read_text(encoding="utf-8") == '{"patterns": ['
+
+
+def test_fetch_fails_closed_when_quarantine_write_fails(isolated_env, monkeypatch):
+    body = json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+    def fail_quarantine(*_args, **_kwargs):
+        raise OSError("quarantine disk full")
+
+    monkeypatch.setattr(scp_utils, "quarantine", fail_quarantine)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode("utf-8"))
+
+        def log_message(self, *_args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    url = f"http://127.0.0.1:{server.server_address[1]}/registry.json"
+    try:
+        monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "127.0.0.1")
+        res = registry_fetch.fetch_registry(url, [])
+    finally:
+        server.shutdown()
+
+    assert res["ok"] is False
+    assert res["error"] == "quarantine_failed"
+    assert res["local_registry_unchanged"] is True
 
 
 def test_regtest_localhost_guard(isolated_env, monkeypatch):

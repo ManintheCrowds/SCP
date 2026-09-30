@@ -44,15 +44,47 @@ def registry_fetch_quarantine_dir() -> Path:
     return _quarantine_dir() / REGISTRY_FETCH_LAYOUT
 
 
+def _safe_quarantine_layout_dir(root: Path, name: str) -> Path | None:
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        return None
+    sub = root / name
+    try:
+        root_resolved = root.resolve()
+        if sub.is_symlink():
+            return None
+        if sub.exists():
+            if not sub.is_dir():
+                return None
+            sub_resolved = sub.resolve()
+        else:
+            sub_resolved = sub.resolve(strict=False)
+        if sub_resolved == root_resolved or not sub_resolved.is_relative_to(root_resolved):
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return sub
+
+
 def _quarantine_pair_dirs() -> list[Path]:
     """Root plus allowlisted layout dirs that exist (quota / list / purge scope)."""
     root = _quarantine_dir()
     dirs = [root]
     for name in sorted(_ALLOWED_QUARANTINE_LAYOUTS):
-        sub = root / name
-        if sub.is_dir():
+        sub = _safe_quarantine_layout_dir(root, name)
+        if sub is not None and sub.is_dir():
             dirs.append(sub)
     return dirs
+
+
+def _quarantine_layout_dir_for_write(root: Path, layout: str | None) -> Path:
+    if layout is None:
+        return root
+    if layout not in _ALLOWED_QUARANTINE_LAYOUTS:
+        raise ValueError(f"unsupported quarantine layout: {layout!r}")
+    qdir = _safe_quarantine_layout_dir(root, layout)
+    if qdir is None:
+        raise ValueError(f"unsafe quarantine layout: {layout!r}")
+    return qdir
 
 
 def inspect(content: str, context: str | None = None) -> dict:
@@ -156,29 +188,60 @@ def quarantine(
 ) -> dict:
     """Quarantine content. ``layout`` is internal-only (e.g. registry_fetch); MCP must not pass it."""
     root = _quarantine_dir()
-    if layout is None:
-        qdir = root
-    elif layout in _ALLOWED_QUARANTINE_LAYOUTS:
-        qdir = root / layout
-    else:
-        raise ValueError(f"unsupported quarantine layout: {layout!r}")
+    qdir = _quarantine_layout_dir_for_write(root, layout)
     qdir.mkdir(parents=True, exist_ok=True)
-    qid = str(uuid.uuid4())[:8]
+    qid = "0" * 8
     meta = {"quarantine_id": qid, "reason": reason, "source": source}
     meta_json = json.dumps(meta, indent=2)
     content_bytes = len(content.encode("utf-8", errors="replace"))
     meta_bytes = len(meta_json.encode("utf-8"))
-    # Quota accounts against the quarantine root (all allowlisted layouts).
-    quarantine_limits.prepare_quarantine_write(
-        root,
-        content_bytes,
-        meta_bytes,
-        layout_subdirs=_ALLOWED_QUARANTINE_LAYOUTS,
+    incoming = quarantine_limits.validate_quarantine_entry(content_bytes, meta_bytes)
+    total = quarantine_limits.total_quarantine_bytes(
+        root, layout_subdirs=_ALLOWED_QUARANTINE_LAYOUTS
     )
-    content_path = qdir / f"{qid}.txt"
-    meta_path = qdir / f"{qid}.json"
-    content_path.write_text(content, encoding="utf-8", errors="replace")
-    meta_path.write_text(meta_json, encoding="utf-8")
+    max_total = quarantine_limits.max_total_bytes()
+    if total + incoming > max_total and not quarantine_limits.evict_oldest_on_pressure():
+        raise ValueError(
+            f"quarantine storage full (current {total} bytes, need {incoming} more; "
+            f"limit {max_total} bytes per SCP_QUARANTINE_MAX_TOTAL_BYTES). "
+            "Purge entries, raise limits, or set SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE=1."
+        )
+
+    for _ in range(16):
+        qid = str(uuid.uuid4())[:8]
+        content_path = qdir / f"{qid}.txt"
+        meta_path = qdir / f"{qid}.json"
+        content_tmp = qdir / f".{qid}.{os.getpid()}.txt.tmp"
+        meta_tmp = qdir / f".{qid}.{os.getpid()}.json.tmp"
+        if not any(p.exists() for p in (content_path, meta_path, content_tmp, meta_tmp)):
+            break
+    else:
+        raise RuntimeError("unable to allocate unique quarantine id")
+
+    meta["quarantine_id"] = qid
+    meta_json = json.dumps(meta, indent=2)
+    content_committed = False
+    meta_committed = False
+    try:
+        content_tmp.write_text(content, encoding="utf-8", errors="replace")
+        meta_tmp.write_text(meta_json, encoding="utf-8")
+        os.replace(content_tmp, content_path)
+        content_committed = True
+        os.replace(meta_tmp, meta_path)
+        meta_committed = True
+    except Exception:
+        if content_committed:
+            content_path.unlink(missing_ok=True)
+        if meta_committed:
+            meta_path.unlink(missing_ok=True)
+        raise
+    finally:
+        content_tmp.unlink(missing_ok=True)
+        meta_tmp.unlink(missing_ok=True)
+
+    quarantine_limits.enforce_quarantine_storage(
+        root, layout_subdirs=_ALLOWED_QUARANTINE_LAYOUTS
+    )
     return {"quarantine_id": qid, "path": str(content_path)}
 
 

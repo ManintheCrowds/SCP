@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -262,6 +263,61 @@ def test_list_and_purge_include_registry_fetch_layout(tmp_path, monkeypatch) -> 
     assert bulk["purged"] >= 1
     assert q2["quarantine_id"] in bulk["ids"]
     assert scp_utils.list_quarantine() == []
+
+
+def test_symlinked_registry_fetch_layout_is_not_trusted(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "quarantine"))
+    root = tmp_path / "quarantine"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "aaaaaaaa.txt").write_text("outside evidence", encoding="utf-8")
+    (outside / "aaaaaaaa.json").write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "registry_fetch", "source": "t"}',
+        encoding="utf-8",
+    )
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+
+    assert all(e["quarantine_id"] != "aaaaaaaa" for e in scp_utils.list_quarantine())
+    assert scp_utils.purge_quarantine("aaaaaaaa") == {"purged": 0, "ids": []}
+    assert (outside / "aaaaaaaa.txt").read_text(encoding="utf-8") == "outside evidence"
+
+    with pytest.raises(ValueError, match="unsafe quarantine layout"):
+        scp_utils.quarantine(
+            "new evidence",
+            reason="registry_fetch",
+            source="s",
+            layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+
+
+def test_quarantine_write_failure_preserves_existing_entries(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "700")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    old_txt = tmp_path / "aaaaaaaa.txt"
+    old_json = tmp_path / "aaaaaaaa.json"
+    old_txt.write_text("a" * 400, encoding="utf-8")
+    old_json.write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "old", "source": "t"}',
+        encoding="utf-8",
+    )
+
+    original_write_text = Path.write_text
+
+    def fail_new_content_write(self, data, *args, **kwargs):
+        if self.parent == tmp_path and self.suffix == ".tmp" and self.name.endswith(".txt.tmp"):
+            raise OSError("disk full")
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_new_content_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        scp_utils.quarantine("b" * 300, reason="new", source="s")
+
+    assert old_txt.read_text(encoding="utf-8") == "a" * 400
+    assert old_json.is_file()
 
 
 def test_run_pipeline_quarantine_failure_still_blocked(tmp_path, monkeypatch) -> None:
