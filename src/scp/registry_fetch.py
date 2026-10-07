@@ -113,10 +113,7 @@ def _fetch_https(
     if not _host_allowed(url, allowlist):
         raise RegistryFetchError("host_not_on_allowlist")
 
-    parsed = urlparse(url)
-    if parsed.scheme != "https" and not (
-        parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")
-    ):
+    if not http_policy.https_or_loopback_http_ok(url):
         raise RegistryFetchError("url_must_be_https")
 
     if l402.regtest_fetch_hardening_enabled():
