@@ -246,3 +246,55 @@ def test_registry_fetch_https_disables_redirects():
     assert get.called
     assert get.call_args.kwargs.get("allow_redirects") is False
     assert get.call_args.kwargs.get("stream") is True
+
+
+SSRF_BACKSLASH_URL = r"https://127.0.0.1:9\@example.com/steal"
+
+
+def test_fetch_rejects_backslash_at_ssrf_before_network(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    bare = "a" * 64
+    with patch("scp.antigen_nostr.requests.Session.get") as get:
+        with pytest.raises(nostr.FetchError) as exc:
+            nostr.fetch_payload(SSRF_BACKSLASH_URL, bare)
+    assert exc.value.reason == "host_not_on_allowlist"
+    get.assert_not_called()
+
+
+def test_fetch_rejects_userinfo_before_network(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    bare = "a" * 64
+    with patch("scp.antigen_nostr.requests.Session.get") as get:
+        with pytest.raises(nostr.FetchError) as exc:
+            nostr.fetch_payload("https://user:pass@example.com/x", bare)
+    assert exc.value.reason == "host_not_on_allowlist"
+    get.assert_not_called()
+
+
+def test_fetch_backslash_at_does_not_attach_l402(monkeypatch):
+    monkeypatch.setenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", "example.com")
+    monkeypatch.setenv("SCP_ANTIGEN_L402_TOKEN", "mac:preimagehex")
+    bare = "d" * 64
+    with patch("scp.antigen_nostr.requests.Session.get") as get:
+        with pytest.raises(nostr.FetchError) as exc:
+            nostr.fetch_payload(SSRF_BACKSLASH_URL, bare, allow_env_l402_token=True)
+    assert exc.value.reason == "host_not_on_allowlist"
+    get.assert_not_called()
+
+
+def test_registry_fetch_rejects_backslash_at_ssrf():
+    with patch("scp.registry_fetch.requests.Session.get") as get:
+        with pytest.raises(rf.RegistryFetchError) as exc:
+            rf._fetch_https(SSRF_BACKSLASH_URL, ["example.com"])
+    assert exc.value.reason == "host_not_on_allowlist"
+    get.assert_not_called()
+
+
+def test_contribute_rejects_backslash_at_ssrf(monkeypatch):
+    monkeypatch.setenv("SCP_CONTRIBUTE_HOST_ALLOWLIST", "example.com")
+    snapshot = {"schema_revision": "scp.registry_snapshot.v1", "patterns": []}
+    with patch("scp.registry_contribute.requests.Session.post") as post:
+        with pytest.raises(rc.ContributeError) as exc:
+            rc.post_registry_snapshot(SSRF_BACKSLASH_URL, snapshot)
+    assert exc.value.reason in ("host_not_on_allowlist", "url_must_be_https")
+    post.assert_not_called()

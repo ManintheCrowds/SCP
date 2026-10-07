@@ -413,10 +413,7 @@ def post_registry_snapshot(
     Consent gates *whether* to publish; SCP_CONTRIBUTE_HOST_ALLOWLIST gates *where*
     (fail-closed unless regtest localhost hardening is enabled).
     """
-    parsed = urlparse(url)
-    if parsed.scheme != "https" and not (
-        parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")
-    ):
+    if not http_policy.https_or_loopback_http_ok(url):
         raise ContributeError("url_must_be_https")
 
     if l402.regtest_fetch_hardening_enabled():

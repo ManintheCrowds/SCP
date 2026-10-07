@@ -1,12 +1,13 @@
 # PURPOSE: SCP-ANT1 P1b — L402 macaroon+invoice parse/format helpers for HTTPS antigen fetch.
-# DEPENDENCIES: none (stdlib only)
-# MODIFICATION NOTES: P1b v0 — L402 only; Cashu NUT-24 deferred to P2 per ANT1 §11.6.
+# DEPENDENCIES: http_policy (dial-host for localhost assert)
+# MODIFICATION NOTES: AppSec 2026-10-06 — assert_localhost uses dial host; P1b L402 helpers.
 
 from __future__ import annotations
 
 import os
 import re
-from urllib.parse import urlparse
+
+from . import http_policy
 
 _LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
@@ -79,9 +80,9 @@ def regtest_fetch_hardening_enabled() -> bool:
 
 
 def assert_localhost_fetch_url(url: str) -> None:
-    """Require localhost/loopback host when regtest hardening is enabled."""
-    host = urlparse(url).hostname
-    if host not in _LOCALHOST_HOSTS:
+    """Require dial host is loopback when regtest hardening is enabled."""
+    dial = http_policy.dial_hostname(url)
+    if dial not in _LOCALHOST_HOSTS:
         raise ValueError("fetch_url_not_localhost")
 
 
