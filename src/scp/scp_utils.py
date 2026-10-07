@@ -44,15 +44,52 @@ def registry_fetch_quarantine_dir() -> Path:
     return _quarantine_dir() / REGISTRY_FETCH_LAYOUT
 
 
+def _safe_existing_layout_dir(root: Path, sub: Path) -> bool:
+    if sub.is_symlink() or not sub.is_dir():
+        return False
+    try:
+        root_resolved = root.resolve()
+        sub_resolved = sub.resolve()
+    except OSError:
+        return False
+    return sub_resolved != root_resolved and sub_resolved.is_relative_to(root_resolved)
+
+
+def _prepare_layout_dir(root: Path, layout: str) -> Path:
+    qdir = root / layout
+    if qdir.is_symlink():
+        raise ValueError(f"unsafe quarantine layout: {layout}")
+    qdir.mkdir(parents=True, exist_ok=True)
+    if not _safe_existing_layout_dir(root, qdir):
+        raise ValueError(f"unsafe quarantine layout: {layout}")
+    return qdir
+
+
 def _quarantine_pair_dirs() -> list[Path]:
     """Root plus allowlisted layout dirs that exist (quota / list / purge scope)."""
     root = _quarantine_dir()
     dirs = [root]
     for name in sorted(_ALLOWED_QUARANTINE_LAYOUTS):
         sub = root / name
-        if sub.is_dir():
+        if _safe_existing_layout_dir(root, sub):
             dirs.append(sub)
     return dirs
+
+
+def _new_quarantine_paths(qdir: Path) -> tuple[str, Path, Path, Path, Path]:
+    """Allocate a full UUID hex id so shared 8-char prefixes cannot collide."""
+    for _ in range(16):
+        qid = uuid.uuid4().hex
+        content_path = qdir / f"{qid}.txt"
+        meta_path = qdir / f"{qid}.json"
+        tmp_content_path = qdir / f".{qid}.{os.getpid()}.txt.tmp"
+        tmp_meta_path = qdir / f".{qid}.{os.getpid()}.json.tmp"
+        if not any(
+            p.exists()
+            for p in (content_path, meta_path, tmp_content_path, tmp_meta_path)
+        ):
+            return qid, content_path, meta_path, tmp_content_path, tmp_meta_path
+    raise RuntimeError("unable to allocate unique quarantine id")
 
 
 def inspect(content: str, context: str | None = None) -> dict:
@@ -159,26 +196,36 @@ def quarantine(
     if layout is None:
         qdir = root
     elif layout in _ALLOWED_QUARANTINE_LAYOUTS:
-        qdir = root / layout
+        qdir = _prepare_layout_dir(root, layout)
     else:
         raise ValueError(f"unsupported quarantine layout: {layout!r}")
     qdir.mkdir(parents=True, exist_ok=True)
-    qid = str(uuid.uuid4())[:8]
+    qid, content_path, meta_path, tmp_content_path, tmp_meta_path = _new_quarantine_paths(qdir)
     meta = {"quarantine_id": qid, "reason": reason, "source": source}
     meta_json = json.dumps(meta, indent=2)
     content_bytes = len(content.encode("utf-8", errors="replace"))
     meta_bytes = len(meta_json.encode("utf-8"))
-    # Quota accounts against the quarantine root (all allowlisted layouts).
-    quarantine_limits.prepare_quarantine_write(
+    quarantine_limits.validate_quarantine_write(
         root,
         content_bytes,
         meta_bytes,
         layout_subdirs=_ALLOWED_QUARANTINE_LAYOUTS,
     )
-    content_path = qdir / f"{qid}.txt"
-    meta_path = qdir / f"{qid}.json"
-    content_path.write_text(content, encoding="utf-8", errors="replace")
-    meta_path.write_text(meta_json, encoding="utf-8")
+    try:
+        tmp_content_path.write_text(content, encoding="utf-8", errors="replace")
+        tmp_meta_path.write_text(meta_json, encoding="utf-8")
+        os.replace(tmp_content_path, content_path)
+        os.replace(tmp_meta_path, meta_path)
+        quarantine_limits.enforce_quarantine_limits(
+            root,
+            layout_subdirs=_ALLOWED_QUARANTINE_LAYOUTS,
+        )
+    except Exception:
+        tmp_content_path.unlink(missing_ok=True)
+        tmp_meta_path.unlink(missing_ok=True)
+        if not meta_path.exists():
+            content_path.unlink(missing_ok=True)
+        raise
     return {"quarantine_id": qid, "path": str(content_path)}
 
 

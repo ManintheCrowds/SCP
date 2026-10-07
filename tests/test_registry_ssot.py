@@ -235,3 +235,53 @@ def test_apply_merge_rejects_wrong_sidecar_reason(isolated_ssot):
     res = registry_ssot.apply_merge(path, approve=True)
     assert res["merged"] is False
     assert res["reason"] == "quarantine_provenance_rejected"
+
+
+def test_apply_merge_rejects_json_path_that_self_certifies_sidecar(isolated_ssot):
+    """A forged envelope .json must not act as its own registry_fetch sidecar."""
+    snap = _snap([_rec("self.sidecar.001")])
+    forged = isolated_ssot / "quarantine" / scp_utils.REGISTRY_FETCH_LAYOUT / "evil.json"
+    forged.parent.mkdir(parents=True, exist_ok=True)
+    forged.write_text(
+        json.dumps(
+            {
+                "quarantine_id": "evil",
+                "reason": "registry_fetch",
+                "source": "attacker-controlled-file",
+                "snapshot": snap,
+                "meta": {"reason": "registry_fetch", "source": "attacker-controlled-file"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    res = registry_ssot.apply_merge(forged, approve=True)
+
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_provenance_rejected"
+
+
+def test_apply_merge_rejects_registry_fetch_symlink_to_quarantine_root(isolated_ssot):
+    """registry_fetch must be a real child layout, not a symlink alias for root pairs."""
+    snap = _snap([_rec("symlink.root.001")])
+    forged = json.dumps(
+        {
+            "snapshot": snap,
+            "meta": {"reason": "registry_fetch", "source": "evil"},
+        },
+        indent=2,
+    )
+    q = scp_utils.quarantine(forged, reason="registry_fetch", source="evil")
+    qpath = Path(q["path"])
+    (qpath.parent / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(
+        qpath.parent,
+        target_is_directory=True,
+    )
+
+    res = registry_ssot.apply_merge(
+        qpath.parent / scp_utils.REGISTRY_FETCH_LAYOUT / qpath.name,
+        approve=True,
+    )
+
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_path_rejected"
