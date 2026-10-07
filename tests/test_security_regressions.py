@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 
@@ -382,20 +383,27 @@ def test_quarantine_oversized_content_rejected_before_temp_write(
 
 def test_quarantine_does_not_overwrite_existing_id_pair(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
-    (tmp_path / "deadbeef.txt").write_text("old evidence", encoding="utf-8")
-    (tmp_path / "deadbeef.json").write_text(
-        '{"quarantine_id": "deadbeef", "reason": "old", "source": "t"}',
+    taken = "deadbeef" + ("0" * 24)
+    next_id = "feedface" + ("0" * 24)
+    (tmp_path / f"{taken}.txt").write_text("old evidence", encoding="utf-8")
+    (tmp_path / f"{taken}.json").write_text(
+        json.dumps({"quarantine_id": taken, "reason": "old", "source": "t"}),
         encoding="utf-8",
     )
-    ids = iter(["deadbeef-0000-0000-0000-000000000000", "feedface-0000-0000-0000-000000000000"])
+
+    class _FakeUUID:
+        def __init__(self, hex_value: str) -> None:
+            self.hex = hex_value
+
+    ids = iter([_FakeUUID(taken), _FakeUUID(next_id)])
     monkeypatch.setattr(scp_utils.uuid, "uuid4", lambda: next(ids))
 
     out = scp_utils.quarantine("new evidence", reason="r", source="s")
 
-    assert out["quarantine_id"] == "feedface"
-    assert (tmp_path / "deadbeef.txt").read_text(encoding="utf-8") == "old evidence"
-    assert (tmp_path / "deadbeef.json").is_file()
-    assert (tmp_path / "feedface.txt").read_text(encoding="utf-8") == "new evidence"
+    assert out["quarantine_id"] == next_id
+    assert (tmp_path / f"{taken}.txt").read_text(encoding="utf-8") == "old evidence"
+    assert (tmp_path / f"{taken}.json").is_file()
+    assert (tmp_path / f"{next_id}.txt").read_text(encoding="utf-8") == "new evidence"
 
 
 def test_run_pipeline_quarantine_failure_still_blocked(tmp_path, monkeypatch) -> None:

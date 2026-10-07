@@ -205,8 +205,12 @@ def validate_quarantine_write(
             f"SCP_QUARANTINE_MAX_TOTAL_BYTES ({max_t})"
         )
 
+    # Eviction deferred to enforce_quarantine_limits after durable commit.
+    if evict_oldest_on_pressure():
+        return
+
     total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
-    if total + incoming <= max_t or evict_oldest_on_pressure():
+    if total + incoming <= max_t:
         return
 
     raise ValueError(

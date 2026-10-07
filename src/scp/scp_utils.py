@@ -44,23 +44,12 @@ def registry_fetch_quarantine_dir() -> Path:
     return _quarantine_dir() / REGISTRY_FETCH_LAYOUT
 
 
-def _safe_existing_layout_dir(root: Path, sub: Path) -> bool:
-    if sub.is_symlink() or not sub.is_dir():
-        return False
-    try:
-        root_resolved = root.resolve()
-        sub_resolved = sub.resolve()
-    except OSError:
-        return False
-    return sub_resolved != root_resolved and sub_resolved.is_relative_to(root_resolved)
-
-
 def _prepare_layout_dir(root: Path, layout: str) -> Path:
     qdir = root / layout
     if qdir.is_symlink():
         raise ValueError(f"unsafe quarantine layout: {layout}")
     qdir.mkdir(parents=True, exist_ok=True)
-    if not _safe_existing_layout_dir(root, qdir):
+    if not quarantine_limits._safe_existing_layout_dir(root, qdir):
         raise ValueError(f"unsafe quarantine layout: {layout}")
     return qdir
 
@@ -71,7 +60,7 @@ def _quarantine_pair_dirs() -> list[Path]:
     dirs = [root]
     for name in sorted(_ALLOWED_QUARANTINE_LAYOUTS):
         sub = root / name
-        if _safe_existing_layout_dir(root, sub):
+        if quarantine_limits._safe_existing_layout_dir(root, sub):
             dirs.append(sub)
     return dirs
 
@@ -195,11 +184,11 @@ def quarantine(
     root = _quarantine_dir()
     if layout is None:
         qdir = root
+        qdir.mkdir(parents=True, exist_ok=True)
     elif layout in _ALLOWED_QUARANTINE_LAYOUTS:
         qdir = _prepare_layout_dir(root, layout)
     else:
         raise ValueError(f"unsupported quarantine layout: {layout!r}")
-    qdir.mkdir(parents=True, exist_ok=True)
     qid, content_path, meta_path, tmp_content_path, tmp_meta_path = _new_quarantine_paths(qdir)
     meta = {"quarantine_id": qid, "reason": reason, "source": source}
     meta_json = json.dumps(meta, indent=2)
