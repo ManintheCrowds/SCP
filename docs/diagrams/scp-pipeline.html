@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>SCP content pipeline</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper: #0e1114;
+      --color-ink: #e6e8eb;
+      --color-muted: #9aa3ad;
+      --color-accent: #c4a574;
+      --font-sans: 'Geist', system-ui, sans-serif;
+      --font-serif: 'Instrument Serif', serif;
+      --font-mono: 'Geist Mono', ui-monospace, monospace;
+    }
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .frame { max-width: 1280px; width: 100%; }
+    .diagram-container { width: 100%; overflow-x: auto; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.4rem, 2vw + 0.7rem, 1.9rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      margin-bottom: 1.25rem;
+    }
+    svg { width: 100%; min-width: 960px; display: block; }
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Data flow · Diagram Design · dark · slide-16x9 · simplified</p>
+    <h1>SCP content pipeline</h1>
+    <div class="diagram-container">
+      <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="scp-pipeline-title scp-pipeline-desc">
+        <title id="scp-pipeline-title">SCP content pipeline</title>
+        <desc id="scp-pipeline-desc">Untrusted ingest moves through inspect and sanitize; contain or quarantine before sinks.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#9aa3ad"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#c4a574"/></marker>
+        </defs>
+        <rect width="1280" height="720" fill="#0e1114"/>
+<rect x="40" y="300" width="160" height="72" rx="6" fill="#161b20" stroke="#e6e8eb" stroke-width="1"/>
+<text x="120" y="332" fill="#e6e8eb" font-size="14" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Ingest</text>
+<text x="120" y="352" fill="#9aa3ad" font-size="11" font-family="'Geist Mono', monospace" text-anchor="middle">untrusted</text>
+<rect x="260" y="300" width="160" height="72" rx="6" fill="#161b20" stroke="#e6e8eb" stroke-width="1"/>
+<text x="340" y="332" fill="#e6e8eb" font-size="14" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Inspect</text>
+<text x="340" y="352" fill="#9aa3ad" font-size="11" font-family="'Geist Mono', monospace" text-anchor="middle">findings</text>
+<rect x="480" y="300" width="180" height="80" rx="6" fill="rgba(196,165,116,0.10)" stroke="#c4a574" stroke-width="1.4"/>
+<text x="492" y="318" fill="#7a8490" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.12em">GATE</text>
+<text x="570" y="340" fill="#e6e8eb" font-size="14" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Sanitize</text>
+<text x="570" y="360" fill="#9aa3ad" font-size="11" font-family="'Geist Mono', monospace" text-anchor="middle">contain</text>
+<rect x="720" y="200" width="180" height="64" rx="6" fill="#161b20" stroke="#e6e8eb" stroke-width="1"/>
+<text x="810" y="232" fill="#e6e8eb" font-size="14" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Contain</text>
+<text x="810" y="252" fill="#9aa3ad" font-size="11" font-family="'Geist Mono', monospace" text-anchor="middle">safe text</text>
+<rect x="720" y="400" width="180" height="64" rx="6" fill="#161b20" stroke="#e6e8eb" stroke-width="1"/>
+<text x="810" y="432" fill="#e6e8eb" font-size="14" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Quarantine</text>
+<text x="810" y="452" fill="#9aa3ad" font-size="11" font-family="'Geist Mono', monospace" text-anchor="middle">blocked</text>
+<rect x="980" y="300" width="240" height="72" rx="6" fill="#161b20" stroke="#e6e8eb" stroke-width="1"/>
+<text x="1100" y="332" fill="#e6e8eb" font-size="14" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Sinks</text>
+<text x="1100" y="352" fill="#9aa3ad" font-size="11" font-family="'Geist Mono', monospace" text-anchor="middle">handoff / LLM</text>
+<line x1="200" y1="336" x2="260" y2="336" stroke="#9aa3ad" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="420" y1="336" x2="480" y2="336" stroke="#c4a574" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+<line x1="660" y1="320" x2="720" y2="232" stroke="#9aa3ad" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="660" y1="360" x2="720" y2="432" stroke="#9aa3ad" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="900" y1="232" x2="980" y2="320" stroke="#9aa3ad" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="900" y1="432" x2="980" y2="360" stroke="#9aa3ad" stroke-width="1.2" marker-end="url(#arrow)"/>
+<rect x="436" y="300" width="36" height="14" rx="2" fill="#0e1114"/><text x="440" y="310" fill="#c4a574" font-size="9" font-family="'Geist Mono', monospace" letter-spacing="0.06em">SCP</text>
+      </svg>
+    </div>
+  </div>
+</body>
+</html>
