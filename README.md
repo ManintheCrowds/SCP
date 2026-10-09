@@ -18,18 +18,13 @@ Inspect, sanitize, contain, and quarantine unknown or potentially hazardous cont
 
 Python 3.10+, MCP, optional Ollama semantic judge (off by default in CI), promptfoo for offline evals.
 
-## Architecture
+## How SCP works
 
-```mermaid
-flowchart LR
-  IN[Untrusted content] --> INSPECT[scp_inspect]
-  INSPECT -->|injection| Q[scp_quarantine]
-  INSPECT -->|reversal| SAN[scp_sanitize]
-  SAN --> CON[scp_contain]
-  INSPECT -->|clean| OUT[Safe sink]
-  CON --> OUT
-  Q --> BLOCK[Block LLM sink]
-```
+Untrusted ingest moves through **inspect → sanitize**, then **contain** or **quarantine**, before sinks (handoff / LLM).
+
+![SCP content pipeline: inspect, sanitize, contain or quarantine, then sinks](docs/diagrams/scp-pipeline.svg)
+
+Local slide (open in a browser; GitHub shows HTML as source): [docs/diagrams/scp-pipeline.html](docs/diagrams/scp-pipeline.html). Catalog: [docs/diagrams/README.md](docs/diagrams/README.md).
 
 ## Pipeline
 
