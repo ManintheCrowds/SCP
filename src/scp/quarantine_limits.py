@@ -89,6 +89,17 @@ def _require_layout_subdirs(layout_subdirs: frozenset[str]) -> frozenset[str]:
     return layout_subdirs
 
 
+def _safe_existing_layout_dir(root: Path, sub: Path) -> bool:
+    if sub.is_symlink() or not sub.is_dir():
+        return False
+    try:
+        root_resolved = root.resolve()
+        sub_resolved = sub.resolve()
+    except OSError:
+        return False
+    return sub_resolved != root_resolved and sub_resolved.is_relative_to(root_resolved)
+
+
 def _pair_dirs(qdir: Path, layout_subdirs: frozenset[str]) -> list[Path]:
     """Root plus allowlisted layout subdirs that exist (no path traversal / unbounded rglob)."""
     dirs = [qdir]
@@ -96,7 +107,7 @@ def _pair_dirs(qdir: Path, layout_subdirs: frozenset[str]) -> list[Path]:
         if not name or "/" in name or "\\" in name or name in (".", ".."):
             continue
         sub = qdir / name
-        if sub.is_dir():
+        if _safe_existing_layout_dir(qdir, sub):
             dirs.append(sub)
     return dirs
 
@@ -163,6 +174,75 @@ def evict_oldest_until_under(
         except OSError:
             break
     return freed
+
+
+def validate_quarantine_write(
+    qdir: Path,
+    content_utf8_bytes: int,
+    meta_utf8_bytes: int,
+    *,
+    layout_subdirs: frozenset[str],
+) -> None:
+    """Raise before any write that can never fit or cannot fit without eviction."""
+    layouts = _require_layout_subdirs(layout_subdirs)
+    max_c = max_content_bytes()
+    if content_utf8_bytes > max_c:
+        raise ValueError(
+            f"quarantine content ({content_utf8_bytes} bytes) exceeds "
+            f"SCP_QUARANTINE_MAX_CONTENT_BYTES ({max_c})"
+        )
+
+    max_t = max_total_bytes()
+    if max_c > max_t:
+        raise ValueError(
+            "SCP_QUARANTINE_MAX_CONTENT_BYTES must not exceed SCP_QUARANTINE_MAX_TOTAL_BYTES"
+        )
+
+    incoming = content_utf8_bytes + meta_utf8_bytes
+    if incoming > max_t:
+        raise ValueError(
+            f"quarantine entry ({incoming} bytes) exceeds "
+            f"SCP_QUARANTINE_MAX_TOTAL_BYTES ({max_t})"
+        )
+
+    # Eviction deferred to enforce_quarantine_limits after durable commit.
+    if evict_oldest_on_pressure():
+        return
+
+    total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
+    if total + incoming <= max_t:
+        return
+
+    raise ValueError(
+        f"quarantine storage full (current {total} bytes, need {incoming} more; "
+        f"limit {max_t} bytes per SCP_QUARANTINE_MAX_TOTAL_BYTES). "
+        "Purge entries, raise limits, or set SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE=1."
+    )
+
+
+def enforce_quarantine_limits(qdir: Path, *, layout_subdirs: frozenset[str]) -> None:
+    """Apply retention/eviction after a new pair is durably committed."""
+    layouts = _require_layout_subdirs(layout_subdirs)
+    days = retention_days_on_write()
+    if days is not None:
+        purge_older_than(qdir, days, layout_subdirs=layouts)
+
+    max_t = max_total_bytes()
+    total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
+    if total <= max_t:
+        return
+
+    if evict_oldest_on_pressure():
+        evict_oldest_until_under(qdir, max_t, layout_subdirs=layouts)
+        total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
+        if total <= max_t:
+            return
+
+    raise ValueError(
+        f"quarantine storage full (current {total} bytes; "
+        f"limit {max_t} bytes per SCP_QUARANTINE_MAX_TOTAL_BYTES). "
+        "Purge entries, raise limits, or set SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE=1."
+    )
 
 
 def prepare_quarantine_write(

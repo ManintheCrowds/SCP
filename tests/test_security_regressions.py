@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 
@@ -262,6 +263,147 @@ def test_list_and_purge_include_registry_fetch_layout(tmp_path, monkeypatch) -> 
     assert bulk["purged"] >= 1
     assert q2["quarantine_id"] in bulk["ids"]
     assert scp_utils.list_quarantine() == []
+
+
+def test_registry_fetch_layout_symlink_is_not_trusted(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "quarantine"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(root))
+    qid = "aaaaaaaa"
+    (outside / f"{qid}.txt").write_text("outside evidence", encoding="utf-8")
+    (outside / f"{qid}.json").write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "registry_fetch", "source": "s"}',
+        encoding="utf-8",
+    )
+    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+
+    assert all(entry["quarantine_id"] != qid for entry in scp_utils.list_quarantine())
+    purged = scp_utils.purge_quarantine(quarantine_id=qid)
+    assert purged == {"purged": 0, "ids": []}
+    assert (outside / f"{qid}.txt").read_text(encoding="utf-8") == "outside evidence"
+    assert (outside / f"{qid}.json").is_file()
+    with pytest.raises(ValueError, match="unsafe quarantine layout"):
+        scp_utils.quarantine(
+            "new registry payload",
+            reason="registry_fetch",
+            source="s",
+            layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+    assert sorted(p.name for p in outside.iterdir()) == [f"{qid}.json", f"{qid}.txt"]
+
+
+def test_quarantine_failed_content_write_does_not_evict_existing_entries(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "1100")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    for qid, body in (("aaaaaaaa", "a" * 400), ("bbbbbbbb", "b" * 400)):
+        (tmp_path / f"{qid}.txt").write_text(body, encoding="utf-8")
+        (tmp_path / f"{qid}.json").write_text(
+            '{"quarantine_id": "%s", "reason": "old", "source": "t"}' % qid,
+            encoding="utf-8",
+        )
+        ts = 1_700_000_000 if qid == "aaaaaaaa" else 1_700_000_100
+        os.utime(tmp_path / f"{qid}.txt", (ts, ts))
+        os.utime(tmp_path / f"{qid}.json", (ts, ts))
+
+    original_write_text = type(tmp_path).write_text
+
+    def fail_new_content_write(self, data, *args, **kwargs):
+        new_txt = self.suffix == ".txt" and self.stem not in {"aaaaaaaa", "bbbbbbbb"}
+        staged_txt = self.name.endswith(".txt.tmp")
+        if self.parent == tmp_path and (new_txt or staged_txt):
+            raise OSError("disk full")
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(type(tmp_path), "write_text", fail_new_content_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        scp_utils.quarantine("new" * 80, reason="r", source="s")
+
+    assert (tmp_path / "aaaaaaaa.txt").is_file()
+    assert (tmp_path / "aaaaaaaa.json").is_file()
+    assert (tmp_path / "bbbbbbbb.txt").is_file()
+    assert (tmp_path / "bbbbbbbb.json").is_file()
+
+
+def test_quarantine_failed_commit_does_not_evict_existing_entries(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "1100")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    for qid, body in (("aaaaaaaa", "a" * 400), ("bbbbbbbb", "b" * 400)):
+        (tmp_path / f"{qid}.txt").write_text(body, encoding="utf-8")
+        (tmp_path / f"{qid}.json").write_text(
+            '{"quarantine_id": "%s", "reason": "old", "source": "t"}' % qid,
+            encoding="utf-8",
+        )
+        ts = 1_700_000_000 if qid == "aaaaaaaa" else 1_700_000_100
+        os.utime(tmp_path / f"{qid}.txt", (ts, ts))
+        os.utime(tmp_path / f"{qid}.json", (ts, ts))
+
+    original_replace = os.replace
+
+    def fail_content_commit(src, dst):
+        if str(dst).endswith(".txt"):
+            raise OSError("rename failed")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(scp_utils.os, "replace", fail_content_commit)
+
+    with pytest.raises(OSError, match="rename failed"):
+        scp_utils.quarantine("new" * 80, reason="r", source="s")
+
+    assert (tmp_path / "aaaaaaaa.txt").is_file()
+    assert (tmp_path / "aaaaaaaa.json").is_file()
+    assert (tmp_path / "bbbbbbbb.txt").is_file()
+    assert (tmp_path / "bbbbbbbb.json").is_file()
+
+
+def test_quarantine_oversized_content_rejected_before_temp_write(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "10")
+
+    def fail_if_write_attempted(self, data, *args, **kwargs):
+        raise AssertionError(f"unexpected write before size validation: {self}")
+
+    monkeypatch.setattr(type(tmp_path), "write_text", fail_if_write_attempted)
+
+    with pytest.raises(ValueError, match="SCP_QUARANTINE_MAX_CONTENT_BYTES"):
+        scp_utils.quarantine("x" * 20, reason="r", source="s")
+
+
+def test_quarantine_does_not_overwrite_existing_id_pair(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    taken = "deadbeef" + ("0" * 24)
+    next_id = "feedface" + ("0" * 24)
+    (tmp_path / f"{taken}.txt").write_text("old evidence", encoding="utf-8")
+    (tmp_path / f"{taken}.json").write_text(
+        json.dumps({"quarantine_id": taken, "reason": "old", "source": "t"}),
+        encoding="utf-8",
+    )
+
+    class _FakeUUID:
+        def __init__(self, hex_value: str) -> None:
+            self.hex = hex_value
+
+    ids = iter([_FakeUUID(taken), _FakeUUID(next_id)])
+    monkeypatch.setattr(scp_utils.uuid, "uuid4", lambda: next(ids))
+
+    out = scp_utils.quarantine("new evidence", reason="r", source="s")
+
+    assert out["quarantine_id"] == next_id
+    assert (tmp_path / f"{taken}.txt").read_text(encoding="utf-8") == "old evidence"
+    assert (tmp_path / f"{taken}.json").is_file()
+    assert (tmp_path / f"{next_id}.txt").read_text(encoding="utf-8") == "new evidence"
 
 
 def test_run_pipeline_quarantine_failure_still_blocked(tmp_path, monkeypatch) -> None:

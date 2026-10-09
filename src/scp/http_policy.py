@@ -1,6 +1,6 @@
 # PURPOSE: Shared outbound HTTP/WS policy — host allowlist + session hardening (SSRF).
 # DEPENDENCIES: urllib.parse, ipaddress, requests
-# MODIFICATION NOTES: AppSec 2026-07-28 — env-only TLS verify for registry MCP; shared parse helper
+# MODIFICATION NOTES: AppSec 2026-10-06 — dial-host allowlist (reject \\ / userinfo; private block + A4 loopback)
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import requests
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 FETCH_HOST_ENV = "SCP_ANTIGEN_FETCH_HOST_ALLOWLIST"
 REGISTRY_HOST_ENV = "SCP_REGISTRY_FETCH_HOST_ALLOWLIST"
@@ -25,13 +26,79 @@ def env_tls_verify(var: str = REGISTRY_TLS_VERIFY_ENV, *, default: str = "1") ->
     return os.environ.get(var, default).strip().lower() not in ("0", "false", "no")
 
 
+def url_shape_ok(url: str) -> bool:
+    """Reject backslash and userinfo before any dial-host comparison."""
+    if not url or "\\" in url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    # Authority with @ but empty userinfo still counts as userinfo-shaped.
+    netloc = parsed.netloc or ""
+    if "@" in netloc:
+        return False
+    return True
+
+
+def dial_hostname(url: str) -> str | None:
+    """Hostname requests will dial (prepared URL). None = reject (shape/prepare/parity)."""
+    if not url_shape_ok(url):
+        return None
+    try:
+        parsed = urlparse(url)
+        parse_host = (parsed.hostname or "").lower()
+        if not parse_host:
+            return None
+        prepared = requests.Request("GET", url).prepare().url
+        if not prepared:
+            return None
+        dial = (urlparse(prepared).hostname or "").lower()
+    except Exception:
+        return None
+    if not dial or dial != parse_host:
+        return None
+    return dial
+
+
+def https_or_loopback_http_ok(url: str) -> bool:
+    """True for https, or http only when dial host is exact loopback (A4)."""
+    if not url_shape_ok(url):
+        return False
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme == "https":
+        return dial_hostname(url) is not None
+    if parsed.scheme == "http":
+        dial = dial_hostname(url)
+        return dial is not None and dial in _LOOPBACK_HOSTS
+    return False
+
+
 def host_allowed(url: str, allowlist: list[str]) -> bool:
-    """Fail-closed: empty allowlist rejects; only non-hex entries count as hosts."""
+    """Fail-closed: empty allowlist rejects; allowlist the host requests will dial.
+
+    Rejects backslash/userinfo and parse/dial host mismatch. Refuses private and
+    link-local dial targets except exact allowlisted loopback (Assumption A4).
+    """
     if not allowlist:
         return False
-    host = (urlparse(url).hostname or "").lower()
+    dial = dial_hostname(url)
+    if not dial:
+        return False
     allowed_hosts = {a.lower() for a in allowlist if not _HEX64.match(a.lower())}
-    return host in allowed_hosts
+    if dial not in allowed_hosts:
+        return False
+    # A4: exact allowlisted loopback may pass; other blocked ranges stay refused.
+    if dial in _LOOPBACK_HOSTS:
+        return True
+    if _hostname_is_blocked(dial):
+        return False
+    return True
 
 
 def env_fetch_host_allowlist() -> list[str]:

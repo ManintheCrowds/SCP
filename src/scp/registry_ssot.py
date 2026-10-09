@@ -178,18 +178,23 @@ def _dev_auto_categories() -> frozenset[str]:
 def _path_under_registry_fetch(path: Path) -> bool:
     """True iff path resolves under {QUARANTINE_DIR}/registry_fetch/."""
     try:
+        fetch_dir = scp_utils.registry_fetch_quarantine_dir()
+        if fetch_dir.is_symlink():
+            return False
         resolved = path.resolve()
-        fetch_root = scp_utils.registry_fetch_quarantine_dir().resolve()
+        fetch_root = fetch_dir.resolve()
         quarantine_root = scp_utils.quarantine_dir().resolve()
     except OSError:
         return False
     try:
-        if not fetch_root.is_relative_to(quarantine_root):
+        if fetch_root == quarantine_root or not fetch_root.is_relative_to(quarantine_root):
             return False
         return resolved.is_relative_to(fetch_root)
     except (ValueError, AttributeError):
         # Python <3.9 fallback unused; keep defensive.
         try:
+            if fetch_root == quarantine_root:
+                return False
             resolved.relative_to(fetch_root)
             fetch_root.relative_to(quarantine_root)
             return True
@@ -218,6 +223,8 @@ def _load_quarantine_snapshot(quarantine_path: str | Path) -> dict:
         raise ValueError("quarantine_path_rejected")
     if not path.is_file():
         raise ValueError("quarantine_file_not_found")
+    if path.suffix != ".txt":
+        raise ValueError("quarantine_provenance_rejected")
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
