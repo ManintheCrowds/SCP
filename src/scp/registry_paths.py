@@ -35,17 +35,32 @@ def resolve_threat_registry_path() -> Path | None:
     return None
 
 
+def _threat_registry_candidates() -> list[Path]:
+    paths: list[Path] = []
+    env = os.environ.get("SCP_THREAT_REGISTRY_PATH")
+    if env:
+        p = Path(env)
+        if p.is_file():
+            paths.append(p)
+    proj = default_projection_path()
+    if proj.is_file() and proj not in paths:
+        paths.append(proj)
+    if _PACKAGED_REGISTRY.is_file() and _PACKAGED_REGISTRY not in paths:
+        paths.append(_PACKAGED_REGISTRY)
+    return paths
+
+
 def load_threat_registry() -> dict:
     """Load threat registry JSON; reload on each call (no sticky cache)."""
-    path = resolve_threat_registry_path()
-    if path is None:
-        return {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError):
-        return {}
+    for path in _threat_registry_candidates():
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(data, dict) and data:
+            return data
+    return {}
 
 
 def clear_threat_registry_cache() -> None:
