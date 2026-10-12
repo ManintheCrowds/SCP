@@ -200,19 +200,25 @@ def quarantine(
         meta_bytes,
         layout_subdirs=_ALLOWED_QUARANTINE_LAYOUTS,
     )
+    committed = False
     try:
         tmp_content_path.write_text(content, encoding="utf-8", errors="replace")
         tmp_meta_path.write_text(meta_json, encoding="utf-8")
         os.replace(tmp_content_path, content_path)
         os.replace(tmp_meta_path, meta_path)
+        committed = True
         quarantine_limits.enforce_quarantine_limits(
             root,
             layout_subdirs=_ALLOWED_QUARANTINE_LAYOUTS,
+            protected_pairs=frozenset({quarantine_limits.pair_key(qdir, qid)}),
         )
     except Exception:
         tmp_content_path.unlink(missing_ok=True)
         tmp_meta_path.unlink(missing_ok=True)
-        if not meta_path.exists():
+        if committed:
+            meta_path.unlink(missing_ok=True)
+            content_path.unlink(missing_ok=True)
+        elif not meta_path.exists():
             content_path.unlink(missing_ok=True)
         raise
     return {"quarantine_id": qid, "path": str(content_path)}

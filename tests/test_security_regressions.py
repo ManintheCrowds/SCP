@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from scp import mask_secrets, sanitize_input, scp_utils
+from scp import mask_secrets, quarantine_limits, sanitize_input, scp_utils
 
 
 def test_contain_markdown_uses_longer_fence_than_payload() -> None:
@@ -122,8 +122,6 @@ def test_quarantine_impossible_write_does_not_evict_existing_entries(tmp_path, m
 
 def test_registry_fetch_layout_counts_toward_total_quota(tmp_path, monkeypatch) -> None:
     """AppSec: registry_fetch/ writes must count toward SCP_QUARANTINE_MAX_TOTAL_BYTES."""
-    from scp import quarantine_limits
-
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
     monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
     monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "2500")
@@ -187,8 +185,6 @@ def test_registry_fetch_layout_eviction_makes_room(tmp_path, monkeypatch) -> Non
 
 def test_prepare_quarantine_write_requires_layout_subdirs(tmp_path) -> None:
     """Omit / None must fail loud — never silently root-only (quota bypass footgun)."""
-    from scp import quarantine_limits
-
     with pytest.raises(TypeError, match="layout_subdirs"):
         quarantine_limits.prepare_quarantine_write(tmp_path, 10, 10)  # type: ignore[call-arg]
     with pytest.raises(TypeError, match="layout_subdirs is required"):
@@ -364,6 +360,47 @@ def test_quarantine_failed_commit_does_not_evict_existing_entries(
     assert (tmp_path / "aaaaaaaa.json").is_file()
     assert (tmp_path / "bbbbbbbb.txt").is_file()
     assert (tmp_path / "bbbbbbbb.json").is_file()
+
+
+def test_quarantine_failed_eviction_stage_keeps_existing_entries(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "700")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    for qid, body in (("aaaaaaaa", "a" * 400), ("bbbbbbbb", "b" * 400)):
+        (tmp_path / f"{qid}.txt").write_text(body, encoding="utf-8")
+        (tmp_path / f"{qid}.json").write_text(
+            '{"quarantine_id": "%s", "reason": "old", "source": "t"}' % qid,
+            encoding="utf-8",
+        )
+        ts = 1_700_000_000 if qid == "aaaaaaaa" else 1_700_000_100
+        os.utime(tmp_path / f"{qid}.txt", (ts, ts))
+        os.utime(tmp_path / f"{qid}.json", (ts, ts))
+
+    original_replace = os.replace
+
+    def fail_second_victim_stage(src, dst):
+        if "bbbbbbbb" in str(src) and ".evict.tmp" in str(dst):
+            raise OSError("eviction staging failed")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(quarantine_limits.os, "replace", fail_second_victim_stage)
+
+    with pytest.raises(ValueError, match="quarantine storage full"):
+        scp_utils.quarantine("new" * 80, reason="r", source="s")
+
+    assert (tmp_path / "aaaaaaaa.txt").read_text(encoding="utf-8") == "a" * 400
+    assert (tmp_path / "aaaaaaaa.json").is_file()
+    assert (tmp_path / "bbbbbbbb.txt").read_text(encoding="utf-8") == "b" * 400
+    assert (tmp_path / "bbbbbbbb.json").is_file()
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "aaaaaaaa.json",
+        "aaaaaaaa.txt",
+        "bbbbbbbb.json",
+        "bbbbbbbb.txt",
+    ]
 
 
 def test_quarantine_oversized_content_rejected_before_temp_write(
