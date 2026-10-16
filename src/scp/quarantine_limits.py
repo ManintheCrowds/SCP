@@ -121,6 +121,13 @@ def _iter_pairs(
             yield pair_dir, meta_path.stem
 
 
+def _pair_identity(pair_dir: Path, qid: str) -> tuple[str, str]:
+    try:
+        return str(pair_dir.resolve()), qid
+    except OSError:
+        return str(pair_dir), qid
+
+
 def total_quarantine_bytes(qdir: Path, *, layout_subdirs: frozenset[str]) -> int:
     layouts = _require_layout_subdirs(layout_subdirs)
     if not qdir.is_dir():
@@ -152,7 +159,11 @@ def purge_older_than(qdir: Path, days: int, *, layout_subdirs: frozenset[str]) -
 
 
 def evict_oldest_until_under(
-    qdir: Path, target_total: int, *, layout_subdirs: frozenset[str]
+    qdir: Path,
+    target_total: int,
+    *,
+    layout_subdirs: frozenset[str],
+    protected_pairs: frozenset[tuple[str, str]] = frozenset(),
 ) -> int:
     """Delete oldest-by-mtime pairs until total bytes <= ``target_total`` or stuck."""
     layouts = _require_layout_subdirs(layout_subdirs)
@@ -160,6 +171,8 @@ def evict_oldest_until_under(
     while qdir.is_dir() and total_quarantine_bytes(qdir, layout_subdirs=layouts) > target_total:
         pairs: list[tuple[str, float, Path]] = []
         for pair_dir, qid in _iter_pairs(qdir, layouts):
+            if _pair_identity(pair_dir, qid) in protected_pairs:
+                continue
             _, mt = _pair_disk_bytes_and_mtime(pair_dir, qid)
             pairs.append((qid, mt, pair_dir))
         if not pairs:
@@ -220,7 +233,12 @@ def validate_quarantine_write(
     )
 
 
-def enforce_quarantine_limits(qdir: Path, *, layout_subdirs: frozenset[str]) -> None:
+def enforce_quarantine_limits(
+    qdir: Path,
+    *,
+    layout_subdirs: frozenset[str],
+    protected_pairs: frozenset[tuple[str, str]] = frozenset(),
+) -> None:
     """Apply retention/eviction after a new pair is durably committed."""
     layouts = _require_layout_subdirs(layout_subdirs)
     days = retention_days_on_write()
@@ -233,7 +251,12 @@ def enforce_quarantine_limits(qdir: Path, *, layout_subdirs: frozenset[str]) -> 
         return
 
     if evict_oldest_on_pressure():
-        evict_oldest_until_under(qdir, max_t, layout_subdirs=layouts)
+        evict_oldest_until_under(
+            qdir,
+            max_t,
+            layout_subdirs=layouts,
+            protected_pairs=protected_pairs,
+        )
         total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
         if total <= max_t:
             return
