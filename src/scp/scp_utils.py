@@ -208,6 +208,7 @@ def quarantine(
         quarantine_limits.enforce_quarantine_limits(
             root,
             layout_subdirs=_ALLOWED_QUARANTINE_LAYOUTS,
+            protected_pairs=frozenset({quarantine_limits._pair_identity(qdir, qid)}),
         )
     except Exception:
         tmp_content_path.unlink(missing_ok=True)
