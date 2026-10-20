@@ -7,6 +7,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
+import socket
 from urllib.parse import urlparse
 
 import requests
@@ -131,6 +132,12 @@ def _hostname_is_blocked(hostname: str) -> bool:
     try:
         ip = ipaddress.ip_address(h)
     except ValueError:
+        try:
+            ip = ipaddress.ip_address(socket.inet_aton(h))
+        except OSError:
+            ip = None
+        if ip is not None:
+            return ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved
         # Not an IP literal — still block obvious metadata DNS names.
         if "169.254.169.254" in h:
             return True

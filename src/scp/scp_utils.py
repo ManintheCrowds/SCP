@@ -208,12 +208,13 @@ def quarantine(
         quarantine_limits.enforce_quarantine_limits(
             root,
             layout_subdirs=_ALLOWED_QUARANTINE_LAYOUTS,
+            protected_pair_keys=frozenset({(qdir, qid)}),
         )
     except Exception:
         tmp_content_path.unlink(missing_ok=True)
         tmp_meta_path.unlink(missing_ok=True)
-        if not meta_path.exists():
-            content_path.unlink(missing_ok=True)
+        meta_path.unlink(missing_ok=True)
+        content_path.unlink(missing_ok=True)
         raise
     return {"quarantine_id": qid, "path": str(content_path)}
 

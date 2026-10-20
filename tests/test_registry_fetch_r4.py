@@ -189,6 +189,43 @@ def test_fetch_nostr_registry_mock(isolated_env):
     assert res["diff_summary"]["add_count"] >= 1
 
 
+def test_fetch_nostr_registry_selects_requested_event(isolated_env):
+    snapshot = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    unrelated = {
+        "id": "f" * 64,
+        "pubkey": "a" * 64,
+        "created_at": 1,
+        "kind": 30079,
+        "tags": [],
+        "content": json.dumps({"schema_revision": "wrong"}),
+        "sig": "d" * 128,
+    }
+    requested = {
+        "id": EVENT_ID,
+        "pubkey": "a" * 64,
+        "created_at": 1,
+        "kind": 30079,
+        "tags": [],
+        "content": json.dumps(snapshot),
+        "sig": "c" * 128,
+    }
+
+    transport = MagicMock()
+    transport.subscribe.return_value = [unrelated, requested]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(registry_fetch.nostr, "verify_event_signature", lambda _e: True)
+        res = registry_fetch.fetch_registry(
+            EVENT_ID,
+            [requested["pubkey"]],
+            transport=transport,
+        )
+
+    assert res["ok"] is True
+    assert res["merged"] is False
+    assert res["diff_summary"]["add_count"] >= 1
+
+
 def test_invalid_snapshot_rejected(isolated_env):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
