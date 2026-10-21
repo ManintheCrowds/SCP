@@ -98,6 +98,10 @@ def test_quarantine_evicts_oldest_when_over_total(tmp_path, monkeypatch) -> None
             '{"quarantine_id": "%s", "reason": "old", "source": "t"}' % qid,
             encoding="utf-8",
         )
+        # Freshly committed evidence must not be evicted even when mtimes tie or skew.
+        future = time.time() + 60
+        os.utime(tmp_path / f"{qid}.txt", (future, future))
+        os.utime(tmp_path / f"{qid}.json", (future, future))
     out = scp_utils.quarantine("new" * 30, reason="r", source="s")
     assert out.get("quarantine_id")
     assert (tmp_path / f"{out['quarantine_id']}.txt").is_file()
