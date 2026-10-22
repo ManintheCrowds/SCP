@@ -9,7 +9,7 @@ description = "Secure Contain Protect — inspect, sanitize, contain, quarantine
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp>=1.2.0",
+    "mcp>=1.2.0,<2.0.0",
     "requests>=2.28.0",
 ]
 
