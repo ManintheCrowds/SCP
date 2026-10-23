@@ -10,12 +10,11 @@ import json
 import os
 import re
 
-from mcp.server.fastmcp import FastMCP
-
 from . import registry_paths
 from . import scp_utils
+from .mcp_server import MCPServer
 
-mcp = FastMCP("SCP")
+mcp = MCPServer("SCP")
 
 _DEBUG_META_ENV = "SCP_DEBUG_META"
 _REGISTRY_SECTION_ALLOWLIST_ENV = "SCP_REGISTRY_SECTION_ALLOWLIST"
