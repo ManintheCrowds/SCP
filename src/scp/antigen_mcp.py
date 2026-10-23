@@ -9,8 +9,6 @@
 
 import json
 
-from mcp.server.fastmcp import FastMCP
-
 from . import antigen as antigen_mod
 from . import antigen_nostr as nostr_mod
 from . import http_policy
@@ -18,8 +16,9 @@ from . import operator_consent
 from . import registry_contribute as registry_contribute_mod
 from . import registry_fetch as registry_fetch_mod
 from . import registry_ssot as registry_ssot_mod
+from .mcp_server import MCPServer
 
-mcp = FastMCP("SCP-Antigen")
+mcp = MCPServer("SCP-Antigen")
 
 
 def _err(e: Exception) -> str:
