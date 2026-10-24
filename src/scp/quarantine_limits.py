@@ -132,6 +132,28 @@ def total_quarantine_bytes(qdir: Path, *, layout_subdirs: frozenset[str]) -> int
     return total
 
 
+def _total_quarantine_bytes_after_retention(
+    qdir: Path,
+    *,
+    days: int,
+    layout_subdirs: frozenset[str],
+) -> int:
+    if days <= 0 or not qdir.is_dir():
+        return total_quarantine_bytes(qdir, layout_subdirs=layout_subdirs)
+    cutoff = time.time() - days * 86400
+    total = 0
+    for pair_dir, qid in _iter_pairs(qdir, layout_subdirs):
+        meta_path = pair_dir / f"{qid}.json"
+        try:
+            if meta_path.stat().st_mtime < cutoff:
+                continue
+        except OSError:
+            pass
+        sz, _ = _pair_disk_bytes_and_mtime(pair_dir, qid)
+        total += sz
+    return total
+
+
 def purge_older_than(qdir: Path, days: int, *, layout_subdirs: frozenset[str]) -> int:
     """Delete pairs whose .json mtime is older than ``days``. Returns number of qids removed."""
     layouts = _require_layout_subdirs(layout_subdirs)
@@ -152,7 +174,11 @@ def purge_older_than(qdir: Path, days: int, *, layout_subdirs: frozenset[str]) -
 
 
 def evict_oldest_until_under(
-    qdir: Path, target_total: int, *, layout_subdirs: frozenset[str]
+    qdir: Path,
+    target_total: int,
+    *,
+    layout_subdirs: frozenset[str],
+    protected_qids: frozenset[str] = frozenset(),
 ) -> int:
     """Delete oldest-by-mtime pairs until total bytes <= ``target_total`` or stuck."""
     layouts = _require_layout_subdirs(layout_subdirs)
@@ -160,6 +186,8 @@ def evict_oldest_until_under(
     while qdir.is_dir() and total_quarantine_bytes(qdir, layout_subdirs=layouts) > target_total:
         pairs: list[tuple[str, float, Path]] = []
         for pair_dir, qid in _iter_pairs(qdir, layouts):
+            if qid in protected_qids:
+                continue
             _, mt = _pair_disk_bytes_and_mtime(pair_dir, qid)
             pairs.append((qid, mt, pair_dir))
         if not pairs:
@@ -213,6 +241,17 @@ def validate_quarantine_write(
     if total + incoming <= max_t:
         return
 
+    days = retention_days_on_write()
+    if days is not None:
+        retained_total = _total_quarantine_bytes_after_retention(
+            qdir,
+            days=days,
+            layout_subdirs=layouts,
+        )
+        if retained_total + incoming <= max_t:
+            return
+        total = retained_total
+
     raise ValueError(
         f"quarantine storage full (current {total} bytes, need {incoming} more; "
         f"limit {max_t} bytes per SCP_QUARANTINE_MAX_TOTAL_BYTES). "
@@ -220,7 +259,12 @@ def validate_quarantine_write(
     )
 
 
-def enforce_quarantine_limits(qdir: Path, *, layout_subdirs: frozenset[str]) -> None:
+def enforce_quarantine_limits(
+    qdir: Path,
+    *,
+    layout_subdirs: frozenset[str],
+    protected_qids: frozenset[str] = frozenset(),
+) -> None:
     """Apply retention/eviction after a new pair is durably committed."""
     layouts = _require_layout_subdirs(layout_subdirs)
     days = retention_days_on_write()
@@ -233,7 +277,12 @@ def enforce_quarantine_limits(qdir: Path, *, layout_subdirs: frozenset[str]) -> 
         return
 
     if evict_oldest_on_pressure():
-        evict_oldest_until_under(qdir, max_t, layout_subdirs=layouts)
+        evict_oldest_until_under(
+            qdir,
+            max_t,
+            layout_subdirs=layouts,
+            protected_qids=protected_qids,
+        )
         total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
         if total <= max_t:
             return
