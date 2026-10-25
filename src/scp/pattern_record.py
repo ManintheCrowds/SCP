@@ -38,6 +38,7 @@ _LEGACY_BUCKET_CATEGORY: dict[str, str] = {
     "hostile_ux": "hostile_ux",
     "multilingual_override": "injection",
 }
+_PROJECTABLE_REGISTRY_BUCKETS = frozenset(_LEGACY_BUCKET_CATEGORY)
 
 
 class RegistrySnapshotError(ValueError):
@@ -190,7 +191,9 @@ def validate_pattern_record(record: dict) -> dict:
             errors.append("invalid_drift_score")
 
     bucket = record.get("registry_bucket")
-    if bucket is not None and (not isinstance(bucket, str) or not bucket.strip()):
+    if bucket is not None and (
+        not isinstance(bucket, str) or bucket not in _PROJECTABLE_REGISTRY_BUCKETS
+    ):
         errors.append("invalid_registry_bucket")
 
     source_ref = record.get("source_ref")
@@ -306,8 +309,12 @@ def project_to_registry(records: list[dict]) -> dict:
         token = _token_for_projection(rec)
         if not token:
             continue
-        bucket = rec.get("registry_bucket") or _CATEGORY_DEFAULT_BUCKET.get(
-            rec.get("category", ""), "power_words"
+        requested_bucket = rec.get("registry_bucket")
+        bucket = (
+            requested_bucket
+            if isinstance(requested_bucket, str)
+            and requested_bucket in _PROJECTABLE_REGISTRY_BUCKETS
+            else _CATEGORY_DEFAULT_BUCKET.get(rec.get("category", ""), "power_words")
         )
         if bucket == "multilingual_override":
             lang = rec.get("source_ref", {}).get("lang", "en") if isinstance(rec.get("source_ref"), dict) else "en"

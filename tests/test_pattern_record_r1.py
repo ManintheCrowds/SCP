@@ -68,6 +68,25 @@ def test_project_to_registry_preserves_semantic_and_mythic_buckets():
     assert "mythic-projection-token" in proj["mythic_framing"]
 
 
+def test_validate_pattern_record_rejects_unknown_registry_bucket():
+    rec = _valid_record()
+    rec["registry_bucket"] = "power_wordz"
+
+    result = pr.validate_pattern_record(rec)
+
+    assert result["valid"] is False
+    assert "invalid_registry_bucket" in result["errors"]
+
+
+def test_project_to_registry_falls_back_for_unknown_existing_bucket():
+    rec = _valid_record()
+    rec["registry_bucket"] = "power_wordz"
+
+    proj = pr.project_to_registry([rec])
+
+    assert "override-family" in proj["power_words"]
+
+
 def test_validate_snapshot_ok():
     snap = {
         "schema_revision": pr.REGISTRY_SNAPSHOT_REVISION,
