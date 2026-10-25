@@ -121,6 +121,11 @@ def _iter_pairs(
             yield pair_dir, meta_path.stem
 
 
+def pair_key(pair_dir: Path, qid: str) -> tuple[str, str]:
+    """Stable key for identifying one quarantine pair across root/layout dirs."""
+    return str(pair_dir.resolve()), qid
+
+
 def total_quarantine_bytes(qdir: Path, *, layout_subdirs: frozenset[str]) -> int:
     layouts = _require_layout_subdirs(layout_subdirs)
     if not qdir.is_dir():
@@ -152,27 +157,68 @@ def purge_older_than(qdir: Path, days: int, *, layout_subdirs: frozenset[str]) -
 
 
 def evict_oldest_until_under(
-    qdir: Path, target_total: int, *, layout_subdirs: frozenset[str]
+    qdir: Path,
+    target_total: int,
+    *,
+    layout_subdirs: frozenset[str],
+    protected_pairs: frozenset[tuple[str, str]] = frozenset(),
 ) -> int:
     """Delete oldest-by-mtime pairs until total bytes <= ``target_total`` or stuck."""
     layouts = _require_layout_subdirs(layout_subdirs)
     freed = 0
     while qdir.is_dir() and total_quarantine_bytes(qdir, layout_subdirs=layouts) > target_total:
-        pairs: list[tuple[str, float, Path]] = []
+        total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
+        pairs: list[tuple[str, float, Path, int]] = []
         for pair_dir, qid in _iter_pairs(qdir, layouts):
-            _, mt = _pair_disk_bytes_and_mtime(pair_dir, qid)
-            pairs.append((qid, mt, pair_dir))
+            try:
+                if pair_key(pair_dir, qid) in protected_pairs:
+                    continue
+            except OSError:
+                continue
+            sz, mt = _pair_disk_bytes_and_mtime(pair_dir, qid)
+            if sz > 0:
+                pairs.append((qid, mt, pair_dir, sz))
         if not pairs:
             break
         pairs.sort(key=lambda x: x[1])
-        victim, _, victim_dir = pairs[0]
-        sz_before, _ = _pair_disk_bytes_and_mtime(victim_dir, victim)
-        try:
-            (victim_dir / f"{victim}.json").unlink(missing_ok=True)
-            (victim_dir / f"{victim}.txt").unlink(missing_ok=True)
-            freed += sz_before
-        except OSError:
+
+        victims: list[tuple[str, Path, int]] = []
+        selected_bytes = 0
+        for victim, _, victim_dir, sz_before in pairs:
+            victims.append((victim, victim_dir, sz_before))
+            selected_bytes += sz_before
+            if total - selected_bytes <= target_total:
+                break
+        if total - selected_bytes > target_total:
             break
+
+        token = f"{os.getpid()}.{int(time.time() * 1_000_000)}"
+        staged: list[tuple[Path, Path]] = []
+        try:
+            for victim, victim_dir, _ in victims:
+                for path in (
+                    victim_dir / f"{victim}.json",
+                    victim_dir / f"{victim}.txt",
+                ):
+                    if not path.exists():
+                        continue
+                    staged_path = victim_dir / f".{victim}.{token}{path.suffix}.evict.tmp"
+                    os.replace(path, staged_path)
+                    staged.append((path, staged_path))
+        except OSError:
+            for original_path, staged_path in reversed(staged):
+                try:
+                    if staged_path.exists() and not original_path.exists():
+                        os.replace(staged_path, original_path)
+                except OSError:
+                    pass
+            break
+        for _, staged_path in staged:
+            try:
+                staged_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        freed += selected_bytes
     return freed
 
 
@@ -220,29 +266,35 @@ def validate_quarantine_write(
     )
 
 
-def enforce_quarantine_limits(qdir: Path, *, layout_subdirs: frozenset[str]) -> None:
+def enforce_quarantine_limits(
+    qdir: Path,
+    *,
+    layout_subdirs: frozenset[str],
+    protected_pairs: frozenset[tuple[str, str]] = frozenset(),
+) -> None:
     """Apply retention/eviction after a new pair is durably committed."""
     layouts = _require_layout_subdirs(layout_subdirs)
+    max_t = max_total_bytes()
+    total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
+    if total > max_t and evict_oldest_on_pressure():
+        evict_oldest_until_under(
+            qdir,
+            max_t,
+            layout_subdirs=layouts,
+            protected_pairs=protected_pairs,
+        )
+        total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
+
+    if total > max_t:
+        raise ValueError(
+            f"quarantine storage full (current {total} bytes; "
+            f"limit {max_t} bytes per SCP_QUARANTINE_MAX_TOTAL_BYTES). "
+            "Purge entries, raise limits, or set SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE=1."
+        )
+
     days = retention_days_on_write()
     if days is not None:
         purge_older_than(qdir, days, layout_subdirs=layouts)
-
-    max_t = max_total_bytes()
-    total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
-    if total <= max_t:
-        return
-
-    if evict_oldest_on_pressure():
-        evict_oldest_until_under(qdir, max_t, layout_subdirs=layouts)
-        total = total_quarantine_bytes(qdir, layout_subdirs=layouts)
-        if total <= max_t:
-            return
-
-    raise ValueError(
-        f"quarantine storage full (current {total} bytes; "
-        f"limit {max_t} bytes per SCP_QUARANTINE_MAX_TOTAL_BYTES). "
-        "Purge entries, raise limits, or set SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE=1."
-    )
 
 
 def prepare_quarantine_write(
