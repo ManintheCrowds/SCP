@@ -22,6 +22,10 @@ def isolated_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path / "quarantine"))
     monkeypatch.setenv("SCP_ANTIGEN_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
     monkeypatch.setenv("SCP_PATTERN_SSOT_PATH", str(tmp_path / "ssot.json"))
+    # apply_merge writes the projection here. Without this, a fetch test leaves
+    # ~/.scp/threat_registry_projection.json in place and later inspect tests
+    # classify against that partial registry instead of the packaged one.
+    monkeypatch.setenv("SCP_THREAT_REGISTRY_PATH", str(tmp_path / "projection.json"))
     monkeypatch.delenv("SCP_ANTIGEN_REGTEST_E2E", raising=False)
     monkeypatch.delenv("SCP_ANTIGEN_FETCH_HOST_ALLOWLIST", raising=False)
     monkeypatch.delenv("SCP_REGISTRY_FETCH_HOST_ALLOWLIST", raising=False)

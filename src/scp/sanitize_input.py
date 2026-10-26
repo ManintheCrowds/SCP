@@ -18,6 +18,7 @@ import unicodedata
 import urllib.parse
 from pathlib import Path
 
+from . import pattern_record
 from . import registry_paths
 from . import scp_limits
 
@@ -790,75 +791,392 @@ def scan_jailbreak_mythic(text: str) -> list[tuple[int, str]]:
     return findings
 
 
-def classify(text: str) -> dict:
-    scp_limits.assert_within_limit(text, what="classify content")
-    scan_text = _prepare_text_for_scan(text)
-    override_findings = scan_override_phrases(scan_text)
-    leetspeak_findings = scan_leetspeak(scan_text)
-    unicode_findings = scan_hidden_unicode(text)
-    null_findings = scan_null_bytes(text)
-    path_traversal_findings = scan_path_traversal(scan_text)
-    reversal_findings = scan_reversal_phrases(scan_text)
-    power_findings = scan_power_words(scan_text)
-    morse_findings = scan_morse_like(scan_text)
-    encoding_findings = scan_encoding_blocks(scan_text)
-    homoglyph_findings = scan_homoglyphs(scan_text)
-    multi_findings = scan_multilingual_override(scan_text)
-    alias_findings = scan_semantic_aliases(scan_text)
-    jailbreak_findings = scan_jailbreak_mythic(scan_text)
-    hostile_ux_findings = scan_hostile_ux(scan_text)
-    rot_findings = _check_rot_decode(scan_text)
+# Literal tool-poisoning phrases. The packaged registry is authoritative when it
+# has a tool_poisoning bucket; this list is the fallback and must stay in sync.
+TOOL_POISONING_DEFAULTS: list[dict[str, str]] = [
+    {"phrase": "~/.ssh", "severity": "critical"},
+    {"phrase": ".ssh/", "severity": "critical"},
+    {"phrase": ".ssh\\", "severity": "critical"},
+    {"phrase": "id_rsa", "severity": "critical"},
+    {"phrase": "id_ed25519", "severity": "critical"},
+    {"phrase": "authorized_keys", "severity": "critical"},
+    {"phrase": ".env", "severity": "critical"},
+    {"phrase": ".aws/credentials", "severity": "critical"},
+    {"phrase": ".aws\\credentials", "severity": "critical"},
+    {"phrase": ".azure/", "severity": "critical"},
+    {"phrase": ".azure\\", "severity": "critical"},
+    {"phrase": ".gcloud/", "severity": "critical"},
+    {"phrase": ".gcloud\\", "severity": "critical"},
+    {"phrase": ".kube/config", "severity": "critical"},
+    {"phrase": ".kube\\config", "severity": "critical"},
+    {"phrase": "credentials.json", "severity": "critical"},
+    {"phrase": "credentials.yaml", "severity": "critical"},
+    {"phrase": "credentials.yml", "severity": "critical"},
+    {"phrase": "<IMPORTANT>", "severity": "high"},
+    {"phrase": "<SYSTEM>", "severity": "high"},
+    {"phrase": "<INSTRUCTION>", "severity": "high"},
+    {"phrase": "<OVERRIDE>", "severity": "high"},
+    {"phrase": "<PRIORITY>", "severity": "high"},
+    {"phrase": "sidenote", "severity": "high"},
+    {"phrase": "hidden parameter", "severity": "high"},
+    {"phrase": "undocumented parameter", "severity": "high"},
+    {"phrase": "put the file contents", "severity": "high"},
+    {"phrase": "put file contents", "severity": "high"},
+    {"phrase": "don't tell the user", "severity": "high"},
+    {"phrase": "do not mention", "severity": "high"},
+    {"phrase": "don't mention", "severity": "high"},
+    {"phrase": "redirect all emails", "severity": "medium"},
+    {"phrase": "redirect emails to", "severity": "medium"},
+    {"phrase": "send all emails to", "severity": "medium"},
+    {"phrase": "change the recipient", "severity": "medium"},
+    {"phrase": "override the recipient", "severity": "medium"},
+]
 
-    injection_any = (
-        override_findings or leetspeak_findings or unicode_findings
-        or null_findings or path_traversal_findings or rot_findings
-    )
-    reversal_any = (
-        reversal_findings or power_findings or morse_findings or encoding_findings
-        or homoglyph_findings or multi_findings or alias_findings or jailbreak_findings
-    )
+_SEVERITY_ORDER = ("none", "low", "medium", "high", "critical")
+_SEVERITY_RANK = {name: index for index, name in enumerate(_SEVERITY_ORDER)}
+_RAISED_SEVERITY = {
+    "none": "none",
+    "low": "medium",
+    "medium": "high",
+    "high": "critical",
+    "critical": "critical",
+}
+_TIER_SEVERITY_FLOOR = {
+    "clean": "none",
+    "hostile_ux": "low",
+    "reversal": "medium",
+    "injection": "high",
+}
 
-    categories = []
-    if injection_any:
-        categories.append("injection")
-    for name, f in [
-        ("override_phrases", override_findings), ("leetspeak", leetspeak_findings),
-        ("hidden_unicode", unicode_findings), ("null_byte", null_findings),
-        ("path_traversal", path_traversal_findings),
-        ("encoding_evasion_rot", rot_findings),
-        ("power_words", power_findings), ("morse_like", morse_findings),
-        ("encoding_blocks", encoding_findings), ("homoglyphs", homoglyph_findings),
-        ("multilingual_override", multi_findings), ("semantic_aliases", alias_findings),
-        ("jailbreak_mythic", jailbreak_findings),
-    ]:
-        if f:
-            categories.append(name)
-    if reversal_any and not injection_any:
-        categories.append("reversal")
-    if reversal_findings:
-        categories.append("reversal_phrases")
-    if hostile_ux_findings and not injection_any and not reversal_any:
-        categories.append("hostile_ux")
+_FINDING_CATEGORY = {
+    "override_phrases": "override_phrases",
+    "leetspeak_phrases": "leetspeak",
+    "hidden_unicode": "hidden_unicode",
+    "null_byte": "null_byte",
+    "path_traversal": "path_traversal",
+    "encoding_evasion_rot": "encoding_evasion_rot",
+    "reversal_phrases": "reversal_phrases",
+    "power_words": "power_words",
+    "morse_like": "morse_like",
+    "encoding_blocks": "encoding_blocks",
+    "homoglyphs": "homoglyphs",
+    "multilingual_override": "multilingual_override",
+    "semantic_aliases": "semantic_aliases",
+    "jailbreak_mythic": "jailbreak_mythic",
+    "hostile_ux": "hostile_ux",
+}
+_INJECTION_FINDING_KEYS = (
+    "override_phrases",
+    "leetspeak_phrases",
+    "hidden_unicode",
+    "null_byte",
+    "path_traversal",
+    "encoding_evasion_rot",
+)
+_REVERSAL_FINDING_KEYS = (
+    "reversal_phrases",
+    "power_words",
+    "morse_like",
+    "encoding_blocks",
+    "homoglyphs",
+    "multilingual_override",
+    "semantic_aliases",
+    "jailbreak_mythic",
+)
+_CATEGORY_LOOP = (
+    "override_phrases",
+    "leetspeak_phrases",
+    "hidden_unicode",
+    "null_byte",
+    "path_traversal",
+    "encoding_evasion_rot",
+    "power_words",
+    "morse_like",
+    "encoding_blocks",
+    "homoglyphs",
+    "multilingual_override",
+    "semantic_aliases",
+    "jailbreak_mythic",
+)
 
-    tier = "injection" if injection_any else ("reversal" if reversal_any else ("hostile_ux" if hostile_ux_findings else "clean"))
-    risk_score = 1.0 if injection_any else (0.7 if reversal_any else (0.0 if hostile_ux_findings else 0.0))
 
-    findings = {
-        "override_phrases": [(p, str(ph)) for p, ph in override_findings],
-        "leetspeak_phrases": [(p, str(ph)) for p, ph in leetspeak_findings],
-        "hidden_unicode": [(p, str(cp)) for p, cp in unicode_findings],
-        "null_byte": [(p, str(ph)) for p, ph in null_findings],
-        "path_traversal": [(p, str(ph)) for p, ph in path_traversal_findings],
-        "encoding_evasion_rot": [(p, str(ph)) for p, ph in rot_findings],
-        "reversal_phrases": [(p, str(ph)) for p, ph in reversal_findings],
-        "power_words": [(p, str(ph)) for p, ph in power_findings],
-        "morse_like": [(p, str(ph)) for p, ph in morse_findings],
-        "encoding_blocks": [(p, str(ph)) for p, ph in encoding_findings],
-        "homoglyphs": [(p, str(ph)) for p, ph in homoglyph_findings],
-        "multilingual_override": [(p, str(ph)) for p, ph in multi_findings],
-        "semantic_aliases": [(p, str(ph)) for p, ph in alias_findings],
-        "jailbreak_mythic": [(p, str(ph)) for p, ph in jailbreak_findings],
-        "hostile_ux": [(p, str(ph)) for p, ph in hostile_ux_findings],
+def _max_severity(current: str, candidate: str) -> str:
+    if candidate not in _SEVERITY_RANK:
+        raise ValueError(f"unknown severity: {candidate}")
+    if current not in _SEVERITY_RANK:
+        raise ValueError(f"unknown severity: {current}")
+    if _SEVERITY_RANK[candidate] > _SEVERITY_RANK[current]:
+        return candidate
+    return current
+
+
+def _severity_for_concealment(severity: str, category: str) -> str:
+    """Hiding an instruction in a comment raises severity and never lowers it."""
+    if category == "hostile_ux":
+        return severity
+    try:
+        return _RAISED_SEVERITY[severity]
+    except KeyError as exc:
+        raise ValueError(f"unknown severity: {severity}") from exc
+
+
+def _base_severity_for_key(key: str) -> str:
+    if key in _INJECTION_FINDING_KEYS:
+        return "high"
+    if key in _REVERSAL_FINDING_KEYS:
+        return "medium"
+    if key == "hostile_ux":
+        return "low"
+    raise ValueError(f"unknown finding key: {key}")
+
+
+def _compile_poison_phrase(phrase: str) -> re.Pattern[str]:
+    """Match a registry phrase literally, with flexible whitespace.
+
+    Dotted filenames such as ``.env`` must be a whole path segment so
+    ``manifest.env`` and ``.env.example`` do not match. Instruction tags match
+    the angle-bracket form only, so the word "important" does not.
+    """
+    stripped = phrase.strip()
+    if len(stripped) >= 3 and stripped[0] == "<" and stripped[-1] == ">":
+        inner = stripped[1:-1].strip()
+        if inner:
+            return re.compile(r"<\s*" + re.escape(inner) + r"\s*>", re.IGNORECASE)
+    escaped = re.escape(stripped).replace(r"\ ", r"\s+")
+    ends_alnum = stripped[-1].isalnum()
+    if stripped.startswith("."):
+        prefix = r"(?<![\w.])"
+        suffix = r"(?![\w.])" if ends_alnum else ""
+    elif stripped[0].isalnum():
+        prefix = r"\b"
+        suffix = r"\b" if ends_alnum else ""
+    else:
+        prefix = ""
+        suffix = r"\b" if ends_alnum else ""
+    return re.compile(prefix + escaped + suffix, re.IGNORECASE)
+
+
+def _tool_poison_entries() -> list[tuple[str, str]]:
+    reg = _load_threat_registry()
+    raw = reg.get("tool_poisoning") if reg else None
+    entries = pattern_record.iter_tool_poison_phrases(raw)
+    if entries:
+        return entries
+    return pattern_record.iter_tool_poison_phrases(TOOL_POISONING_DEFAULTS)
+
+
+def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
+    """Return (offset, match, phrase, severity) for tool-poisoning phrases."""
+    findings: list[tuple[int, str, str, str]] = []
+    for phrase, severity in _tool_poison_entries():
+        for match in _compile_poison_phrase(phrase).finditer(text):
+            findings.append((match.start(), match.group(0), phrase, severity))
+    return findings
+
+
+def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
+    """Split ``<!-- ... -->`` comments out of text.
+
+    Each full comment is replaced by a single space so neighboring words do not
+    glue together. Comment bodies are returned separately as ``(start, body)``
+    where ``start`` is the index of ``<!--`` in ``text``. A missing closer runs
+    to the end of the input. One forward ``str.find`` walk stays linear when
+    many comments are left unclosed.
+    """
+    parts: list[str] = []
+    comments: list[tuple[int, str]] = []
+    cursor = 0
+    length = len(text)
+    while cursor < length:
+        start = text.find("<!--", cursor)
+        if start < 0:
+            parts.append(text[cursor:])
+            break
+        parts.append(text[cursor:start])
+        close = text.find("-->", start + 4)
+        if close < 0:
+            comments.append((start, text[start + 4 :]))
+            parts.append(" ")
+            break
+        comments.append((start, text[start + 4 : close]))
+        parts.append(" ")
+        cursor = close + 3
+    return "".join(parts), comments
+
+
+def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
+    return {
+        "override_phrases": scan_override_phrases(prepared),
+        "leetspeak_phrases": scan_leetspeak(prepared),
+        "hidden_unicode": scan_hidden_unicode(raw),
+        "null_byte": scan_null_bytes(raw),
+        "path_traversal": scan_path_traversal(prepared),
+        "encoding_evasion_rot": _check_rot_decode(prepared),
+        "reversal_phrases": scan_reversal_phrases(prepared),
+        "power_words": scan_power_words(prepared),
+        "morse_like": scan_morse_like(prepared),
+        "encoding_blocks": scan_encoding_blocks(prepared),
+        "homoglyphs": scan_homoglyphs(prepared),
+        "multilingual_override": scan_multilingual_override(prepared),
+        "semantic_aliases": scan_semantic_aliases(prepared),
+        "jailbreak_mythic": scan_jailbreak_mythic(prepared),
+        "hostile_ux": scan_hostile_ux(prepared),
     }
 
-    return {"tier": tier, "findings": findings, "risk_score": risk_score, "categories": categories}
+
+def _location_record(
+    *,
+    category: str,
+    offset: int,
+    match: str,
+    segment: str,
+    source_offset: int,
+    severity: str,
+    base_severity: str,
+    phrase: str | None = None,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "category": category,
+        "offset": offset,
+        "match": match,
+        "segment": segment,
+        "source_offset": source_offset,
+        "severity": severity,
+        "base_severity": base_severity,
+    }
+    if phrase is not None:
+        record["phrase"] = phrase
+    return record
+
+
+def reconcile_severity(result: dict) -> None:
+    """Keep the reported severity at least as high as the tier floor."""
+    tier = result.get("tier", "clean")
+    floor = _TIER_SEVERITY_FLOOR.get(tier, "none")
+    current = result.get("severity", "none")
+    if not isinstance(current, str):
+        current = "none"
+    result["severity"] = _max_severity(current, floor)
+
+
+def classify(text: str) -> dict:
+    scp_limits.assert_within_limit(text, what="classify content")
+    visible, comments = extract_html_comments(text)
+    segments: list[tuple[str, int, str]] = [("text", 0, visible)]
+    for start, body in comments:
+        if body.strip():
+            segments.append(("html_comment", start, body))
+
+    legacy: dict[str, list[tuple[int, str]]] = {key: [] for key in _FINDING_CATEGORY}
+    poison_notes: list[dict[str, object]] = []
+    concealed_notes: list[dict[str, object]] = []
+    severities: list[str] = []
+
+    for segment, source_offset, raw in segments:
+        prepared = _prepare_text_for_scan(raw)
+        for key, hits in _scan_finding_groups(raw, prepared).items():
+            base = _base_severity_for_key(key)
+            severity = base if segment == "text" else _severity_for_concealment(base, key)
+            category = _FINDING_CATEGORY[key]
+            for offset, phrase in hits:
+                legacy[key].append((offset, str(phrase)))
+                severities.append(severity)
+                if segment == "html_comment":
+                    concealed_notes.append(
+                        _location_record(
+                            category=category,
+                            offset=offset,
+                            match=str(phrase),
+                            segment=segment,
+                            source_offset=source_offset,
+                            severity=severity,
+                            base_severity=base,
+                        )
+                    )
+        for offset, match, phrase, base in scan_tool_poisoning(prepared):
+            severity = base if segment == "text" else _severity_for_concealment(base, "tool_poisoning")
+            note = _location_record(
+                category="tool_poisoning",
+                offset=offset,
+                match=match,
+                segment=segment,
+                source_offset=source_offset,
+                severity=severity,
+                base_severity=base,
+                phrase=phrase,
+            )
+            poison_notes.append(note)
+            severities.append(severity)
+            if segment == "html_comment":
+                concealed_notes.append(note)
+
+    injection_any = any(legacy[key] for key in _INJECTION_FINDING_KEYS) or any(
+        severity in ("high", "critical") for severity in severities
+    )
+    reversal_any = any(legacy[key] for key in _REVERSAL_FINDING_KEYS) or any(
+        severity == "medium" for severity in severities
+    )
+    hostile_only = bool(legacy["hostile_ux"]) and not injection_any and not reversal_any
+
+    categories: list[str] = []
+    if injection_any:
+        categories.append("injection")
+    for key in _CATEGORY_LOOP:
+        if legacy[key]:
+            categories.append(_FINDING_CATEGORY[key])
+    if reversal_any and not injection_any:
+        categories.append("reversal")
+    if legacy["reversal_phrases"]:
+        categories.append("reversal_phrases")
+    if hostile_only:
+        categories.append("hostile_ux")
+    if poison_notes:
+        categories.append("tool_poisoning")
+    if concealed_notes:
+        categories.append("html_comment")
+
+    if injection_any:
+        tier = "injection"
+        risk_score = 1.0
+    elif reversal_any:
+        tier = "reversal"
+        risk_score = 0.7
+    elif legacy["hostile_ux"]:
+        tier = "hostile_ux"
+        risk_score = 0.0
+    else:
+        tier = "clean"
+        risk_score = 0.0
+
+    severity = "none"
+    for item in severities:
+        severity = _max_severity(severity, item)
+
+    findings = {
+        "override_phrases": legacy["override_phrases"],
+        "leetspeak_phrases": legacy["leetspeak_phrases"],
+        "hidden_unicode": legacy["hidden_unicode"],
+        "null_byte": legacy["null_byte"],
+        "path_traversal": legacy["path_traversal"],
+        "encoding_evasion_rot": legacy["encoding_evasion_rot"],
+        "reversal_phrases": legacy["reversal_phrases"],
+        "power_words": legacy["power_words"],
+        "morse_like": legacy["morse_like"],
+        "encoding_blocks": legacy["encoding_blocks"],
+        "homoglyphs": legacy["homoglyphs"],
+        "multilingual_override": legacy["multilingual_override"],
+        "semantic_aliases": legacy["semantic_aliases"],
+        "jailbreak_mythic": legacy["jailbreak_mythic"],
+        "hostile_ux": legacy["hostile_ux"],
+        "tool_poisoning": poison_notes,
+        "html_comment": concealed_notes,
+    }
+    result = {
+        "tier": tier,
+        "findings": findings,
+        "risk_score": risk_score,
+        "categories": categories,
+        "severity": severity,
+    }
+    reconcile_severity(result)
+    return result

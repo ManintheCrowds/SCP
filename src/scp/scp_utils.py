@@ -99,6 +99,8 @@ def inspect(content: str, context: str | None = None) -> dict:
             result["risk_score"] = min(1.0, result.get("risk_score", 0.0) + risk_boost)
     result["structural"] = structural
 
+    sanitize_input.reconcile_severity(result)
+
     tier = result.get("tier", "clean")
     hook_meta = encounter_auto_log.maybe_log_encounter(content, tier)
     if hook_meta:
