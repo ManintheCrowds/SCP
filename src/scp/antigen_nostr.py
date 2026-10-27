@@ -783,22 +783,25 @@ def fetch_payload(
         raise FetchError("invalid_l402_token") from exc
 
     if resp.status_code == 402:
-        meta = _build_l402_metadata(resp)
-        antigen._audit(
-            "fetch_l402_challenge",
-            url_host=parsed.netloc,
-            payload_hash=f"sha256:{expected_hash_bare_hex}",
-            invoice_hint=meta.get("invoice_hint"),
-            antigen_id=antigen_id,
-        )
-        if token:
+        try:
+            meta = _build_l402_metadata(resp)
             antigen._audit(
-                "fetch_l402_retry_failed",
+                "fetch_l402_challenge",
                 url_host=parsed.netloc,
                 payload_hash=f"sha256:{expected_hash_bare_hex}",
                 invoice_hint=meta.get("invoice_hint"),
                 antigen_id=antigen_id,
             )
+            if token:
+                antigen._audit(
+                    "fetch_l402_retry_failed",
+                    url_host=parsed.netloc,
+                    payload_hash=f"sha256:{expected_hash_bare_hex}",
+                    invoice_hint=meta.get("invoice_hint"),
+                    antigen_id=antigen_id,
+                )
+        finally:
+            resp.close()
         raise FetchError("payment_required", status=402, l402=meta)
 
     return _process_fetch_response(
