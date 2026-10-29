@@ -103,6 +103,32 @@ def test_quarantine_evicts_oldest_when_over_total(tmp_path, monkeypatch) -> None
     assert (tmp_path / f"{out['quarantine_id']}.txt").is_file()
 
 
+def test_quarantine_eviction_preserves_new_write_with_future_dated_existing_entries(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "1000")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+
+    future_mtime = 4_000_000_000
+    for qid, body in (("aaaaaaaa", "a" * 400), ("bbbbbbbb", "b" * 400)):
+        (tmp_path / f"{qid}.txt").write_text(body, encoding="utf-8")
+        (tmp_path / f"{qid}.json").write_text(
+            '{"quarantine_id": "%s", "reason": "old", "source": "t"}' % qid,
+            encoding="utf-8",
+        )
+        os.utime(tmp_path / f"{qid}.txt", (future_mtime, future_mtime))
+        os.utime(tmp_path / f"{qid}.json", (future_mtime, future_mtime))
+
+    out = scp_utils.quarantine("new" * 30, reason="r", source="s")
+    content_path = tmp_path / f"{out['quarantine_id']}.txt"
+
+    assert content_path.read_text(encoding="utf-8") == "new" * 30
+    assert content_path.with_suffix(".json").is_file()
+
+
 def test_quarantine_impossible_write_does_not_evict_existing_entries(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
     monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "100")
