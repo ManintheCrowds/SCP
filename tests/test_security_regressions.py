@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 
 import pytest
 
-from scp import mask_secrets, sanitize_input, scp_utils
+from scp import mask_secrets, quarantine_limits, sanitize_input, scp_utils
 
 
 def test_contain_markdown_uses_longer_fence_than_payload() -> None:
@@ -125,6 +126,198 @@ def test_quarantine_eviction_does_not_delete_newly_returned_pair(tmp_path, monke
     assert (tmp_path / f"{out['quarantine_id']}.json").is_file()
     assert not old_txt.exists()
     assert not old_json.exists()
+
+
+def test_quarantine_evicts_old_entries_not_the_new_write_with_future_mtimes(
+    tmp_path, monkeypatch
+) -> None:
+    """Same scenario as PR #74: several future-dated pairs, keep the new write."""
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "1000")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    future = time.time() + 86400
+    for qid, body in (("aaaaaaaa", "a" * 400), ("bbbbbbbb", "b" * 400)):
+        (tmp_path / f"{qid}.txt").write_text(body, encoding="utf-8")
+        (tmp_path / f"{qid}.json").write_text(
+            '{"quarantine_id": "%s", "reason": "old", "source": "t"}' % qid,
+            encoding="utf-8",
+        )
+        os.utime(tmp_path / f"{qid}.txt", (future, future))
+        os.utime(tmp_path / f"{qid}.json", (future, future))
+
+    out = scp_utils.quarantine("new" * 30, reason="r", source="s")
+
+    assert (tmp_path / f"{out['quarantine_id']}.txt").is_file()
+    remaining_old = [
+        qid
+        for qid in ("aaaaaaaa", "bbbbbbbb")
+        if (tmp_path / f"{qid}.txt").is_file()
+    ]
+    assert len(remaining_old) == 1
+
+
+def test_quarantine_equal_mtime_does_not_evict_the_new_pair(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "600")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "650")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    stamp = 1_700_000_000.0
+    old_txt = tmp_path / "aaaaaaaa.txt"
+    old_json = tmp_path / "aaaaaaaa.json"
+    old_txt.write_text("a" * 500, encoding="utf-8")
+    old_json.write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "old", "source": "t"}',
+        encoding="utf-8",
+    )
+    os.utime(old_txt, (stamp, stamp))
+    os.utime(old_json, (stamp, stamp))
+    real_replace = os.replace
+
+    def stamped_replace(src, dst):
+        real_replace(src, dst)
+        os.utime(dst, (stamp, stamp))
+
+    monkeypatch.setattr(os, "replace", stamped_replace)
+
+    out = scp_utils.quarantine("n" * 150, reason="r", source="s")
+
+    assert (tmp_path / f"{out['quarantine_id']}.txt").is_file()
+    assert (tmp_path / f"{out['quarantine_id']}.json").is_file()
+    assert not old_txt.exists()
+    assert not old_json.exists()
+
+
+def test_quarantine_failure_removes_new_pair_and_keeps_existing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "10000")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "100000")
+    old_txt = tmp_path / "aaaaaaaa.txt"
+    old_json = tmp_path / "aaaaaaaa.json"
+    old_txt.write_text("old quarantine evidence", encoding="utf-8")
+    old_json.write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "old", "source": "t"}',
+        encoding="utf-8",
+    )
+
+    def boom(*_args, **_kwargs):
+        raise ValueError("forced failure")
+
+    monkeypatch.setattr(quarantine_limits, "enforce_quarantine_limits", boom)
+    with pytest.raises(ValueError, match="forced failure"):
+        scp_utils.quarantine("hello", reason="r", source="s")
+
+    assert old_txt.read_text(encoding="utf-8") == "old quarantine evidence"
+    assert old_json.is_file()
+    assert list(tmp_path.glob("*.txt")) == [old_txt]
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_quarantine_partial_replace_leaves_no_orphan(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    real_replace = os.replace
+
+    def fail_meta_replace(src, dst):
+        if str(dst).endswith(".json"):
+            raise OSError("meta replace failed")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_meta_replace)
+    with pytest.raises(OSError, match="meta replace failed"):
+        scp_utils.quarantine("hello", reason="r", source="s")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_retention_does_not_purge_the_pair_just_written(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_RETENTION_DAYS_ON_WRITE", "1")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "10000")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "100000")
+    old_ts = time.time() - 10 * 86400
+    old_txt = tmp_path / "aaaaaaaa.txt"
+    old_json = tmp_path / "aaaaaaaa.json"
+    old_txt.write_text("old", encoding="utf-8")
+    old_json.write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "old", "source": "t"}',
+        encoding="utf-8",
+    )
+    os.utime(old_txt, (old_ts, old_ts))
+    os.utime(old_json, (old_ts, old_ts))
+    real_replace = os.replace
+
+    def backdate(src, dst):
+        real_replace(src, dst)
+        os.utime(dst, (old_ts, old_ts))
+
+    monkeypatch.setattr(os, "replace", backdate)
+    out = scp_utils.quarantine("kept", reason="r", source="s")
+    assert (tmp_path / f"{out['quarantine_id']}.txt").is_file()
+    assert (tmp_path / f"{out['quarantine_id']}.json").is_file()
+    assert not old_txt.exists()
+    assert not old_json.exists()
+
+
+def test_evict_skips_deletion_when_protected_pair_cannot_fit(tmp_path) -> None:
+    old_txt = tmp_path / "aaaaaaaa.txt"
+    old_json = tmp_path / "aaaaaaaa.json"
+    old_txt.write_text("a" * 200, encoding="utf-8")
+    old_json.write_text("{}", encoding="utf-8")
+    new_txt = tmp_path / "bbbbbbbb.txt"
+    new_json = tmp_path / "bbbbbbbb.json"
+    new_txt.write_text("b" * 800, encoding="utf-8")
+    new_json.write_text("{}", encoding="utf-8")
+    freed = quarantine_limits.evict_oldest_until_under(
+        tmp_path,
+        100,
+        layout_subdirs=frozenset(),
+        protected_pair=(tmp_path, "bbbbbbbb"),
+    )
+    assert freed == 0
+    assert old_txt.is_file()
+    assert new_txt.is_file()
+
+
+def test_concurrent_quarantine_writes_do_not_overlap_eviction(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", "5000")
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    active = {"n": 0, "max": 0}
+    gate = threading.Lock()
+    real_enforce = quarantine_limits.enforce_quarantine_limits
+
+    def tracking_enforce(*args, **kwargs):
+        with gate:
+            active["n"] += 1
+            active["max"] = max(active["max"], active["n"])
+        try:
+            time.sleep(0.05)
+            return real_enforce(*args, **kwargs)
+        finally:
+            with gate:
+                active["n"] -= 1
+
+    monkeypatch.setattr(quarantine_limits, "enforce_quarantine_limits", tracking_enforce)
+    errors: list[str] = []
+
+    def worker(idx: int) -> None:
+        try:
+            out = scp_utils.quarantine("c" * 40, reason="r", source=str(idx))
+            path = tmp_path / f"{out['quarantine_id']}.txt"
+            if not path.is_file():
+                errors.append(f"missing {path.name}")
+        except Exception as exc:
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert not errors
+    assert active["max"] == 1
+    assert len(list(tmp_path.glob("*.txt"))) == 4
 
 
 def test_quarantine_impossible_write_does_not_evict_existing_entries(tmp_path, monkeypatch) -> None:

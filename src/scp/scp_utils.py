@@ -6,6 +6,7 @@ import importlib.metadata
 import json
 import os
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -19,6 +20,8 @@ from . import scp_semantic_judge
 from . import encounter_auto_log
 
 _QUARANTINE_ID_RE = re.compile(r"^[a-f0-9-]{1,36}$")
+# Serializes commit+eviction so one write cannot delete another's just-committed pair.
+_QUARANTINE_WRITE_LOCK = threading.Lock()
 
 # Layout used only by registry_fetch → apply_merge; not exposed on core MCP scp_quarantine.
 REGISTRY_FETCH_LAYOUT = "registry_fetch"
@@ -181,6 +184,17 @@ def quarantine(
     layout: str | None = None,
 ) -> dict:
     """Quarantine content. ``layout`` is internal-only (e.g. registry_fetch); MCP must not pass it."""
+    with _QUARANTINE_WRITE_LOCK:
+        return _quarantine_locked(content, reason, source, layout=layout)
+
+
+def _quarantine_locked(
+    content: str,
+    reason: str,
+    source: str,
+    *,
+    layout: str | None = None,
+) -> dict:
     root = _quarantine_dir()
     if layout is None:
         qdir = root
