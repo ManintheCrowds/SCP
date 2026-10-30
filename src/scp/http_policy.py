@@ -131,6 +131,8 @@ def _hostname_is_blocked(hostname: str) -> bool:
     try:
         ip = ipaddress.ip_address(h)
     except ValueError:
+        if _looks_like_legacy_ipv4_literal(h):
+            return True
         # Not an IP literal — still block obvious metadata DNS names.
         if "169.254.169.254" in h:
             return True
@@ -140,6 +142,50 @@ def _hostname_is_blocked(hostname: str) -> bool:
     if ip.version == 4 and str(ip) == "169.254.169.254":
         return True
     return False
+
+
+def _legacy_ipv4_component(part: str, max_value: int) -> int | None:
+    if not part:
+        return None
+    s = part.lower()
+    base = 10
+    digits = s
+    if s.startswith("0x"):
+        base = 16
+        digits = s[2:]
+        if not digits or not re.fullmatch(r"[0-9a-f]+", digits):
+            return None
+    elif len(s) > 1 and s.startswith("0"):
+        base = 8
+        digits = s[1:] or "0"
+        if not re.fullmatch(r"[0-7]+", digits):
+            return None
+    elif not re.fullmatch(r"[0-9]+", digits):
+        return None
+    try:
+        value = int(digits, base)
+    except ValueError:
+        return None
+    if value > max_value:
+        return None
+    return value
+
+
+def _looks_like_legacy_ipv4_literal(hostname: str) -> bool:
+    """Reject inet_aton-style numeric hosts that may resolve to private IPs."""
+    parts = hostname.split(".")
+    if not 1 <= len(parts) <= 4:
+        return False
+    max_values = {
+        1: (0xFFFFFFFF,),
+        2: (0xFF, 0xFFFFFF),
+        3: (0xFF, 0xFF, 0xFFFF),
+        4: (0xFF, 0xFF, 0xFF, 0xFF),
+    }[len(parts)]
+    return all(
+        _legacy_ipv4_component(part, max_value) is not None
+        for part, max_value in zip(parts, max_values)
+    )
 
 
 def relay_url_safe(url: str) -> bool:

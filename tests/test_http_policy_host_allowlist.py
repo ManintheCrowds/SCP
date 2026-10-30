@@ -44,6 +44,22 @@ def test_private_ip_denied_even_when_allowlisted():
     assert http_policy.host_allowed("https://169.254.1.1/x", ["169.254.1.1"]) is False
 
 
+def test_public_ip_allowed_when_explicitly_allowlisted():
+    assert http_policy.host_allowed("https://8.8.8.8/x", ["8.8.8.8"]) is True
+
+
+@pytest.mark.parametrize(
+    "url, host",
+    [
+        ("https://2130706433/x", "2130706433"),
+        ("https://127.1/x", "127.1"),
+        ("https://2852039166/x", "2852039166"),
+    ],
+)
+def test_legacy_numeric_ipv4_denied_even_when_allowlisted(url, host):
+    assert http_policy.host_allowed(url, [host]) is False
+
+
 def test_loopback_mismatch_denied():
     # Shape reject (backslash) — dial never matches allowlisted parse host.
     url = r"https://127.0.0.1:9\@example.com/x"
