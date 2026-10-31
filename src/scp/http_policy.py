@@ -9,6 +9,7 @@ import ipaddress
 import os
 import re
 import socket
+import ssl
 import unicodedata
 from urllib.parse import unquote, urlparse
 
@@ -48,9 +49,38 @@ def env_tls_verify(var: str = REGISTRY_TLS_VERIFY_ENV, *, default: str = "1") ->
     return os.environ.get(var, default).strip().lower() not in ("0", "false", "no")
 
 
+def _has_control_chars(value: str) -> bool:
+    """True for NUL and every other Unicode control character (category Cc)."""
+    return any(unicodedata.category(char) == "Cc" for char in value)
+
+
+def _has_zone_suffix(hostname: str) -> bool:
+    """True when an IPv6 zone id is still present (raw or still encoded)."""
+    return "%" in (hostname or "")
+
+
+_PROXY_ENV_VARS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
+
+
+def proxy_env_configured() -> bool:
+    """True when an ambient proxy variable is set, in either case."""
+    return any((os.environ.get(name) or "").strip() for name in _PROXY_ENV_VARS)
+
+
 def url_shape_ok(url: str) -> bool:
-    """Reject backslash and userinfo before any dial-host comparison."""
-    if not url or "\\" in url:
+    """Reject backslash and userinfo before any dial-host comparison.
+
+    Control characters are rejected on the raw string, before ``urlparse``,
+    so a NUL cannot truncate the host into a loopback name.
+    """
+    if not url or _has_control_chars(url) or "\\" in url:
         return False
     try:
         parsed = urlparse(url)
@@ -158,10 +188,10 @@ def _normalize_hostname(hostname: str) -> str:
 
 
 def _host_has_forbidden_chars(hostname: str) -> bool:
-    if "%" in hostname:
+    if _has_zone_suffix(hostname) or _has_control_chars(hostname):
         return True
     for char in hostname:
-        if char in " \t\r\n\\/@#?" or ord(char) < 32:
+        if char in " \t\r\n\\/@#?":
             return True
     return False
 
@@ -199,15 +229,33 @@ def _embedded_ipv4s(ip: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
 
 
 def _ipv4_address_is_blocked(ip: ipaddress.IPv4Address) -> bool:
-    # ``not is_global`` covers private, loopback, link-local, and reserved space.
-    # CGNAT is neither global nor private here; multicast is still marked global.
-    return ip.is_multicast or ip in _CGNAT or not ip.is_global
+    # Flags are explicit because some special ranges still report ``is_global``.
+    # CGNAT is neither global nor private here.
+    return (
+        ip.is_multicast
+        or ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_unspecified
+        or ip.is_reserved
+        or ip in _CGNAT
+        or not ip.is_global
+    )
 
 
 def _address_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     if isinstance(ip, ipaddress.IPv4Address):
         return _ipv4_address_is_blocked(ip)
-    if ip.is_multicast or ip.is_site_local or ip.is_reserved or not ip.is_global:
+    if (
+        ip.is_multicast
+        or ip.is_site_local
+        or ip.is_reserved
+        or ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_unspecified
+        or not ip.is_global
+    ):
         return True
     return any(_ipv4_address_is_blocked(embedded) for embedded in _embedded_ipv4s(ip))
 
@@ -268,8 +316,11 @@ def resolved_url_blocked(url: str) -> bool:
     """True when the URL host is blocked as a literal or via its resolved addresses.
 
     Unresolvable names are blocked so a failed lookup cannot fall through to a
-    later dial. Exact loopback URLs stay allowed.
+    later dial. Exact loopback URLs stay allowed. Control characters are
+    rejected before parsing so a NUL cannot truncate the host.
     """
+    if not url or _has_control_chars(url):
+        return True
     try:
         parsed = urlparse(url)
     except Exception:
@@ -296,8 +347,15 @@ def resolved_addresses_blocked(hostname: str, port: int) -> bool:
 
     Raises ``socket.gaierror`` when a non-literal name does not resolve.
     Exact loopback names (``localhost``, ``127.0.0.1``, ``::1``) may resolve
-    to loopback. Legacy numeric aliases are blocked before resolution.
+    to loopback. Legacy numeric aliases, control characters, and zone suffixes
+    are blocked before resolution.
     """
+    if (
+        _has_control_chars(hostname)
+        or _has_control_chars(str(port))
+        or _has_zone_suffix(hostname)
+    ):
+        return True
     if not _exact_loopback_name(hostname) and _hostname_is_blocked(hostname):
         return True
     family = urllib3_connection.allowed_gai_family()
@@ -305,25 +363,32 @@ def resolved_addresses_blocked(hostname: str, port: int) -> bool:
     return _records_include_blocked(hostname, records)
 
 
-def _open_pinned_socket(conn: HTTPConnection) -> socket.socket:
-    """Dial an address from one validated lookup of the original host.
+def connect_validated_tcp(
+    hostname: str,
+    port: int,
+    timeout: object = None,
+    *,
+    source_address: tuple[str, int] | None = None,
+    socket_options: object | None = None,
+) -> socket.socket:
+    """Resolve once, refuse blocked addresses, and connect to a checked IP.
 
-    The follow-up connect uses that address literal, not the hostname, so a
-    DNS rebinding cannot change the target between check and TCP connect.
+    The socket is connected to an address from this lookup, not to the
+    hostname, so a later resolver answer cannot retarget the dial. Control
+    characters and zone suffixes are rejected before ``getaddrinfo``.
     """
-    host = conn._dns_host
-    if host.startswith("["):
-        host = host.strip("[]")
-    port = conn.port
-    if not _exact_loopback_name(host) and _hostname_is_blocked(host):
-        raise NewConnectionError(conn, "destination address is blocked")
-    try:
-        family = urllib3_connection.allowed_gai_family()
-        records = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise NameResolutionError(conn.host, conn, exc) from exc
-    if _records_include_blocked(host, records):
-        raise NewConnectionError(conn, "destination address is blocked")
+    if (
+        _has_control_chars(hostname)
+        or _has_control_chars(str(port))
+        or _has_zone_suffix(hostname)
+    ):
+        raise OSError("destination address is blocked")
+    if not _exact_loopback_name(hostname) and _hostname_is_blocked(hostname):
+        raise OSError("destination address is blocked")
+    family = urllib3_connection.allowed_gai_family()
+    records = socket.getaddrinfo(hostname, port, family, socket.SOCK_STREAM)
+    if _records_include_blocked(hostname, records):
+        raise OSError("destination address is blocked")
 
     last_error: OSError | None = None
     for record in records:
@@ -333,15 +398,43 @@ def _open_pinned_socket(conn: HTTPConnection) -> socket.socket:
         try:
             return urllib3_connection.create_connection(
                 (ip, dest_port),
-                conn.timeout,
-                source_address=conn.source_address,
-                socket_options=conn.socket_options,
+                timeout,
+                source_address=source_address,
+                socket_options=socket_options,
             )
         except OSError as exc:
             last_error = exc
-    raise NewConnectionError(
-        conn, f"Failed to establish a new connection: {last_error}"
-    )
+    raise OSError(f"Failed to establish a new connection: {last_error}")
+
+
+def wrap_tls_sni(sock: socket.socket, hostname: str) -> socket.socket:
+    """TLS-wrap a pinned socket, keeping SNI and hostname checks on ``hostname``."""
+    context = ssl.create_default_context()
+    return context.wrap_socket(sock, server_hostname=hostname)
+
+
+def _open_pinned_socket(conn: HTTPConnection) -> socket.socket:
+    """Dial an address from one validated lookup of the original host."""
+    host = conn._dns_host
+    if host.startswith("["):
+        host = host.strip("[]")
+    try:
+        return connect_validated_tcp(
+            host,
+            int(conn.port),
+            conn.timeout,
+            source_address=conn.source_address,
+            socket_options=conn.socket_options,
+        )
+    except socket.gaierror as exc:
+        raise NameResolutionError(conn.host, conn, exc) from exc
+    except OSError as exc:
+        message = str(exc)
+        if "blocked" in message:
+            raise NewConnectionError(conn, "destination address is blocked") from exc
+        raise NewConnectionError(
+            conn, f"Failed to establish a new connection: {exc}"
+        ) from exc
 
 
 class _PinnedHTTPConnection(HTTPConnection):
@@ -434,28 +527,71 @@ def pubkey_entries(allowlist: list[str] | None) -> list[str]:
     return out
 
 
+def _reject_proxy_env_if_trusted(sess: requests.Session) -> None:
+    """Fail closed when ambient proxies are set and ``trust_env`` is still on.
+
+    ``trust_env=False`` is what stops environment proxies and ``.netrc`` auth.
+    A socks5h (or socks4a) proxy would resolve the target name itself, so the
+    hardened session never dials through one.
+    """
+    if getattr(sess, "trust_env", True) and proxy_env_configured():
+        raise requests.ConnectionError("proxy environment is not allowed")
+    sess.trust_env = False
+    proxies = getattr(sess, "proxies", None)
+    if isinstance(proxies, dict):
+        proxies.clear()
+
+
 def outbound_session(session: requests.Session | None = None) -> requests.Session:
     """Session that ignores ambient proxies, refuses redirects, and pins DNS.
 
     Redirects are forced off even if a caller passes ``allow_redirects=True``.
     TCP connects only to addresses checked in that same lookup, so a DNS
     rebinding between check and connect cannot retarget the dial.
+    ``trust_env`` stays false, including across later sends, so environment
+    proxies and ``.netrc`` are not read. If something turns ``trust_env`` back
+    on while a proxy variable is set, the send fails closed.
     """
     sess = session or requests.Session()
     sess.trust_env = False
-    if getattr(sess, "_scp_outbound_hardened", False):
+    proxies = getattr(sess, "proxies", None)
+    if isinstance(proxies, dict):
+        proxies.clear()
+    elif proxies is None:
+        try:
+            sess.proxies = {}
+        except (AttributeError, TypeError):
+            pass
+    if getattr(sess, "_scp_outbound_hardened", False) is True:
         return sess
     mount = getattr(sess, "mount", None)
     if callable(mount):
         adapter = _PinnedHTTPAdapter()
         mount("https://", adapter)
         mount("http://", adapter)
+    request = getattr(sess, "request", None)
+    if callable(request):
+
+        def _request_hardened(method, url, *args, **kwargs):
+            if url is not None and _has_control_chars(str(url)):
+                raise requests.ConnectionError("destination address is blocked")
+            _reject_proxy_env_if_trusted(sess)
+            kwargs["allow_redirects"] = False
+            kwargs["proxies"] = {}
+            return request(method, url, *args, **kwargs)
+
+        sess.request = _request_hardened  # type: ignore[method-assign]
     send = getattr(sess, "send", None)
     if callable(send):
 
-        def _send_without_redirects(request, **kwargs):
+        def _send_without_redirects(prepared, **kwargs):
+            raw_url = getattr(prepared, "url", "") or ""
+            if raw_url and _has_control_chars(str(raw_url)):
+                raise requests.ConnectionError("destination address is blocked")
+            _reject_proxy_env_if_trusted(sess)
             kwargs["allow_redirects"] = False
-            return send(request, **kwargs)
+            kwargs["proxies"] = {}
+            return send(prepared, **kwargs)
 
         sess.send = _send_without_redirects  # type: ignore[method-assign]
     try:

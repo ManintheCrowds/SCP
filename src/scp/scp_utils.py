@@ -213,6 +213,7 @@ def _quarantine_locked(
         content_bytes,
         meta_bytes,
         layout_subdirs=_ALLOWED_QUARANTINE_LAYOUTS,
+        protected_pair=(qdir, qid),
     )
     try:
         tmp_content_path.write_text(content, encoding="utf-8", errors="replace")

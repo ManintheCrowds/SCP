@@ -7,6 +7,8 @@ import os
 import socket
 from urllib.parse import urlparse
 
+from . import http_policy
+
 _DEFAULT_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
@@ -35,15 +37,28 @@ def _host_in_allowlist(host: str, extra: set[str]) -> bool:
     return False
 
 
+def _reject_blocked_ollama_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address, shown: str) -> None:
+    if ip.is_loopback:
+        return
+    if http_policy._address_is_blocked(ip):
+        raise ValueError(
+            f"Host resolves to disallowed address {shown} (private/link-local); "
+            "adjust OLLAMA_ALLOWED_HOSTS or disable OLLAMA_URL_STRICT for trusted LAN only"
+        )
+
+
 def _enforce_strict_resolved_ips(host: str, port: int) -> None:
     if not _strict_resolution_enabled():
         return
     norm = _normalize_host(host)
+    if http_policy._has_control_chars(norm) or http_policy._has_zone_suffix(norm):
+        raise ValueError("Ollama URL host is not allowed")
     try:
-        ipaddress.ip_address(norm)
+        literal = ipaddress.ip_address(norm)
     except ValueError:
-        pass
-    else:
+        literal = None
+    if literal is not None:
+        _reject_blocked_ollama_ip(literal, str(literal))
         return
 
     try:
@@ -54,16 +69,10 @@ def _enforce_strict_resolved_ips(host: str, port: int) -> None:
     for _fam, _typ, _proto, _canon, sockaddr in infos:
         ip_str = sockaddr[0]
         try:
-            ip = ipaddress.ip_address(ip_str)
+            ip = ipaddress.ip_address(ip_str.split("%", 1)[0])
         except ValueError:
             continue
-        if ip.is_loopback:
-            continue
-        if ip.is_private or ip.is_link_local:
-            raise ValueError(
-                f"Host resolves to disallowed address {ip_str} (private/link-local); "
-                "adjust OLLAMA_ALLOWED_HOSTS or disable OLLAMA_URL_STRICT for trusted LAN only"
-            )
+        _reject_blocked_ollama_ip(ip, ip_str)
 
 
 def validate_ollama_base_url(url: str) -> str:

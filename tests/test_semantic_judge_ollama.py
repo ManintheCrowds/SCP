@@ -37,6 +37,9 @@ class _FakeSession:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         return None
 
+    def close(self) -> None:
+        return None
+
     def post(self, endpoint: str, **kwargs: object) -> MagicMock:
         self.post_kwargs = kwargs
         return self.response
@@ -67,7 +70,7 @@ class TestSemanticJudgeOllamaUrl(unittest.TestCase):
     def test_ollama_post_disables_redirects_and_proxy_environment(self) -> None:
         resp = MagicMock()
         fake_session = _FakeSession(resp)
-        with patch("scp.scp_semantic_judge.requests.Session", return_value=fake_session):
+        with patch("scp.http_policy.requests.Session", return_value=fake_session):
             out = _post_ollama(
                 "http://127.0.0.1:11434/api/generate",
                 {"model": "m", "prompt": "p", "stream": False},
