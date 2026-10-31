@@ -407,19 +407,57 @@ def _require_websocket_client():
     return websocket
 
 
+def _open_relay_connection(ws, relay: str, timeout: float):
+    """Connect to a validated address. SNI stays the URL host. Proxies stay off.
+
+    One lookup is used for the TCP socket. websocket-client receives that
+    socket, so it does not resolve again and does not honor ambient proxies
+    (including remote-resolving socks5h).
+    """
+    if http_policy._has_control_chars(relay):
+        raise OSError("destination address is blocked")
+    parsed = urlparse(relay)
+    host = parsed.hostname
+    if not host:
+        raise OSError("destination address is blocked")
+    if parsed.port is not None:
+        port = parsed.port
+    elif parsed.scheme == "wss":
+        port = 443
+    elif parsed.scheme == "ws":
+        port = 80
+    else:
+        raise OSError("destination address is blocked")
+    sock = http_policy.connect_validated_tcp(host, port, timeout)
+    try:
+        if parsed.scheme == "wss":
+            sock = http_policy.wrap_tls_sni(sock, host)
+        return ws.create_connection(
+            relay,
+            timeout=timeout,
+            socket=sock,
+            redirect_limit=0,
+            http_no_proxy=["*"],
+        )
+    except Exception:
+        try:
+            sock.close()
+        except OSError:
+            pass
+        raise
+
+
 class WebSocketRelayTransport:
     def publish(self, event: dict, *, relays: tuple[str, ...]) -> None:
         ws = _require_websocket_client()
         msg = json.dumps(["EVENT", event])
         errors: list[str] = []
         for relay in relays:
-            if not http_policy.relay_url_safe(relay) or http_policy.resolved_url_blocked(
-                relay
-            ):
+            if not http_policy.relay_url_safe(relay):
                 errors.append(f"{relay}: relay_blocked")
                 continue
             try:
-                conn = ws.create_connection(relay, timeout=10, redirect_limit=0)
+                conn = _open_relay_connection(ws, relay, 10)
                 try:
                     conn.send(msg)
                     conn.recv()
@@ -441,14 +479,10 @@ class WebSocketRelayTransport:
         for relay in relays:
             if time.time() >= deadline:
                 break
-            if not http_policy.relay_url_safe(relay) or http_policy.resolved_url_blocked(
-                relay
-            ):
+            if not http_policy.relay_url_safe(relay):
                 continue
             try:
-                conn = ws.create_connection(
-                    relay, timeout=min(10, timeout_s), redirect_limit=0
-                )
+                conn = _open_relay_connection(ws, relay, min(10, timeout_s))
                 try:
                     conn.settimeout(max(0.5, deadline - time.time()))
                     conn.send(req)

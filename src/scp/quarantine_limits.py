@@ -152,6 +152,56 @@ def _is_protected(pair_dir: Path, qid: str, protected: tuple[Path, str] | None) 
         return (pair_dir, qid) == protected
 
 
+def _retention_would_purge(
+    pair_dir: Path,
+    qid: str,
+    *,
+    cutoff: float,
+    protected: tuple[Path, str] | None,
+) -> bool:
+    """Same predicate as ``purge_older_than``: nothing is deleted here.
+
+    Protected pairs are kept even when their ``.json`` mtime is stale, because
+    purge skips them. Stat failures are kept. Only a metadata mtime strictly
+    older than ``cutoff`` is eligible, so equal and future mtimes stay.
+    """
+    if _is_protected(pair_dir, qid, protected):
+        return False
+    meta_path = pair_dir / f"{qid}.json"
+    try:
+        mtime = meta_path.stat().st_mtime
+    except OSError:
+        return False
+    return mtime < cutoff
+
+
+def _total_quarantine_bytes_after_retention(
+    qdir: Path,
+    *,
+    days: int,
+    layout_subdirs: frozenset[str],
+    protected_pair: tuple[Path, str] | None = None,
+) -> int:
+    """Bytes that would remain after ``purge_older_than``, without deleting.
+
+    Counts root and ``layout_subdirs``. The protected pair is included when it
+    is already on disk (purge will not remove it). A pair that is not on disk
+    yet is not counted; callers add that write as ``incoming``.
+    """
+    layouts = _require_layout_subdirs(layout_subdirs)
+    if days <= 0 or not qdir.is_dir():
+        return total_quarantine_bytes(qdir, layout_subdirs=layouts)
+    protected = _protected_identity(protected_pair)
+    cutoff = time.time() - days * 86400
+    total = 0
+    for pair_dir, qid in _iter_pairs(qdir, layouts):
+        if _retention_would_purge(pair_dir, qid, cutoff=cutoff, protected=protected):
+            continue
+        size, _mtime = _pair_disk_bytes_and_mtime(pair_dir, qid)
+        total += size
+    return total
+
+
 def purge_older_than(
     qdir: Path,
     days: int,
@@ -167,14 +217,12 @@ def purge_older_than(
     cutoff = time.time() - days * 86400
     purged = 0
     for pair_dir, qid in list(_iter_pairs(qdir, layouts)):
-        if _is_protected(pair_dir, qid, protected):
+        if not _retention_would_purge(pair_dir, qid, cutoff=cutoff, protected=protected):
             continue
-        meta_path = pair_dir / f"{qid}.json"
         try:
-            if meta_path.stat().st_mtime < cutoff:
-                (pair_dir / f"{qid}.txt").unlink(missing_ok=True)
-                meta_path.unlink(missing_ok=True)
-                purged += 1
+            (pair_dir / f"{qid}.txt").unlink(missing_ok=True)
+            (pair_dir / f"{qid}.json").unlink(missing_ok=True)
+            purged += 1
         except OSError:
             continue
     return purged
@@ -232,8 +280,15 @@ def validate_quarantine_write(
     meta_utf8_bytes: int,
     *,
     layout_subdirs: frozenset[str],
+    protected_pair: tuple[Path, str] | None = None,
 ) -> None:
-    """Raise before any write that can never fit or cannot fit without eviction."""
+    """Raise before any write that can never fit or cannot fit without eviction.
+
+    When eviction is disabled and retention is configured, bytes that retention
+    would purge count as free space. This does not delete anything; the purge
+    runs only after the new pair is durable. ``protected_pair`` is kept in the
+    forecast when it is already on disk, matching purge.
+    """
     layouts = _require_layout_subdirs(layout_subdirs)
     max_c = max_content_bytes()
     if content_utf8_bytes > max_c:
@@ -263,6 +318,18 @@ def validate_quarantine_write(
     if total + incoming <= max_t:
         return
 
+    days = retention_days_on_write()
+    if days is not None:
+        retained = _total_quarantine_bytes_after_retention(
+            qdir,
+            days=days,
+            layout_subdirs=layouts,
+            protected_pair=protected_pair,
+        )
+        if retained + incoming <= max_t:
+            return
+        total = retained
+
     raise ValueError(
         f"quarantine storage full (current {total} bytes, need {incoming} more; "
         f"limit {max_t} bytes per SCP_QUARANTINE_MAX_TOTAL_BYTES). "
@@ -276,7 +343,14 @@ def enforce_quarantine_limits(
     layout_subdirs: frozenset[str],
     protected_pair: tuple[Path, str] | None = None,
 ) -> None:
-    """Apply retention/eviction after a new pair is durably committed."""
+    """Apply retention/eviction after a new pair is durably committed.
+
+    Retention runs only after the caller has the new pair on disk. The total
+    is measured again after that purge. If it is still over the cap (unlink
+    failed, the stale set changed, or the clock moved), this raises so the
+    caller can roll the new pair back. The cap is not left exceeded by the
+    write that just committed.
+    """
     layouts = _require_layout_subdirs(layout_subdirs)
     days = retention_days_on_write()
     if days is not None:

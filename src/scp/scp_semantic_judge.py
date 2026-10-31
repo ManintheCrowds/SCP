@@ -9,13 +9,22 @@ import os
 
 import requests
 
+from scp import http_policy
 from scp.ollama_url_guard import validate_ollama_base_url
 
 
 def _post_ollama(endpoint: str, body: dict, headers: dict) -> requests.Response:
-    with requests.Session() as session:
-        session.trust_env = False
-        return session.post(endpoint, json=body, headers=headers, timeout=30, allow_redirects=False)
+    session = http_policy.outbound_session()
+    try:
+        return session.post(
+            endpoint,
+            json=body,
+            headers=headers,
+            timeout=30,
+            allow_redirects=False,
+        )
+    finally:
+        session.close()
 
 
 def judge(content: str, sink: str) -> dict:
