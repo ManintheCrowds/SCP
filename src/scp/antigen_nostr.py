@@ -413,11 +413,13 @@ class WebSocketRelayTransport:
         msg = json.dumps(["EVENT", event])
         errors: list[str] = []
         for relay in relays:
-            if not http_policy.relay_url_safe(relay):
+            if not http_policy.relay_url_safe(relay) or http_policy.resolved_url_blocked(
+                relay
+            ):
                 errors.append(f"{relay}: relay_blocked")
                 continue
             try:
-                conn = ws.create_connection(relay, timeout=10)
+                conn = ws.create_connection(relay, timeout=10, redirect_limit=0)
                 try:
                     conn.send(msg)
                     conn.recv()
@@ -439,10 +441,14 @@ class WebSocketRelayTransport:
         for relay in relays:
             if time.time() >= deadline:
                 break
-            if not http_policy.relay_url_safe(relay):
+            if not http_policy.relay_url_safe(relay) or http_policy.resolved_url_blocked(
+                relay
+            ):
                 continue
             try:
-                conn = ws.create_connection(relay, timeout=min(10, timeout_s))
+                conn = ws.create_connection(
+                    relay, timeout=min(10, timeout_s), redirect_limit=0
+                )
                 try:
                     conn.settimeout(max(0.5, deadline - time.time()))
                     conn.send(req)
