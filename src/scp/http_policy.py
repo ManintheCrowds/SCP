@@ -296,7 +296,10 @@ def _exact_loopback_name(hostname: str) -> bool:
 
 
 def _records_include_blocked(hostname: str, records: list[tuple]) -> bool:
-    """True when any resolved address is blocked, unless the name is exact loopback."""
+    """True when any resolved address is blocked.
+
+    Exact loopback names are only trusted when resolution also stays loopback.
+    """
     allow_loopback = _exact_loopback_name(hostname)
     if not records:
         return True
@@ -305,7 +308,9 @@ def _records_include_blocked(hostname: str, records: list[tuple]) -> bool:
         ip = _parse_resolved_ip(sockaddr[0])
         if ip is None:
             return True
-        if allow_loopback and ip.is_loopback:
+        if allow_loopback:
+            if not ip.is_loopback:
+                return True
             continue
         if _address_is_blocked(ip):
             return True
