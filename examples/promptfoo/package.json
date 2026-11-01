@@ -6,6 +6,6 @@
     "node": "^20.20.0 || >=22.22.0"
   },
   "devDependencies": {
-    "promptfoo": "0.123.1"
+    "promptfoo": "0.125.1"
   }
 }
