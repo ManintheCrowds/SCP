@@ -82,6 +82,19 @@ def records_from_legacy_registry(registry: dict) -> list[dict]:
     for bucket, value in registry.items():
         if bucket in _LEGACY_REGISTRY_META_KEYS:
             continue
+        if bucket == "tool_poisoning":
+            if not isinstance(value, list):
+                continue
+            for phrase, severity in iter_tool_poison_phrases(value):
+                rec = legacy_token_record(phrase, bucket=bucket, risk_tier=severity)
+                rec["category"] = "injection" if severity in ("high", "critical") else "reversal"
+                pid = rec["pattern_id"]
+                if pid in seen_ids:
+                    continue
+                seen_ids.add(pid)
+                records.append(rec)
+            continue
+
         category = _LEGACY_BUCKET_CATEGORY.get(bucket)
         if category is None:
             continue
@@ -299,8 +312,10 @@ def project_to_registry(records: list[dict]) -> dict:
         "bitcoin_inscription_override": [],
         "bitcoin_tx_mempool_override": [],
         "multilingual_override": {},
+        "tool_poisoning": [],
     }
     seen: dict[str, set[str]] = {k: set() for k in buckets if isinstance(buckets[k], list)}
+    seen_poison: set[tuple[str, str]] = set()
 
     for rec in records:
         token = _token_for_projection(rec)
@@ -309,6 +324,15 @@ def project_to_registry(records: list[dict]) -> dict:
         bucket = rec.get("registry_bucket") or _CATEGORY_DEFAULT_BUCKET.get(
             rec.get("category", ""), "power_words"
         )
+        if bucket == "tool_poisoning":
+            severity = rec.get("risk_tier", "high")
+            if severity not in RISK_TIERS:
+                severity = "high"
+            marker = (token, severity)
+            if marker not in seen_poison:
+                seen_poison.add(marker)
+                buckets["tool_poisoning"].append({"phrase": token, "severity": severity})
+            continue
         if bucket == "multilingual_override":
             lang = rec.get("source_ref", {}).get("lang", "en") if isinstance(rec.get("source_ref"), dict) else "en"
             lang_map = buckets["multilingual_override"]
@@ -331,14 +355,47 @@ def project_to_registry(records: list[dict]) -> dict:
     }
 
 
-def legacy_token_record(token: str, bucket: str = "power_words") -> dict:
+def iter_tool_poison_phrases(entries: Any) -> list[tuple[str, str]]:
+    """Normalize a tool_poisoning bucket into (phrase, risk_tier) pairs.
+
+    Entries are literal phrases with a severity of low, medium, high, or
+    critical. A bare string is treated as high. Invalid rows are skipped.
+    """
+    if not isinstance(entries, list):
+        return []
+    parsed: list[tuple[str, str]] = []
+    for item in entries:
+        phrase = ""
+        severity = "high"
+        if isinstance(item, str):
+            phrase = item.strip()
+        elif isinstance(item, dict):
+            raw_phrase = item.get("phrase")
+            if isinstance(raw_phrase, str):
+                phrase = raw_phrase.strip()
+            raw_severity = item.get("severity", item.get("risk_tier", "high"))
+            if isinstance(raw_severity, str) and raw_severity in RISK_TIERS:
+                severity = raw_severity
+        if phrase:
+            parsed.append((phrase, severity))
+    return parsed
+
+
+def legacy_token_record(
+    token: str,
+    bucket: str = "power_words",
+    *,
+    risk_tier: str = "medium",
+) -> dict:
     """Legacy registry string -> pattern_record (import helper)."""
+    if risk_tier not in RISK_TIERS:
+        risk_tier = "medium"
     h8 = hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]
     return {
         "pattern_id": f"legacy.{bucket}.{h8}",
         "category": "injection",
         "detector": {"kind": "token_family", "normalized": token},
-        "risk_tier": "medium",
+        "risk_tier": risk_tier,
         "drift_score": 0.0,
         "registry_bucket": bucket,
     }
