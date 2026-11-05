@@ -226,6 +226,37 @@ def test_exact_loopback_and_canonical_public_resolution_allowed():
     assert http_policy.host_allowed("http://[::1]/x", ["::1"]) is True
 
 
+def test_exact_loopback_name_cannot_resolve_to_public_address(monkeypatch):
+    def fake(host, port, *args, **kwargs):
+        assert host == "localhost"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("8.8.8.8", port),
+            )
+        ]
+
+    dialed: list[tuple] = []
+
+    def fake_create_connection(address, *args, **kwargs):
+        dialed.append(address)
+        raise AssertionError("public address should not be dialed")
+
+    monkeypatch.setattr(http_policy.socket, "getaddrinfo", fake)
+    monkeypatch.setattr(
+        http_policy.urllib3_connection,
+        "create_connection",
+        fake_create_connection,
+    )
+    assert http_policy.resolved_addresses_blocked("localhost", 11434) is True
+    with pytest.raises(OSError, match="blocked"):
+        http_policy.connect_validated_tcp("localhost", 11434, timeout=1)
+    assert dialed == []
+
+
 def test_dns_name_blocked_when_any_resolved_address_is_private(monkeypatch):
     def fake(host, port, *args, **kwargs):
         assert host == "example.com"
