@@ -620,6 +620,32 @@ def test_evict_skips_deletion_when_protected_pair_cannot_fit(tmp_path) -> None:
     assert new_txt.is_file()
 
 
+def test_quarantine_rolls_back_when_eviction_content_unlink_fails(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    content = "n" * 40
+    incoming = _incoming_quarantine_bytes(content)
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", str(len(content)))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", str(incoming))
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    old_txt, old_json = _seed_quarantine_pair(tmp_path, "aaaaaaaa", "a" * 200)
+    real_unlink = Path.unlink
+
+    def unlink_with_old_content_failure(self, *args, **kwargs):
+        if self == old_txt:
+            raise OSError("forced content unlink failure")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink_with_old_content_failure)
+
+    with pytest.raises(ValueError, match="SCP_QUARANTINE_MAX_TOTAL_BYTES"):
+        scp_utils.quarantine(content, reason="r", source="s")
+
+    assert old_txt.is_file()
+    assert old_json.is_file()
+    assert sorted(p.name for p in tmp_path.glob("*.txt")) == ["aaaaaaaa.txt"]
+    assert sorted(p.name for p in tmp_path.glob("*.json")) == ["aaaaaaaa.json"]
+
+
 def test_concurrent_quarantine_writes_do_not_overlap_eviction(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
     monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")

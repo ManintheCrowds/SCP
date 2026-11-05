@@ -266,8 +266,9 @@ def evict_oldest_until_under(
     freed = 0
     for qid, pair_dir, size in planned:
         try:
-            (pair_dir / f"{qid}.json").unlink(missing_ok=True)
             (pair_dir / f"{qid}.txt").unlink(missing_ok=True)
+            # Pair discovery is sidecar-driven; keep metadata until content is gone.
+            (pair_dir / f"{qid}.json").unlink(missing_ok=True)
             freed += size
         except OSError:
             break
