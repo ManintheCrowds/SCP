@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Tool-poisoning phrases in `scp_threat_registry.json` (`tool_poisoning`: credential and SSH paths, `<IMPORTANT>`-style tags, hidden parameters such as `sidenote`, concealment wording, and cross-tool email redirects) and separate HTML-comment scanning in `scp_inspect`. Comment matches are located with `segment: html_comment` and severity is raised rather than lowered.
 - Vendored OpenHarness contract [`docs/contracts/scp_mcp_v1.md`](docs/contracts/scp_mcp_v1.md) with SHA-256 check in `tests/test_contract_document_hash.py`; sync steps in [`docs/OPENHARNESS_CONTRACT.md`](docs/OPENHARNESS_CONTRACT.md).
 - `engines` for Node in `examples/promptfoo/package.json` (aligned with promptfoo and CI).
 - Optional Dependabot updates for `examples/promptfoo` (`.github/dependabot.yml`).
