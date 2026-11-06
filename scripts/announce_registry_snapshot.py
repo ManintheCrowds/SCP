@@ -24,6 +24,7 @@ if str(_REPO_ROOT / "src") not in sys.path:
 
 from scp import antigen
 from scp import antigen_nostr as nostr
+from scp import http_policy
 from scp import pattern_record as pr
 from scp import registry_contribute as rc
 
@@ -51,7 +52,7 @@ def _resolve_seckey(seckey_hex: str | None) -> str:
 
 
 def _fetch_snapshot(payload_url: str, *, session: requests.Session | None = None) -> dict:
-    http = session or requests.Session()
+    http = http_policy.outbound_session(session)
     resp = http.get(payload_url, timeout=30)
     resp.raise_for_status()
     snapshot = resp.json()

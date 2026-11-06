@@ -1,2 +1,5 @@
 # CVE-2026-59951 is fixed in 1.30.0 and 2.2.0; 2.0.x and 2.1.x are still affected.
 mcp>=1.30.0,!=2.0.*,!=2.1.*
+# Redirect handling: requests 2.32.4. Proxy/env handling needs urllib3 2.8.0.
+requests>=2.32.4
+urllib3>=2.8.0
