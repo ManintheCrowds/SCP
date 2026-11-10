@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -175,6 +176,48 @@ def _retention_would_purge(
     return mtime < cutoff
 
 
+def _stage_path(path: Path, token: str) -> tuple[Path, Path] | None:
+    if not path.exists():
+        return None
+    staged = path.with_name(f".{path.stem}.{path.suffix[1:]}.{token}.delete")
+    os.replace(path, staged)
+    return staged, path
+
+
+def _restore_staged_paths(staged: list[tuple[Path, Path]]) -> None:
+    for staged_path, original_path in reversed(staged):
+        try:
+            if staged_path.exists() and not original_path.exists():
+                os.replace(staged_path, original_path)
+        except OSError:
+            continue
+
+
+def _cleanup_staged_paths(staged: list[tuple[Path, Path]]) -> None:
+    for staged_path, _original_path in staged:
+        try:
+            staged_path.unlink(missing_ok=True)
+        except OSError:
+            # The pair has already been moved out of quota/listing scope. Leaving
+            # a hidden tombstone is safer than failing and rolling back the new
+            # quarantine evidence after old evidence was selected for removal.
+            continue
+
+
+def _stage_pair_for_delete(pair_dir: Path, qid: str) -> list[tuple[Path, Path]]:
+    token = uuid.uuid4().hex
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for suffix in ("txt", "json"):
+            moved = _stage_path(pair_dir / f"{qid}.{suffix}", token)
+            if moved is not None:
+                staged.append(moved)
+    except OSError:
+        _restore_staged_paths(staged)
+        raise
+    return staged
+
+
 def _total_quarantine_bytes_after_retention(
     qdir: Path,
     *,
@@ -215,16 +258,20 @@ def purge_older_than(
         return 0
     protected = _protected_identity(protected_pair)
     cutoff = time.time() - days * 86400
+    staged_all: list[tuple[Path, Path]] = []
     purged = 0
     for pair_dir, qid in list(_iter_pairs(qdir, layouts)):
         if not _retention_would_purge(pair_dir, qid, cutoff=cutoff, protected=protected):
             continue
         try:
-            (pair_dir / f"{qid}.txt").unlink(missing_ok=True)
-            (pair_dir / f"{qid}.json").unlink(missing_ok=True)
-            purged += 1
+            staged = _stage_pair_for_delete(pair_dir, qid)
         except OSError:
-            continue
+            _restore_staged_paths(staged_all)
+            return 0
+        if staged:
+            staged_all.extend(staged)
+            purged += 1
+    _cleanup_staged_paths(staged_all)
     return purged
 
 
@@ -263,14 +310,18 @@ def evict_oldest_until_under(
         remaining -= size
     if remaining > target_total:
         return 0
+    staged_all: list[tuple[Path, Path]] = []
     freed = 0
     for qid, pair_dir, size in planned:
         try:
-            (pair_dir / f"{qid}.json").unlink(missing_ok=True)
-            (pair_dir / f"{qid}.txt").unlink(missing_ok=True)
-            freed += size
+            staged = _stage_pair_for_delete(pair_dir, qid)
         except OSError:
-            break
+            _restore_staged_paths(staged_all)
+            return 0
+        if staged:
+            staged_all.extend(staged)
+            freed += size
+    _cleanup_staged_paths(staged_all)
     return freed
 
 

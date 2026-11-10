@@ -484,7 +484,7 @@ def test_retention_fresh_layout_bytes_still_block(tmp_path, monkeypatch) -> None
     assert _quota_bytes(tmp_path) == before
 
 
-def test_retention_purge_failure_rolls_back_new_pair(tmp_path, monkeypatch) -> None:
+def test_retention_stage_failure_rolls_back_new_pair(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
     monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
     monkeypatch.setenv("SCP_QUARANTINE_RETENTION_DAYS_ON_WRITE", "1")
@@ -502,16 +502,16 @@ def test_retention_purge_failure_rolls_back_new_pair(tmp_path, monkeypatch) -> N
 
     def tracking_replace(src, dst):
         events.append(("replace", Path(dst).name))
+        if Path(dst).name.startswith(".aaaaaaaa."):
+            raise OSError("stage failed")
         return real_replace(src, dst)
 
-    def unlink_stale(self, missing_ok=False):
+    def tracking_unlink(self, missing_ok=False):
         events.append(("unlink", self.name))
-        if self.stem == "aaaaaaaa":
-            raise OSError("unlink failed")
         return real_unlink(self, missing_ok=missing_ok)
 
     monkeypatch.setattr(os, "replace", tracking_replace)
-    monkeypatch.setattr(Path, "unlink", unlink_stale)
+    monkeypatch.setattr(Path, "unlink", tracking_unlink)
     with pytest.raises(ValueError, match="SCP_QUARANTINE_MAX_TOTAL_BYTES"):
         scp_utils.quarantine("n" * 40, reason="r", source="s")
     assert txt.read_text(encoding="utf-8") == original
@@ -520,9 +520,66 @@ def test_retention_purge_failure_rolls_back_new_pair(tmp_path, monkeypatch) -> N
     assert list(tmp_path.glob("*.txt")) == [txt]
     assert any(kind == "replace" for kind, _name in events)
     assert any(kind == "unlink" for kind, _name in events)
-    first_replace = next(i for i, (kind, _name) in enumerate(events) if kind == "replace")
+    first_replace = next(
+        i
+        for i, (kind, name) in enumerate(events)
+        if kind == "replace" and name.endswith(".txt")
+    )
     first_unlink = next(i for i, (kind, _name) in enumerate(events) if kind == "unlink")
     assert first_replace < first_unlink
+
+
+def test_retention_cleanup_failure_does_not_fail_committed_write(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
+    monkeypatch.setenv("SCP_QUARANTINE_RETENTION_DAYS_ON_WRITE", "1")
+    stale = time.time() - 4 * 86400
+    _seed_quarantine_pair(tmp_path, "aaaaaaaa", "a" * 300, mtime=stale)
+    _seed_quarantine_pair(tmp_path, "bbbbbbbb", "b" * 300, mtime=stale)
+    incoming = _incoming_quarantine_bytes("n" * 40)
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", str(incoming))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", str(incoming))
+    real_unlink = Path.unlink
+
+    def fail_second_stale_unlink(self, missing_ok=False):
+        if self.stem == "bbbbbbbb":
+            raise OSError("unlink failed")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_second_stale_unlink)
+
+    out = scp_utils.quarantine("n" * 40, reason="r", source="s")
+
+    assert (tmp_path / f"{out['quarantine_id']}.txt").is_file()
+    assert _quota_bytes(tmp_path) <= incoming
+
+
+def test_eviction_cleanup_failure_does_not_fail_committed_write(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
+    now = time.time()
+    _seed_quarantine_pair(tmp_path, "aaaaaaaa", "a" * 300, mtime=now - 20)
+    _seed_quarantine_pair(tmp_path, "bbbbbbbb", "b" * 300, mtime=now - 10)
+    incoming = _incoming_quarantine_bytes("n" * 40)
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", str(incoming))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", str(incoming))
+    real_unlink = Path.unlink
+
+    def fail_second_victim_unlink(self, missing_ok=False):
+        if self.stem == "bbbbbbbb":
+            raise OSError("unlink failed")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_second_victim_unlink)
+
+    out = scp_utils.quarantine("n" * 40, reason="r", source="s")
+
+    assert (tmp_path / f"{out['quarantine_id']}.txt").is_file()
+    assert _quota_bytes(tmp_path) <= incoming
 
 
 def test_retention_clock_skew_after_forecast_rolls_back(tmp_path, monkeypatch) -> None:
