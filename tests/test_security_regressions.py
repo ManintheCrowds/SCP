@@ -294,6 +294,10 @@ def _quota_bytes(root: Path) -> int:
     )
 
 
+def _is_staged_delete(path: Path, qid: str) -> bool:
+    return path.name.startswith(f".{qid}.") and path.name.endswith(".delete")
+
+
 def test_quarantine_retention_makes_room_when_eviction_disabled(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
     monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", "500")
@@ -544,7 +548,7 @@ def test_retention_cleanup_failure_does_not_fail_committed_write(
     real_unlink = Path.unlink
 
     def fail_second_stale_unlink(self, missing_ok=False):
-        if self.stem == "bbbbbbbb":
+        if _is_staged_delete(self, "bbbbbbbb"):
             raise OSError("unlink failed")
         return real_unlink(self, missing_ok=missing_ok)
 
@@ -554,6 +558,7 @@ def test_retention_cleanup_failure_does_not_fail_committed_write(
 
     assert (tmp_path / f"{out['quarantine_id']}.txt").is_file()
     assert _quota_bytes(tmp_path) <= incoming
+    assert any(_is_staged_delete(path, "bbbbbbbb") for path in tmp_path.iterdir())
 
 
 def test_eviction_cleanup_failure_does_not_fail_committed_write(
@@ -570,7 +575,7 @@ def test_eviction_cleanup_failure_does_not_fail_committed_write(
     real_unlink = Path.unlink
 
     def fail_second_victim_unlink(self, missing_ok=False):
-        if self.stem == "bbbbbbbb":
+        if _is_staged_delete(self, "bbbbbbbb"):
             raise OSError("unlink failed")
         return real_unlink(self, missing_ok=missing_ok)
 
@@ -580,6 +585,38 @@ def test_eviction_cleanup_failure_does_not_fail_committed_write(
 
     assert (tmp_path / f"{out['quarantine_id']}.txt").is_file()
     assert _quota_bytes(tmp_path) <= incoming
+    assert any(_is_staged_delete(path, "bbbbbbbb") for path in tmp_path.iterdir())
+
+
+def test_staged_cleanup_failure_blocks_future_quarantine_writes(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
+    monkeypatch.setenv("SCP_QUARANTINE_RETENTION_DAYS_ON_WRITE", "1")
+    stale = time.time() - 4 * 86400
+    _seed_quarantine_pair(tmp_path, "bbbbbbbb", "b" * 300, mtime=stale)
+    incoming = _incoming_quarantine_bytes("n" * 40)
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", str(incoming))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", str(incoming * 2))
+    real_unlink = Path.unlink
+
+    def fail_staged_unlink(self, missing_ok=False):
+        if _is_staged_delete(self, "bbbbbbbb"):
+            raise OSError("unlink failed")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_staged_unlink)
+    first = scp_utils.quarantine("n" * 40, reason="r", source="s")
+
+    assert (tmp_path / f"{first['quarantine_id']}.txt").is_file()
+    assert any(_is_staged_delete(path, "bbbbbbbb") for path in tmp_path.iterdir())
+    visible_before = sorted(path.name for path in tmp_path.glob("*.json"))
+
+    with pytest.raises(ValueError, match="staged quarantine cleanup failed"):
+        scp_utils.quarantine("n" * 40, reason="r", source="s")
+
+    assert sorted(path.name for path in tmp_path.glob("*.json")) == visible_before
 
 
 def test_retention_clock_skew_after_forecast_rolls_back(tmp_path, monkeypatch) -> None:

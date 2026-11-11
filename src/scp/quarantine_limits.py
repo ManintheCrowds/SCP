@@ -204,6 +204,27 @@ def _cleanup_staged_paths(staged: list[tuple[Path, Path]]) -> None:
             continue
 
 
+def _iter_staged_delete_paths(
+    qdir: Path, layout_subdirs: frozenset[str]
+) -> Iterator[Path]:
+    for pair_dir in _pair_dirs(qdir, layout_subdirs):
+        for suffix in ("txt", "json"):
+            yield from pair_dir.glob(f".*.{suffix}.*.delete")
+
+
+def _ensure_no_orphaned_staged_deletes(
+    qdir: Path, layout_subdirs: frozenset[str]
+) -> None:
+    for staged_path in list(_iter_staged_delete_paths(qdir, layout_subdirs)):
+        try:
+            staged_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise ValueError(
+                "staged quarantine cleanup failed; remove staged delete files "
+                "or retry after filesystem cleanup recovers"
+            ) from exc
+
+
 def _stage_pair_for_delete(pair_dir: Path, qid: str) -> list[tuple[Path, Path]]:
     token = uuid.uuid4().hex
     staged: list[tuple[Path, Path]] = []
@@ -341,6 +362,7 @@ def validate_quarantine_write(
     forecast when it is already on disk, matching purge.
     """
     layouts = _require_layout_subdirs(layout_subdirs)
+    _ensure_no_orphaned_staged_deletes(qdir, layouts)
     max_c = max_content_bytes()
     if content_utf8_bytes > max_c:
         raise ValueError(
@@ -448,6 +470,7 @@ def prepare_quarantine_write(
     total/eviction cover those dirs; use ``frozenset()`` only when root-only is intentional.
     """
     layouts = _require_layout_subdirs(layout_subdirs)
+    _ensure_no_orphaned_staged_deletes(qdir, layouts)
     max_c = max_content_bytes()
     if content_utf8_bytes > max_c:
         raise ValueError(
