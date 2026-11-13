@@ -974,17 +974,131 @@ def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
     return findings
 
 
+_COMMENT_START = 0
+_COMMENT_START_DASH = 1
+_COMMENT = 2
+_COMMENT_LT = 3
+_COMMENT_LT_BANG = 4
+_COMMENT_LT_BANG_DASH = 5
+_COMMENT_LT_BANG_DASH_DASH = 6
+_COMMENT_END_DASH = 7
+_COMMENT_END = 8
+_COMMENT_END_BANG = 9
+
+
+def _read_html_comment(text: str, start: int) -> tuple[int, str]:
+    """Read one WHATWG comment whose ``<!--`` opener begins at ``start``.
+
+    ``<!-->`` and ``<!--->`` are empty comments. ``-->`` and ``--!>`` both
+    close a comment. A missing closer runs to EOF and the body is the raw
+    tail, so the bytes after the opener are still scanned. Null bytes are
+    kept so the null-byte check still sees them.
+    """
+    length = len(text)
+    index = start + 4
+    data: list[str] = []
+    state = _COMMENT_START
+    while index < length:
+        char = text[index]
+        if state == _COMMENT_START:
+            if char == "-":
+                state = _COMMENT_START_DASH
+                index += 1
+            elif char == ">":
+                return index + 1, ""
+            else:
+                state = _COMMENT
+        elif state == _COMMENT_START_DASH:
+            if char == "-":
+                state = _COMMENT_END
+                index += 1
+            elif char == ">":
+                return index + 1, ""
+            else:
+                data.append("-")
+                state = _COMMENT
+        elif state == _COMMENT:
+            if char == "<":
+                data.append("<")
+                state = _COMMENT_LT
+                index += 1
+            elif char == "-":
+                state = _COMMENT_END_DASH
+                index += 1
+            else:
+                data.append(char)
+                index += 1
+        elif state == _COMMENT_LT:
+            if char == "!":
+                data.append("!")
+                state = _COMMENT_LT_BANG
+                index += 1
+            elif char == "<":
+                data.append("<")
+                index += 1
+            else:
+                state = _COMMENT
+        elif state == _COMMENT_LT_BANG:
+            if char == "-":
+                state = _COMMENT_LT_BANG_DASH
+                index += 1
+            else:
+                state = _COMMENT
+        elif state == _COMMENT_LT_BANG_DASH:
+            if char == "-":
+                state = _COMMENT_LT_BANG_DASH_DASH
+                index += 1
+            else:
+                state = _COMMENT_END_DASH
+        elif state == _COMMENT_LT_BANG_DASH_DASH:
+            state = _COMMENT_END
+        elif state == _COMMENT_END_DASH:
+            if char == "-":
+                state = _COMMENT_END
+                index += 1
+            else:
+                data.append("-")
+                state = _COMMENT
+        elif state == _COMMENT_END:
+            if char == ">":
+                return index + 1, "".join(data)
+            if char == "!":
+                state = _COMMENT_END_BANG
+                index += 1
+            elif char == "-":
+                data.append("-")
+                index += 1
+            else:
+                data.append("--")
+                state = _COMMENT
+        elif state == _COMMENT_END_BANG:
+            if char == "-":
+                data.append("--!")
+                state = _COMMENT_END_DASH
+                index += 1
+            elif char == ">":
+                return index + 1, "".join(data)
+            else:
+                data.append("--!")
+                state = _COMMENT
+        else:
+            raise RuntimeError(f"unknown html comment state: {state}")
+    return length, text[start + 4 :]
+
+
 def extract_html_comments(
     text: str, *, replacement: str = ""
 ) -> tuple[str, list[tuple[int, str]]]:
-    """Split ``<!-- ... -->`` comments out of text.
+    """Split HTML comments out of text.
 
     ``replacement`` is written in place of each comment. The default removes
     the comment so a token split inside a word joins again. A single space
     keeps neighboring words apart. Scans use both and combine the hits.
     Comment bodies are ``(start, body)`` where ``start`` is the index of
-    ``<!--``. A missing closer runs to the end of the input. One forward
-    ``str.find`` walk stays linear when many comments are left unclosed.
+    ``<!--``. Closers follow the WHATWG tokenizer, including empty ``<!-->``
+    and ``<!--->`` comments and the ``--!>`` closer. A missing closer runs to
+    the end of the input. One forward walk stays linear when many comments
+    are left unclosed.
     """
     parts: list[str] = []
     comments: list[tuple[int, str]] = []
@@ -996,16 +1110,13 @@ def extract_html_comments(
             parts.append(text[cursor:])
             break
         parts.append(text[cursor:start])
-        close = text.find("-->", start + 4)
-        if close < 0:
-            comments.append((start, text[start + 4 :]))
-            if replacement:
-                parts.append(replacement)
-            break
-        comments.append((start, text[start + 4 : close]))
+        end, body = _read_html_comment(text, start)
+        if end <= start:
+            end = min(start + 4, length)
+        comments.append((start, body))
         if replacement:
             parts.append(replacement)
-        cursor = close + 3
+        cursor = end
     return "".join(parts), comments
 
 
