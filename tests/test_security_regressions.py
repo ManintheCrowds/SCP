@@ -94,12 +94,19 @@ def test_quarantine_evicts_oldest_when_over_total(tmp_path, monkeypatch) -> None
     monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "1")
     tmp_path.mkdir(parents=True, exist_ok=True)
     # Two legacy pairs so current total + new write exceeds cap (eviction makes room).
+    # Backdate them: this filesystem can report identical mtimes for back-to-back
+    # writes, and eviction then picks an arbitrary pair, including the new one.
+    past = time.time() - 30
     for qid, body in (("aaaaaaaa", "a" * 400), ("bbbbbbbb", "b" * 400)):
-        (tmp_path / f"{qid}.txt").write_text(body, encoding="utf-8")
-        (tmp_path / f"{qid}.json").write_text(
+        text_path = tmp_path / f"{qid}.txt"
+        meta_path = tmp_path / f"{qid}.json"
+        text_path.write_text(body, encoding="utf-8")
+        meta_path.write_text(
             '{"quarantine_id": "%s", "reason": "old", "source": "t"}' % qid,
             encoding="utf-8",
         )
+        os.utime(text_path, (past, past))
+        os.utime(meta_path, (past, past))
     out = scp_utils.quarantine("new" * 30, reason="r", source="s")
     assert out.get("quarantine_id")
     assert (tmp_path / f"{out['quarantine_id']}.txt").is_file()

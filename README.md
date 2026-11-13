@@ -117,7 +117,7 @@ Consent and host-allowlist env vars, tool list, and `mcp.json` example: [docs/IN
 
 ## Threat Registry
 
-Packaged patterns in [`src/scp/scp_threat_registry.json`](src/scp/scp_threat_registry.json) (override with `SCP_THREAT_REGISTRY_PATH`): power_words, multilingual_override, semantic_aliases, jailbreak_nicknames, mythic_framing, hostile_ux, bitcoin_inscription_override, bitcoin_tx_mempool_override. Version bump on change.
+Packaged patterns in [`src/scp/scp_threat_registry.json`](src/scp/scp_threat_registry.json) (override with `SCP_THREAT_REGISTRY_PATH`): power_words, multilingual_override, semantic_aliases, jailbreak_nicknames, mythic_framing, hostile_ux, bitcoin_inscription_override, bitcoin_tx_mempool_override, tool_poisoning. Version bump on change. `tool_poisoning` entries are `{phrase, severity}` objects (`critical`, `high`, or `medium`). `scp_inspect` also splits HTML comments out and scans each comment body on its own; a match hidden in a comment is reported with `segment: html_comment` and its severity is raised.
 
 ## Test harness matrix
 
