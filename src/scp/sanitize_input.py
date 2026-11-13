@@ -409,8 +409,19 @@ def _append_decoded_base64_snippets(text: str) -> str:
     return current
 
 
+_NULL_ENTITY_RE = re.compile(r"&#0+;|&#x0+;", re.IGNORECASE)
+
+
+def _strip_null_entities(text: str) -> str:
+    """Drop numeric entities that encode a null before they become U+FFFD."""
+    if "&#" not in text:
+        return text
+    return _NULL_ENTITY_RE.sub("", text)
+
+
 def _canonicalize_scan_layer(text: str) -> str:
-    prepared = _strip_null_bytes(text)
+    prepared = _strip_null_entities(text)
+    prepared = _strip_null_bytes(prepared)
     prepared = _decode_tag_block(prepared)
     prepared = _strip_invisible_unicode(prepared)
     prepared = _strip_excessive_combining(prepared)
@@ -1864,6 +1875,9 @@ def _mapped_canonicalize(text: str) -> tuple[str, list[int] | None]:
     mapping: list[int] | None = None
     for _ in range(_CANONICALIZATION_MAX_LAYERS):
         before = current
+        if "&#" in current and _NULL_ENTITY_RE.search(current):
+            updated, step = _replacement_map(current, _NULL_ENTITY_RE, lambda _match: "")
+            current, mapping = _advance(current, mapping, updated, step)
         if "\x00" in current:
             updated, step = _replacement_map(current, re.compile("\x00"), lambda _match: "")
             current, mapping = _advance(current, mapping, updated, step)
