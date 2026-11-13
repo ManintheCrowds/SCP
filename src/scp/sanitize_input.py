@@ -26,7 +26,7 @@ OVERRIDE_PHRASES = [
     r"ignore\s+(all\s+)?(previous|prior)\s+instructions",
     r"ignore\s+all\s+previous\s+instructions",
     r"ignore\s+prior\s+rules",
-    r"never\s+reveal\s+(this|that|the)\b",
+    r"never\s+reveal\s+(these|them|this|that|the|your|my|any)\b",
     r"do\s+not\s+tell\s+(the\s+)?user",
     r"forget\s+(all\s+)?(previous|prior)\s+instructions",
     r"disregard\s+(all\s+)?(previous|prior)",
@@ -514,9 +514,32 @@ def _canonical_override(pattern: str) -> str:
     """Shortest phrase the override regex describes, with single spaces."""
     text = re.sub(r"\([^()]*\)\?", "", pattern)
     text = re.sub(r"\(([^)|]+)\|[^)]*\)", r"\1", text)
-    text = text.replace(r"\s+", " ").replace(r"\.", ".")
+    text = text.replace(r"\s+", " ").replace(r"\.", ".").replace(r"\b", "").replace(r"\B", "")
     text = re.sub(r"[()?]", "", text)
     return " ".join(text.split())
+
+
+def _phrase_from_gap_match(canonical: str, match: re.Match[str]) -> str:
+    """Canonical phrase, with the alternative that actually matched."""
+    phrase = canonical
+    for group in match.groups():
+        if not group or not re.fullmatch(r"[A-Za-z]+", group):
+            continue
+        words = phrase.split()
+        if group.casefold() in {word.casefold() for word in words}:
+            continue
+        replaced = False
+        for index, word in enumerate(words):
+            if word.casefold() != group.casefold() and (
+                group.casefold().startswith(word.casefold()) or word.casefold().startswith(group.casefold())
+            ):
+                words[index] = group
+                replaced = True
+                break
+        if not replaced and words:
+            words[-1] = group
+        phrase = " ".join(words)
+    return phrase
 
 
 @lru_cache(maxsize=1)
@@ -611,14 +634,16 @@ def _scan_marked_overrides(normalized: str) -> list[tuple[int, str]]:
     seen: set[str] = set()
     for pattern, canonical in _override_gap_patterns():
         for match in pattern.finditer(normalized):
-            if canonical.casefold() in seen:
+            phrase = _phrase_from_gap_match(canonical, match)
+            key = phrase.casefold()
+            if not phrase or key in seen or "\\" in phrase:
                 continue
             if _match_cuts_a_longer_word(
                 normalized, set(), match.start(), match.end()
             ):
                 continue
-            seen.add(canonical.casefold())
-            findings.append((match.start(), canonical))
+            seen.add(key)
+            findings.append((match.start(), phrase))
     return findings
 
 
