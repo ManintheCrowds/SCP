@@ -1454,23 +1454,30 @@ def _comment_body_needs_scan(body: str) -> bool:
 
 
 _COMMENT_BATCH_SEP = "\ue000"
-
+_COMMENT_MARKERS = re.compile(r"<!-*>?|--!?>")
+_CAP_FINDING = "comment scan stopped at the depth or size cap"
 
 _MAX_COMMENT_DEPTH = 8
 _MAX_COMMENT_BODY_WORK = 2_000_000
 
 
-def _comment_scan_text(body: str) -> str:
-    """Cleanup for one comment body. Nested closed comments are walked iteratively.
+def _flatten_comment_markers(body: str) -> str:
+    """Drop comment markers once so a payload after them is visible text."""
+    return _COMMENT_MARKERS.sub(" ", body)
 
-    An unclosed comment's body is the remainder of the input, so it is not
-    queued again. Depth and a character budget stop a nested bomb from
-    re-decoding the same tail.
+
+def _comment_scan_text(body: str) -> tuple[str, bool]:
+    """Cleanup for one comment body. Closed nesting is walked iteratively.
+
+    An unclosed nested body is scanned once, with its markers removed, and is
+    not queued again. Hitting the depth cap or the character budget still
+    returns the flattened text and reports that the cap was hit.
     """
     parts: list[str] = []
     stack: list[tuple[str, int]] = [(body, 0)]
     seen: set[str] = set()
     work = 0
+    capped = False
     while stack:
         current, depth = stack.pop()
         if current in seen:
@@ -1478,24 +1485,33 @@ def _comment_scan_text(body: str) -> str:
         seen.add(current)
         work += len(current)
         if work > _MAX_COMMENT_BODY_WORK or depth > _MAX_COMMENT_DEPTH:
+            capped = True
+            parts.append(_finish_visible(_flatten_comment_markers(current)))
             break
         decoded = _decode_layers(current)
-        removed, spaced, _gap, _spaced_bounds, _gap_bounds, nested = _comment_slice(decoded)
+        removed, spaced, _gap, spaced_bounds, _gap_bounds, nested = _comment_slice(decoded)
         parts.append(_finish_visible(removed))
-        finished_spaced = _finish_visible(spaced)
-        if finished_spaced != parts[-1]:
-            parts.append(finished_spaced)
-        if depth >= _MAX_COMMENT_DEPTH:
+        if spaced != removed and spaced_bounds:
+            for window, _local in _boundary_windows(spaced, spaced_bounds):
+                parts.append(_finish_visible(window))
+        if depth >= _MAX_COMMENT_DEPTH and nested:
+            capped = True
+            parts.append(_finish_visible(_flatten_comment_markers(current)))
             continue
         for _start, nested_body, closed in nested:
-            if not closed or not nested_body.strip() or len(nested_body) >= len(current):
+            if not nested_body.strip():
+                continue
+            if not closed:
+                parts.append(_finish_visible(_flatten_comment_markers(nested_body)))
+                continue
+            if len(nested_body) >= len(current):
                 continue
             stack.append((nested_body, depth + 1))
     if not parts:
-        return ""
+        return "", capped
     if len(parts) == 1:
-        return parts[0]
-    return _COMMENT_BATCH_SEP.join(parts)
+        return parts[0], capped
+    return _COMMENT_BATCH_SEP.join(parts), capped
 
 
 _ENCODED_COMMENT_MARKERS = (
@@ -1537,21 +1553,27 @@ def _closest_offset(positions: list[int], target: int, limit: int) -> int:
 
 def _comment_batch_findings(
     bodies: list[tuple[int, str, bool]],
-) -> tuple[list[tuple[str, int, str, int, bool]], list[tuple[int, str, str, str, int, bool]]]:
+) -> tuple[list[tuple[str, int, str, int, bool]], list[tuple[int, str, str, str, int, bool]], bool]:
     """Scan many comment bodies in one pass.
 
     A private-use separator stops a phrase from forming across two comments.
-    Each returned offset is relative to that comment body.
+    Each returned offset is relative to that comment body. The bool is true
+    when a nested walk stopped at the depth cap or the character budget.
     """
     parts: list[str] = []
     spans: list[tuple[int, int, int, bool]] = []
     cursor = 0
-    prepared_by_body: dict[str, str] = {}
+    prepared_by_body: dict[str, tuple[str, bool]] = {}
+    capped = False
     for source_offset, body, conceal in bodies:
         scanned = prepared_by_body.get(body)
         if scanned is None:
             scanned = _comment_scan_text(body)
             prepared_by_body[body] = scanned
+        text, body_capped = scanned
+        if body_capped:
+            capped = True
+        scanned = text
         if parts:
             parts.append(_COMMENT_BATCH_SEP)
             cursor += 1
@@ -1560,7 +1582,7 @@ def _comment_batch_findings(
         cursor += len(scanned)
         spans.append((start, cursor, source_offset, conceal))
     if not parts:
-        return [], []
+        return [], [], capped
     batch = "".join(parts)
     starts = [span[0] for span in spans]
 
@@ -1595,7 +1617,7 @@ def _comment_batch_findings(
             continue
         local_offset, source_offset, conceal = located
         poison_hits.append((local_offset, match, phrase, base, source_offset, conceal))
-    return legacy_hits, poison_hits
+    return legacy_hits, poison_hits, capped
 
 
 def _keep_combined_hit(
@@ -1803,7 +1825,7 @@ def classify(text: str) -> dict:
         poison_notes.append(note)
         severities.append(base)
 
-    comment_legacy, comment_poison = _comment_batch_findings(pending_comments)
+    comment_legacy, comment_poison, comment_capped = _comment_batch_findings(pending_comments)
     comment_seen: dict[tuple[str, str], dict[str, int]] = {}
     for key, offset, match, source_offset, mode in comment_legacy:
         conceal = _conceal_comment_hit(mode, key, _base_severity_for_key(key))
@@ -1876,6 +1898,9 @@ def classify(text: str) -> dict:
     if concealed_notes:
         categories.append("html_comment")
 
+    if comment_capped:
+        injection_any = True
+        severities.append("high")
     if injection_any:
         tier = "injection"
         risk_score = 1.0
@@ -1911,7 +1936,10 @@ def classify(text: str) -> dict:
         "hostile_ux": legacy["hostile_ux"],
         "tool_poisoning": poison_notes,
         "html_comment": concealed_notes,
+        "comment_scan_cap": [_CAP_FINDING] if comment_capped else [],
     }
+    if comment_capped:
+        categories.append("comment_scan_cap")
     result = {
         "tier": tier,
         "findings": findings,
