@@ -24,6 +24,33 @@ jobs:
       - name: MCP contract v1 (pytest)
         run: pytest tests/test_mcp_contract_v1.py -v
 
+  ubuntu-pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package and dev deps
+        run: python -m pip install -e ".[dev]"
+      - name: Full pytest suite
+        run: python -m pytest --tb=short
+
+  windows-pytest:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # bash so PowerShell does not treat [dev] as a wildcard.
+      - name: Install package and dev deps
+        shell: bash
+        run: python -m pip install -e ".[dev]"
+      - name: Full pytest suite
+        shell: bash
+        run: python -m pytest --tb=short
+
   promptfoo-eval:
     runs-on: ubuntu-latest
     steps:
@@ -47,13 +74,16 @@ jobs:
 
   # Required status context for main branch protection. Must keep this job id as CI.
   CI:
-    needs: [contract, promptfoo-eval]
+    needs: [contract, promptfoo-eval, ubuntu-pytest, windows-pytest]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Gate on upstream jobs
         run: |
-          echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }}"
-          if [ "${{ needs.contract.result }}" != "success" ] || [ "${{ needs.promptfoo-eval.result }}" != "success" ]; then
+          echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }} ubuntu-pytest=${{ needs.ubuntu-pytest.result }} windows-pytest=${{ needs.windows-pytest.result }}"
+          if [ "${{ needs.contract.result }}" != "success" ] || \
+             [ "${{ needs.promptfoo-eval.result }}" != "success" ] || \
+             [ "${{ needs.ubuntu-pytest.result }}" != "success" ] || \
+             [ "${{ needs.windows-pytest.result }}" != "success" ]; then
             exit 1
           fi
