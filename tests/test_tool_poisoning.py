@@ -338,6 +338,36 @@ def test_short_comment_signals_still_flag() -> None:
     assert _inspect("<!--0wn-->")["tier"] == "injection"
 
 
+def _joined_until(make_unit, target: int = 200_000) -> str:
+    parts: list[str] = []
+    size = 0
+    index = 0
+    while size < target:
+        piece = make_unit(index)
+        parts.append(piece)
+        size += len(piece)
+        index += 1
+    return "".join(parts)
+
+
+def test_distinct_encoded_comments_stay_fast() -> None:
+    payload = _joined_until(lambda index: f"&lt;!--{index:06d}--&gt;")
+    started = time.perf_counter()
+    result = sanitize_input.classify(payload)
+    elapsed = time.perf_counter() - started
+    assert result["tier"] == "clean"
+    assert elapsed < 2.0, elapsed
+
+
+def test_distinct_plain_comments_stay_fast() -> None:
+    payload = _joined_until(lambda index: f"<!--w{index:05d}-->")
+    started = time.perf_counter()
+    result = sanitize_input.classify(payload)
+    elapsed = time.perf_counter() - started
+    assert result["tier"] == "clean"
+    assert elapsed < 5.0, elapsed
+
+
 def test_many_trivial_html_comments_stay_fast() -> None:
     payload = "<!--x-->" * (100_000 // len("<!--x-->"))
     started = time.perf_counter()
