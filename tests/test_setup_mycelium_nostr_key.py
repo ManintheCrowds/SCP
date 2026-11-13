@@ -9,6 +9,11 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip(
+    "coincurve",
+    reason="coincurve is an optional antigen extra; setup_mycelium_nostr_key requires it",
+)
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "scripts"))

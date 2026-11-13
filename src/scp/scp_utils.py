@@ -47,9 +47,19 @@ def registry_fetch_quarantine_dir() -> Path:
     return _quarantine_dir() / REGISTRY_FETCH_LAYOUT
 
 
+def _assert_on_disk_size(path: Path, expected: int) -> None:
+    """The quota check counted ``expected`` bytes; refuse a different file size."""
+    actual = path.stat().st_size
+    if actual != expected:
+        raise ValueError(
+            "quarantine on-disk size does not match the validated byte count "
+            f"({actual} vs {expected} bytes)"
+        )
+
+
 def _prepare_layout_dir(root: Path, layout: str) -> Path:
     qdir = root / layout
-    if qdir.is_symlink():
+    if quarantine_limits._path_is_reparse_point(qdir):
         raise ValueError(f"unsafe quarantine layout: {layout}")
     qdir.mkdir(parents=True, exist_ok=True)
     if not quarantine_limits._safe_existing_layout_dir(root, qdir):
@@ -218,8 +228,14 @@ def _quarantine_locked(
         protected_pair=(qdir, qid),
     )
     try:
-        tmp_content_path.write_text(content, encoding="utf-8", errors="replace")
-        tmp_meta_path.write_text(meta_json, encoding="utf-8")
+        # newline="\n" keeps the file size equal to the UTF-8 length validated
+        # above. Default text mode would expand each LF to CRLF on Windows.
+        tmp_content_path.write_text(
+            content, encoding="utf-8", errors="replace", newline="\n"
+        )
+        tmp_meta_path.write_text(meta_json, encoding="utf-8", newline="\n")
+        _assert_on_disk_size(tmp_content_path, content_bytes)
+        _assert_on_disk_size(tmp_meta_path, meta_bytes)
         os.replace(tmp_content_path, content_path)
         os.replace(tmp_meta_path, meta_path)
         quarantine_limits.enforce_quarantine_limits(

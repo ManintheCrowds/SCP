@@ -13,6 +13,7 @@ from typing import Any
 from . import antigen
 from . import operator_consent
 from . import pattern_record as pr
+from . import quarantine_limits
 from . import registry_paths
 from . import scp_utils
 
@@ -179,24 +180,33 @@ def _path_under_registry_fetch(path: Path) -> bool:
     """True iff path resolves under {QUARANTINE_DIR}/registry_fetch/."""
     try:
         fetch_dir = scp_utils.registry_fetch_quarantine_dir()
-        if fetch_dir.is_symlink():
+        quarantine_root = scp_utils.quarantine_dir()
+        # Junctions are not symlinks, and resolve() would follow them. Reject
+        # the layout directory and any reparse point below the quarantine root
+        # before resolving.
+        if quarantine_limits._path_is_reparse_point(fetch_dir):
+            return False
+        if quarantine_limits._contains_reparse_point(path, quarantine_root):
             return False
         resolved = path.resolve()
         fetch_root = fetch_dir.resolve()
-        quarantine_root = scp_utils.quarantine_dir().resolve()
+        quarantine_root_resolved = quarantine_root.resolve()
     except OSError:
         return False
     try:
-        if fetch_root == quarantine_root or not fetch_root.is_relative_to(quarantine_root):
+        if (
+            fetch_root == quarantine_root_resolved
+            or not fetch_root.is_relative_to(quarantine_root_resolved)
+        ):
             return False
         return resolved.is_relative_to(fetch_root)
     except (ValueError, AttributeError):
         # Python <3.9 fallback unused; keep defensive.
         try:
-            if fetch_root == quarantine_root:
+            if fetch_root == quarantine_root_resolved:
                 return False
             resolved.relative_to(fetch_root)
-            fetch_root.relative_to(quarantine_root)
+            fetch_root.relative_to(quarantine_root_resolved)
             return True
         except ValueError:
             return False
