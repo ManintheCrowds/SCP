@@ -1413,17 +1413,43 @@ def _prepared_scan_forms(raw: str) -> tuple[list[str], list[tuple[int, str]]]:
 _COMMENT_BATCH_SEP = "\ue000"
 
 
+_MAX_COMMENT_DEPTH = 8
+_MAX_COMMENT_BODY_WORK = 2_000_000
+
+
 def _comment_scan_text(body: str) -> str:
-    """Removed and space-replaced cleanup of one comment body, including nested comments."""
-    decoded = _decode_layers(body)
-    removed, spaced, _gap, _spaced_bounds, _gap_bounds, nested = _comment_slice(decoded)
-    parts = [_finish_visible(removed)]
-    finished_spaced = _finish_visible(spaced)
-    if finished_spaced != parts[0]:
-        parts.append(finished_spaced)
-    for _start, nested_body, _closed in nested:
-        if nested_body.strip():
-            parts.append(_comment_scan_text(nested_body))
+    """Cleanup for one comment body. Nested closed comments are walked iteratively.
+
+    An unclosed comment's body is the remainder of the input, so it is not
+    queued again. Depth and a character budget stop a nested bomb from
+    re-decoding the same tail.
+    """
+    parts: list[str] = []
+    stack: list[tuple[str, int]] = [(body, 0)]
+    seen: set[str] = set()
+    work = 0
+    while stack:
+        current, depth = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        work += len(current)
+        if work > _MAX_COMMENT_BODY_WORK or depth > _MAX_COMMENT_DEPTH:
+            break
+        decoded = _decode_layers(current)
+        removed, spaced, _gap, _spaced_bounds, _gap_bounds, nested = _comment_slice(decoded)
+        parts.append(_finish_visible(removed))
+        finished_spaced = _finish_visible(spaced)
+        if finished_spaced != parts[-1]:
+            parts.append(finished_spaced)
+        if depth >= _MAX_COMMENT_DEPTH:
+            continue
+        for _start, nested_body, closed in nested:
+            if not closed or not nested_body.strip() or len(nested_body) >= len(current):
+                continue
+            stack.append((nested_body, depth + 1))
+    if not parts:
+        return ""
     if len(parts) == 1:
         return parts[0]
     return _COMMENT_BATCH_SEP.join(parts)
