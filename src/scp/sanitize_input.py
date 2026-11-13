@@ -2354,9 +2354,11 @@ def classify(text: str) -> dict:
         if conceal:
             concealed_notes.append(note)
 
+    if comment_capped:
+        severities.append("high")
     injection_any = any(legacy[key] for key in _INJECTION_FINDING_KEYS) or any(
         severity in ("high", "critical") for severity in severities
-    )
+    ) or comment_capped
     reversal_any = any(legacy[key] for key in _REVERSAL_FINDING_KEYS) or any(
         severity == "medium" for severity in severities
     )
@@ -2379,9 +2381,6 @@ def classify(text: str) -> dict:
     if concealed_notes:
         categories.append("html_comment")
 
-    if comment_capped:
-        injection_any = True
-        severities.append("high")
     if injection_any:
         tier = "injection"
         risk_score = 1.0
