@@ -536,11 +536,14 @@ def _override_gap_patterns() -> tuple[tuple[re.Pattern[str], str], ...]:
 
 def _comment_slice(
     text: str,
+    *,
+    gaps: bool = True,
 ) -> tuple[str, str, str | None, list[int], list[int], list[tuple[int, str, bool]]]:
     """Split comments into removed text, spaced text, and one gap per run.
 
     Back-to-back comments are a single boundary. ``gap`` is None when the
-    text has no comments. Boundary lists index the spaced text and the gap text.
+    text has no comments or when ``gaps`` is false. Boundary lists index the
+    spaced text and the gap text.
     """
     removed_parts: list[str] = []
     spaced_parts: list[str] = []
@@ -560,16 +563,17 @@ def _comment_slice(
             tail = text[cursor:]
             removed_parts.append(tail)
             spaced_parts.append(tail)
-            if found:
+            if found and gaps:
                 gap_parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, tail))
             break
         chunk = text[cursor:start]
         removed_parts.append(chunk)
         spaced_parts.append(chunk)
-        gap_parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, chunk))
+        if gaps:
+            gap_parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, chunk))
+            gap_len += len(gap_parts[-1])
         removed_len += len(chunk)
         spaced_len += len(chunk)
-        gap_len += len(gap_parts[-1])
         pos = start
         while text.startswith("<!--", pos):
             nxt, body, closed = _read_html_comment(text, pos)
@@ -583,9 +587,10 @@ def _comment_slice(
         spaced_bounds.append(spaced_len)
         spaced_parts.append(" ")
         spaced_len += 1
-        gap_bounds.append(gap_len)
-        gap_parts.append(_COMMENT_GAP)
-        gap_len += 1
+        if gaps:
+            gap_bounds.append(gap_len)
+            gap_parts.append(_COMMENT_GAP)
+            gap_len += 1
         found = True
         cursor = pos
     removed = "".join(removed_parts)
@@ -777,8 +782,15 @@ def _match_cuts_a_longer_word(text: str, bounds: list[int], start: int, end: int
     return _continues(end, 1) or _continues(start - 1, -1)
 
 
+def _text_needs_decode(text: str) -> bool:
+    """True when canonicalize can change the text. Plain ASCII does not."""
+    return "&" in text or "%" in text or not text.isascii()
+
+
 def _decode_layers(text: str) -> str:
     """Entity, URL, and full-width decoding without comment removal."""
+    if not _text_needs_decode(text):
+        return text
     prepared = text
     for _ in range(_CANONICALIZATION_MAX_LAYERS):
         canonical = _canonicalize_scan_layer(prepared)
@@ -1336,6 +1348,18 @@ def _read_html_comment(text: str, start: int) -> tuple[int, str, bool]:
                 data.append("-")
                 state = _COMMENT
         elif state == _COMMENT:
+            # Skip ordinary runs in C. Only '<' and '-' change the tokenizer state.
+            next_mark = length
+            for mark in ("<", "-"):
+                found = text.find(mark, index)
+                if found >= 0:
+                    next_mark = min(next_mark, found)
+            if next_mark > index:
+                data.append(text[index:next_mark])
+                index = next_mark
+                if index >= length:
+                    break
+                char = text[index]
             if char == "<":
                 data.append("<")
                 state = _COMMENT_LT
@@ -1442,11 +1466,12 @@ def _comment_body_needs_scan(body: str) -> bool:
     """True for every comment body that still has something to read.
 
     Digit-only, dotted, dashed, and entity bodies all go through the same
-    cleanup. Whitespace-only bodies do not.
+    cleanup. Whitespace-only bodies do not, unless they hide a null or a
+    zero-width character.
     """
-    if any(char == "\x00" or ord(char) in HIDDEN_UNICODE for char in body):
+    if body.strip():
         return True
-    return bool(body.strip())
+    return any(char == "\x00" or ord(char) in HIDDEN_UNICODE for char in body)
 
 
 _COMMENT_BATCH_SEP = "\ue000"
@@ -1484,8 +1509,10 @@ def _comment_scan_text(body: str) -> tuple[str, bool]:
             capped = True
             parts.append(_finish_visible(_flatten_comment_markers(current)))
             break
-        decoded = _decode_layers(current)
-        removed, spaced, _gap, spaced_bounds, _gap_bounds, nested = _comment_slice(decoded)
+        decoded = _decode_layers(current) if _text_needs_decode(current) else current
+        removed, spaced, _gap, spaced_bounds, _gap_bounds, nested = _comment_slice(
+            decoded, gaps=False
+        )
         parts.append(_finish_visible(removed))
         if spaced != removed and spaced_bounds:
             for window, _local in _boundary_windows(spaced, spaced_bounds):
@@ -1629,10 +1656,12 @@ def _comment_batch_findings(
     legacy_hits: list[tuple[str, int, str, int, bool]] = []
     poison_hits: list[tuple[int, str, str, str, int, bool]] = []
     for source_offset, body, conceal in bodies:
-        for offset, phrase in scan_hidden_unicode(body):
-            legacy_hits.append(("hidden_unicode", offset, str(phrase), source_offset, conceal))
-        for offset, phrase in scan_null_bytes(body):
-            legacy_hits.append(("null_byte", offset, str(phrase), source_offset, conceal))
+        # Finish strips these, so they are read on the raw body. Plain ASCII has none.
+        if "\x00" in body or not body.isascii():
+            for offset, phrase in scan_hidden_unicode(body):
+                legacy_hits.append(("hidden_unicode", offset, str(phrase), source_offset, conceal))
+            for offset, phrase in scan_null_bytes(body):
+                legacy_hits.append(("null_byte", offset, str(phrase), source_offset, conceal))
     for key, hits in _scan_finding_groups(batch, batch).items():
         if key in ("hidden_unicode", "null_byte"):
             continue
@@ -1686,8 +1715,8 @@ def _scan_finding_groups(
     return {
         "override_phrases": scan_override_phrases(prepared),
         "leetspeak_phrases": scan_leetspeak(prepared),
-        "hidden_unicode": scan_hidden_unicode(raw) if heavy else [],
-        "null_byte": scan_null_bytes(raw) if heavy else [],
+        "hidden_unicode": scan_hidden_unicode(raw) if heavy and not raw.isascii() else [],
+        "null_byte": scan_null_bytes(raw) if heavy and "\x00" in raw else [],
         "path_traversal": scan_path_traversal(prepared),
         "encoding_evasion_rot": _check_rot_decode(prepared) if heavy else [],
         "reversal_phrases": scan_reversal_phrases(prepared),
