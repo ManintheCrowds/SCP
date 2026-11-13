@@ -755,30 +755,26 @@ def _boundary_windows(text: str, bounds: list[int], radius: int = 160) -> list[t
 
 
 def _match_cuts_a_longer_word(text: str, bounds: list[int], start: int, end: int) -> bool:
-    """True when a synthetic boundary splits a word the match does not fully cover.
+    """True when one phrase word is only a prefix or suffix of a longer word.
 
     ``ignore<!--x-->list`` must not count as the word ``ignore``. A boundary
-    that sits between two whole phrase words, as in ``ignore<!-- -->previous``,
-    is inside the match and stays.
+    outside a multi-word phrase, next to unrelated letters, does not cancel
+    that phrase: ``instructions<!--c-->x`` still matches.
     """
+    matched = text[start:end]
+    if any(char.isspace() or char in (_COMMENT_GAP, _SPACE_MARK) for char in matched):
+        return False
     edges = set(bounds)
-    if end in edges:
-        nxt = end + 1
-        if nxt < len(text) and text[nxt].isalnum():
-            return True
-    if start > 0 and (start - 1) in edges and text[start - 1] in {_COMMENT_GAP, " "}:
-        prev = start - 2
-        if prev >= 0 and text[prev].isalnum():
-            return True
-    if end < len(text) and text[end] == _COMMENT_GAP:
-        nxt = end + 1
-        if nxt < len(text) and text[nxt].isalnum():
-            return True
-    if start > 0 and text[start - 1] == _COMMENT_GAP:
-        prev = start - 2
-        if prev >= 0 and text[prev].isalnum():
-            return True
-    return False
+
+    def _continues(boundary: int, step: int) -> bool:
+        if boundary < 0 or boundary >= len(text):
+            return False
+        if boundary not in edges and text[boundary] != _COMMENT_GAP:
+            return False
+        nxt = boundary + step
+        return 0 <= nxt < len(text) and text[nxt].isalnum()
+
+    return _continues(end, 1) or _continues(start - 1, -1)
 
 
 def _decode_layers(text: str) -> str:
