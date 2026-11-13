@@ -614,7 +614,7 @@ def _scan_marked_overrides(normalized: str) -> list[tuple[int, str]]:
             if canonical.casefold() in seen:
                 continue
             if _match_cuts_a_longer_word(
-                normalized, [], match.start(), match.end()
+                normalized, set(), match.start(), match.end()
             ):
                 continue
             seen.add(canonical.casefold())
@@ -672,7 +672,7 @@ def _scan_marked_poison(normalized: str) -> list[tuple[int, str, str, str]]:
             key = phrase.casefold()
             if key in seen:
                 continue
-            if _match_cuts_a_longer_word(normalized, [], match.start(), match.end()):
+            if _match_cuts_a_longer_word(normalized, set(), match.start(), match.end()):
                 continue
             seen.add(key)
             findings.append((match.start(), phrase, phrase, severity))
@@ -715,19 +715,20 @@ def _supplemental_visible_hits(
                 scanned = decoded_window
                 bounds = []
         cleaned = _finish_visible(scanned)
-        # Bounds refer to the pre-cleanup window. Inserted spaces stay put
-        # when the window is ordinary words.
+        # One set for the window. Building it per hit is quadratic in the
+        # number of comments when every comment produces a hit.
+        edges = set(bounds)
         overrides.extend(
             hit for hit in scan_override_phrases(scanned)
-            if not _match_cuts_a_longer_word(scanned, bounds, hit[0], hit[0] + len(hit[1]))
+            if not _match_cuts_a_longer_word(scanned, edges, hit[0], hit[0] + len(hit[1]))
         )
         reversals.extend(
             hit for hit in scan_reversal_phrases(scanned)
-            if not _match_cuts_a_longer_word(scanned, bounds, hit[0], hit[0] + len(hit[1]))
+            if not _match_cuts_a_longer_word(scanned, edges, hit[0], hit[0] + len(hit[1]))
         )
         poisons.extend(
             hit for hit in scan_tool_poisoning(scanned)
-            if not _match_cuts_a_longer_word(scanned, bounds, hit[0], hit[0] + len(hit[1]))
+            if not _match_cuts_a_longer_word(scanned, edges, hit[0], hit[0] + len(hit[1]))
         )
         if cleaned != scanned:
             overrides.extend(scan_override_phrases(cleaned))
@@ -753,13 +754,22 @@ def _boundary_windows(text: str, bounds: list[int], radius: int = 160) -> list[t
             intervals[-1][1] = max(intervals[-1][1], hi)
         else:
             intervals.append([lo, hi])
-    return [
-        (text[lo:hi], [pos - lo for pos in bounds if lo <= pos < hi])
-        for lo, hi in intervals
-    ]
+    windows: list[tuple[str, list[int]]] = []
+    cursor = 0
+    total = len(bounds)
+    for lo, hi in intervals:
+        while cursor < total and bounds[cursor] < lo:
+            cursor += 1
+        local: list[int] = []
+        probe = cursor
+        while probe < total and bounds[probe] < hi:
+            local.append(bounds[probe] - lo)
+            probe += 1
+        windows.append((text[lo:hi], local))
+    return windows
 
 
-def _match_cuts_a_longer_word(text: str, bounds: list[int], start: int, end: int) -> bool:
+def _match_cuts_a_longer_word(text: str, bounds: set[int], start: int, end: int) -> bool:
     """True when one phrase word is only a prefix or suffix of a longer word.
 
     ``ignore<!--x-->list`` must not count as the word ``ignore``. A boundary
@@ -769,7 +779,7 @@ def _match_cuts_a_longer_word(text: str, bounds: list[int], start: int, end: int
     matched = text[start:end]
     if any(char.isspace() or char in (_COMMENT_GAP, _SPACE_MARK) for char in matched):
         return False
-    edges = set(bounds)
+    edges = bounds
 
     def _continues(boundary: int, step: int) -> bool:
         if boundary < 0 or boundary >= len(text):
@@ -1584,17 +1594,37 @@ def _comment_runs(text: str) -> list[tuple[int, int]]:
     return runs
 
 
-def _removed_to_source(index: int, runs: list[tuple[int, int]]) -> int:
-    """Map an index in the comment-removed text back to the original string."""
-    origin = 0
-    removed = 0
-    for start, end in runs:
-        chunk = start - origin
-        if index < removed + chunk:
-            return origin + (index - removed)
-        removed += chunk
-        origin = end
-    return origin + (index - removed)
+class _RemovedOffsetIndex:
+    """Bisect map from a comment-removed index back to the original string.
+
+    Built once per form. A linear walk per hit is quadratic when each comment
+    produces a hit.
+    """
+
+    def __init__(self, runs: list[tuple[int, int]]) -> None:
+        breaks: list[int] = []
+        origin_at: list[int] = []
+        removed_at: list[int] = []
+        origin = 0
+        removed = 0
+        for start, end in runs:
+            chunk = start - origin
+            breaks.append(removed + chunk)
+            origin_at.append(origin)
+            removed_at.append(removed)
+            removed += chunk
+            origin = end
+        self.breaks = breaks
+        self.origin_at = origin_at
+        self.removed_at = removed_at
+        self.tail_origin = origin
+        self.tail_removed = removed
+
+    def map(self, index: int) -> int:
+        slot = bisect.bisect_right(self.breaks, index)
+        if slot >= len(self.breaks):
+            return self.tail_origin + (index - self.tail_removed)
+        return self.origin_at[slot] + (index - self.removed_at[slot])
 
 
 def _closest_offset(positions: list[int], target: int, limit: int) -> int:
@@ -1839,12 +1869,12 @@ def classify(text: str) -> dict:
         [(spaced, spaced_bounds, gap, gap_bounds)]
     )
     scope = "text"
-    source_runs = _comment_runs(text if decoded == text else decoded)
+    source_index = _RemovedOffsetIndex(_comment_runs(text if decoded == text else decoded))
 
     def _visible_source(offset: int) -> int:
-        if not source_runs or finished != removed:
+        if not source_index.breaks or finished != removed:
             return offset
-        return _removed_to_source(offset, source_runs)
+        return source_index.map(offset)
 
     surface_seen: dict[tuple[str, str], dict[str, int]] = {}
     groups = _scan_finding_groups(visible_raw, finished, heavy=True)
