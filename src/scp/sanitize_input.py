@@ -977,11 +977,11 @@ def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
 def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
     """Split ``<!-- ... -->`` comments out of text.
 
-    Each full comment is replaced by a single space so neighboring words do not
-    glue together. Comment bodies are returned separately as ``(start, body)``
-    where ``start`` is the index of ``<!--`` in ``text``. A missing closer runs
-    to the end of the input. One forward ``str.find`` walk stays linear when
-    many comments are left unclosed.
+    Each full comment is removed from the visible text, matching how HTML
+    comments disappear for renderers. Comment bodies are returned separately as
+    ``(start, body)`` where ``start`` is the index of ``<!--`` in ``text``. A
+    missing closer runs to the end of the input. One forward ``str.find`` walk
+    stays linear when many comments are left unclosed.
     """
     parts: list[str] = []
     comments: list[tuple[int, str]] = []
@@ -996,10 +996,8 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
         close = text.find("-->", start + 4)
         if close < 0:
             comments.append((start, text[start + 4 :]))
-            parts.append(" ")
             break
         comments.append((start, text[start + 4 : close]))
-        parts.append(" ")
         cursor = close + 3
     return "".join(parts), comments
 
