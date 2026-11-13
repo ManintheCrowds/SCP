@@ -9,7 +9,6 @@ Scan text for prompt-injection patterns and hidden Unicode.
 import base64
 import bisect
 import codecs
-import difflib
 from functools import lru_cache
 import html
 import json
@@ -1721,67 +1720,217 @@ def _replacement_map(text: str, pattern: re.Pattern[str], replace) -> tuple[str,
         if replacement != match.group(0):
             changed = True
         parts.append(replacement)
-        if len(replacement) == match.end() - match.start():
+        span = match.end() - match.start()
+        if len(replacement) == span:
             source.extend(range(match.start(), match.end()))
-        else:
-            anchor = match.start()
-            source.extend([anchor] * len(replacement))
+        elif replacement:
+            source.extend([match.start()] * len(replacement))
         last = match.end()
     parts.append(text[last:])
     source.extend(range(last, len(text)))
     if not changed:
         return text, None
+    # A same-length substitution does not move later characters.
+    if len(source) == len(text) and source == list(range(len(text))):
+        return "".join(parts), None
     return "".join(parts), source
+
+
+def _advance(current: str, mapping: list[int] | None, updated: str, step: list[int] | None) -> tuple[str, list[int] | None]:
+    return updated, _compose_maps(mapping, step)
+
+
+def _nfkc_with_map(text: str) -> tuple[str, list[int] | None]:
+    """NFKC one character at a time so a ligature expands without a global align."""
+    normalized = unicodedata.normalize("NFKC", text)
+    if normalized == text:
+        return text, None
+    parts: list[str] = []
+    source: list[int] = []
+    for index, char in enumerate(text):
+        if ord(char) < 128:
+            parts.append(char)
+            source.append(index)
+            continue
+        mapped = unicodedata.normalize("NFKC", char)
+        parts.append(mapped)
+        source.extend([index] * len(mapped))
+    produced = "".join(parts)
+    if produced == normalized:
+        return produced, source
+    return normalized, _linear_span_map(text, normalized)
+
+
+def _combining_with_map(text: str) -> tuple[str, list[int] | None]:
+    stripped = _strip_excessive_combining(text)
+    if stripped == text:
+        return text, None
+    parts: list[str] = []
+    source: list[int] = []
+    combining = 0
+    for index, char in enumerate(text):
+        if unicodedata.category(char).startswith("M"):
+            combining += 1
+            if combining <= 3:
+                parts.append(char)
+                source.append(index)
+        else:
+            combining = 0
+            parts.append(char)
+            source.append(index)
+    return "".join(parts), source
+
+
+def _tag_block_with_map(text: str) -> tuple[str, list[int] | None]:
+    if not any(_TAG_CHAR_START <= ord(char) <= _TAG_CHAR_END for char in text):
+        return text, None
+    decoded = _decode_tag_block(text)
+    if decoded == text:
+        return text, None
+    parts: list[str] = []
+    source: list[int] = []
+    index = 0
+    while index < len(text):
+        code = ord(text[index])
+        if _TAG_CHAR_START <= code <= _TAG_CHAR_END:
+            start = index
+            chars: list[str] = []
+            while index < len(text) and _TAG_CHAR_START <= ord(text[index]) <= _TAG_CHAR_END:
+                chars.append(chr(ord(text[index]) - _TAG_CHAR_START))
+                index += 1
+            parts.append("".join(chars))
+            source.extend([start] * len(chars))
+        else:
+            parts.append(text[index])
+            source.append(index)
+            index += 1
+    produced = "".join(parts)
+    if produced == decoded:
+        return produced, source
+    return decoded, _linear_span_map(text, decoded)
+
+
+def _linear_span_map(before: str, after: str) -> list[int] | None:
+    """Map one changed span. Several scattered edits stay on the transform maps."""
+    if before == after or not after:
+        return None
+    start = 0
+    limit = min(len(before), len(after))
+    while start < limit and before[start] == after[start]:
+        start += 1
+    end_before = len(before)
+    end_after = len(after)
+    while end_before > start and end_after > start and before[end_before - 1] == after[end_after - 1]:
+        end_before -= 1
+        end_after -= 1
+    anchor = min(start, max(len(before) - 1, 0))
+    source = list(range(start))
+    source.extend([anchor] * (end_after - start))
+    source.extend(range(end_before, len(before)))
+    if len(source) != len(after):
+        source = source[: len(after)]
+        source.extend([anchor] * (len(after) - len(source)))
+    return source
+
+
+def _mapped_canonicalize(text: str) -> tuple[str, list[int] | None]:
+    """Same steps as one decode, recording a source index per output character."""
+    current = text
+    mapping: list[int] | None = None
+    for _ in range(_CANONICALIZATION_MAX_LAYERS):
+        before = current
+        if "\x00" in current:
+            updated, step = _replacement_map(current, re.compile("\x00"), lambda _match: "")
+            current, mapping = _advance(current, mapping, updated, step)
+        current, mapping = _advance(current, mapping, *_tag_block_with_map(current))
+        if _INVISIBLE_UNICODE_RE.search(current):
+            updated, step = _replacement_map(current, _INVISIBLE_UNICODE_RE, lambda _match: "")
+            current, mapping = _advance(current, mapping, updated, step)
+        current, mapping = _advance(current, mapping, *_combining_with_map(current))
+        if _CONFUSABLE_WHITESPACE_RE.search(current):
+            updated, step = _replacement_map(current, _CONFUSABLE_WHITESPACE_RE, lambda _match: " ")
+            current, mapping = _advance(current, mapping, updated, step)
+        current, mapping = _advance(current, mapping, *_nfkc_with_map(current))
+        if _REGIONAL_INDICATOR_RE.search(current):
+            updated, step = _replacement_map(current, _REGIONAL_INDICATOR_RE, lambda _match: "")
+            current, mapping = _advance(current, mapping, updated, step)
+        if "%" in current:
+            updated, step = _replacement_map(
+                current, _URL_BYTE_RE, lambda match: urllib.parse.unquote(match.group(0))
+            )
+            if updated == urllib.parse.unquote(current):
+                current, mapping = _advance(current, mapping, updated, step)
+            else:
+                unquoted = urllib.parse.unquote(current)
+                current, mapping = _advance(current, mapping, unquoted, _linear_span_map(current, unquoted))
+        if "&" in current:
+            updated, step = _replacement_map(
+                current, _ENTITY_RE, lambda match: html.unescape(match.group(0))
+            )
+            if updated == html.unescape(current):
+                current, mapping = _advance(current, mapping, updated, step)
+            else:
+                unescaped = html.unescape(current)
+                current, mapping = _advance(current, mapping, unescaped, _linear_span_map(current, unescaped))
+        if current == before:
+            break
+    return current, mapping
 
 
 def _decode_source_map(original: str, decoded: str) -> list[int] | None:
     """Map each decoded index back to the raw string. None when nothing moved."""
     if decoded == original:
         return None
-    current = original
-    mapping: list[int] | None = None
-    if "\x00" in current:
-        stripped, step = _replacement_map(current, re.compile("\x00"), lambda _match: "")
-        mapping = _compose_maps(mapping, step)
-        current = stripped
-    if "&" in current:
-        unescaped, step = _replacement_map(
-            current, _ENTITY_RE, lambda match: html.unescape(match.group(0))
-        )
-        if unescaped == html.unescape(current):
-            mapping = _compose_maps(mapping, step)
-            current = unescaped
-    if "%" in current:
-        unquoted, step = _replacement_map(
-            current, _URL_BYTE_RE, lambda match: urllib.parse.unquote(match.group(0))
-        )
-        if unquoted == urllib.parse.unquote(current):
-            mapping = _compose_maps(mapping, step)
-            current = unquoted
+    current, mapping = _mapped_canonicalize(original)
     if current == decoded:
         return mapping
-    # A later canonicalize step still moved characters. Align the two strings.
-    return _compose_maps(mapping, _align_changed_text(current, decoded))
+    return _compose_maps(mapping, _linear_span_map(current, decoded))
 
 
-def _align_changed_text(before: str, after: str) -> list[int] | None:
-    if before == after:
-        return None
-    source = [0] * len(after)
-    matcher = difflib.SequenceMatcher(a=before, b=after, autojunk=False)
-    for tag, i1, _i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            for step in range(j2 - j1):
-                source[j1 + step] = i1 + step
-        else:
-            anchor = min(i1, len(before) - 1) if before else 0
-            for step in range(j2 - j1):
-                source[j1 + step] = anchor
-    return source
+def _base64_append_with_map(text: str) -> tuple[str, list[int] | None]:
+    """Append short base64 snippets and point those characters at the token."""
+    current = text
+    mapping: list[int] | None = None
+    for _ in range(_B64_MAX_LAYERS):
+        extras: list[tuple[int, str]] = []
+        for match in _B64_CANDIDATE.finditer(current):
+            blob = match.group(0).rstrip("=")
+            if len(blob) > 120 or len(blob) < 8:
+                continue
+            try:
+                pad = blob + "=" * ((4 - len(blob) % 4) % 4)
+                decoded = base64.b64decode(pad, validate=False)
+            except ValueError:
+                continue
+            if len(decoded) > 200:
+                continue
+            try:
+                snippet = decoded.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            if snippet and all(char.isprintable() or char in "\n\r\t" for char in snippet):
+                anchor = match.start()
+                if mapping is not None and anchor < len(mapping):
+                    anchor = mapping[anchor]
+                extras.append((anchor, snippet))
+        if not extras:
+            break
+        step = list(range(len(current))) if mapping is None else list(mapping)
+        pieces = [current]
+        for anchor, snippet in extras:
+            pieces.append("\n")
+            pieces.append(snippet)
+            step.append(anchor)
+            step.extend([anchor] * len(snippet))
+        current = "".join(pieces)
+        mapping = step
+    if mapping is None:
+        return text, None
+    return current, mapping
 
 
 def _finish_source_map(before: str, after: str) -> list[int] | None:
-    """Map a finished index back through fragment, hex, and JSON collapse."""
+    """Map a finished index back through fragment, hex, JSON, and base64."""
     if before == after:
         return None
     current = before
@@ -1802,11 +1951,12 @@ def _finish_source_map(before: str, after: str) -> list[int] | None:
         ),
     ):
         updated, step = _replacement_map(current, pattern, replace)
-        mapping = _compose_maps(mapping, step)
-        current = updated
+        current, mapping = _advance(current, mapping, updated, step)
+    updated, step = _base64_append_with_map(current)
+    current, mapping = _advance(current, mapping, updated, step)
     if current == after:
         return mapping
-    return _compose_maps(mapping, _align_changed_text(current, after))
+    return _compose_maps(mapping, _linear_span_map(current, after))
 
 
 def _closest_offset(positions: list[int], target: int, limit: int) -> int:
