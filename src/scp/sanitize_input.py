@@ -478,38 +478,83 @@ def scan_override_phrases(text: str) -> list[tuple[int, str]]:
     return findings
 
 
-_GAP_MARK = "\x1f"
+_COMMENT_GAP = "\ue001"
+_SPACE_MARK = "\ue002"
 _WHITESPACE_RUN = re.compile(r"\s+")
+_GAP_OR_SPACE = "(?:" + re.escape(_COMMENT_GAP) + "|" + re.escape(_SPACE_MARK) + ")+"
+_OPTIONAL_COMMENT_GAP = "(?:" + re.escape(_COMMENT_GAP) + ")?"
+
+
+def _pattern_with_comment_gaps(pattern: str) -> str:
+    """Require a real space or a comment boundary between words.
+
+    A comment boundary may also sit inside a word. It is one optional
+    character, not a repeating wildcard.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith(r"\s+", index):
+            out.append(_GAP_OR_SPACE)
+            index += 3
+            continue
+        if pattern[index] == "\\" and index + 1 < len(pattern):
+            out.append(pattern[index : index + 2])
+            index += 2
+            continue
+        char = pattern[index]
+        out.append(char)
+        if char.isalpha() and index + 1 < len(pattern) and pattern[index + 1].isalpha():
+            out.append(_OPTIONAL_COMMENT_GAP)
+        index += 1
+    return "".join(out)
 
 
 @lru_cache(maxsize=1)
 def _override_gap_patterns() -> tuple[re.Pattern[str], ...]:
-    """Override patterns where each required space may be missing.
-
-    The gap is one optional sentinel, not a repeating quantifier, so the
-    match stays linear.
-    """
-    gap = r"(?:\x1f)?"
     compiled: list[re.Pattern[str]] = []
     for pattern in OVERRIDE_PHRASES:
         if r"\s" not in pattern:
             continue
-        compiled.append(re.compile(pattern.replace(r"\s+", gap), re.IGNORECASE))
+        compiled.append(re.compile(_pattern_with_comment_gaps(pattern), re.IGNORECASE))
     return tuple(compiled)
 
 
-def scan_override_gaps(text: str) -> list[tuple[int, str]]:
-    """Match override phrases after comments are removed.
+def _text_with_comment_gaps(text: str) -> str | None:
+    """Drop comments and mark each removal. None when nothing was removed."""
+    if "<!--" not in text:
+        return None
+    parts: list[str] = []
+    cursor = 0
+    length = len(text)
+    removed = False
+    while cursor < length:
+        start = text.find("<!--", cursor)
+        if start < 0:
+            parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, text[cursor:]))
+            break
+        parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, text[cursor:start]))
+        end, _body = _read_html_comment(text, start)
+        if end <= start:
+            end = min(start + 4, length)
+        parts.append(_COMMENT_GAP)
+        removed = True
+        cursor = end
+    if not removed:
+        return None
+    return "".join(parts)
 
-    Whitespace runs become one sentinel and each gap may be absent, so one
-    comment can join a word while another used to separate words.
-    """
-    normalized = _WHITESPACE_RUN.sub(_GAP_MARK, text)
+
+def scan_override_gaps(text: str) -> list[tuple[int, str]]:
+    """Match override phrases whose missing spaces sit on removed comments."""
+    normalized = _text_with_comment_gaps(text)
+    if normalized is None:
+        return []
     findings: list[tuple[int, str]] = []
     seen: set[str] = set()
     for pattern in _override_gap_patterns():
         for match in pattern.finditer(normalized):
-            phrase = match.group(0).replace(_GAP_MARK, " ")
+            phrase = match.group(0).replace(_COMMENT_GAP, " ").replace(_SPACE_MARK, " ")
             key = " ".join(phrase.split()).casefold()
             if key in seen:
                 continue
@@ -1368,6 +1413,7 @@ def classify(text: str) -> dict:
     scheduled_bodies = {body for kind, _start, body in segments if kind == "html_comment"}
 
     pending_comments: list[tuple[int, str]] = []
+    gap_hits = scan_override_gaps(text)
     index = 0
     while index < len(segments):
         segment, source_offset, raw = segments[index]
@@ -1385,17 +1431,18 @@ def classify(text: str) -> dict:
         for prepared in forms:
             surface_seen: dict[tuple[str, str], dict[str, int]] = {}
             groups = _scan_finding_groups(raw, prepared)
-            if segment == "text" and prepared == forms[0]:
+            if segment == "text" and gap_hits and prepared == forms[0]:
                 already = {
                     " ".join(item[1].split()).casefold()
                     for item in groups["override_phrases"]
                 }
-                for hit in scan_override_gaps(prepared):
+                for hit in gap_hits:
                     key = " ".join(hit[1].split()).casefold()
                     if key in already:
                         continue
                     already.add(key)
                     groups["override_phrases"].append(hit)
+                gap_hits = []
             for key, hits in groups.items():
                 base = _base_severity_for_key(key)
                 for offset, phrase in hits:
