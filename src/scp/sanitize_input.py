@@ -27,7 +27,7 @@ OVERRIDE_PHRASES = [
     r"ignore\s+(all\s+)?(previous|prior)\s+instructions",
     r"ignore\s+all\s+previous\s+instructions",
     r"ignore\s+prior\s+rules",
-    r"never\s+reveal\s+(this|that|the)",
+    r"never\s+reveal\s+(this|that|the)\b",
     r"do\s+not\s+tell\s+(the\s+)?user",
     r"forget\s+(all\s+)?(previous|prior)\s+instructions",
     r"disregard\s+(all\s+)?(previous|prior)",
