@@ -304,6 +304,26 @@ def test_extract_html_comments_keeps_bodies_and_strips_them_from_visible_text() 
     assert text[comments[1][0] : comments[1][0] + 4] == "<!--"
 
 
+def test_short_comment_signals_still_flag() -> None:
+    hidden = _inspect("<!--\u200b-->")
+    assert hidden["tier"] == "injection"
+    assert "hidden_unicode" in hidden["categories"]
+    nulled = _inspect("<!--\x00-->")
+    assert nulled["tier"] == "injection"
+    assert "null_byte" in nulled["categories"]
+    assert _inspect("<!--../-->")["tier"] == "injection"
+    assert _inspect("<!--0wn-->")["tier"] == "injection"
+
+
+def test_many_trivial_html_comments_stay_fast() -> None:
+    payload = "<!--x-->" * (100_000 // len("<!--x-->"))
+    started = time.perf_counter()
+    result = sanitize_input.classify(payload)
+    elapsed = time.perf_counter() - started
+    assert result["tier"] == "clean"
+    assert elapsed < 2.0, elapsed
+
+
 def test_many_unclosed_comments_stay_linear() -> None:
     payload = "<!--" * 20_000
     t0 = time.perf_counter()

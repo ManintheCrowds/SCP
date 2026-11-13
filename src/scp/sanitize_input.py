@@ -1131,6 +1131,20 @@ def _html_comment_forms(text: str) -> tuple[list[str], list[tuple[int, str]]]:
     return [removed, spaced], comments
 
 
+def _comment_body_needs_scan(body: str) -> bool:
+    """False for a comment body too small to match any phrase.
+
+    One-character bodies such as ``x`` cannot hit a phrase, but a null, a
+    hidden character, or a non-ASCII mark still can.
+    """
+    if any(char == "\x00" or ord(char) in HIDDEN_UNICODE for char in body):
+        return True
+    stripped = body.strip()
+    if len(stripped) >= 3:
+        return True
+    return any(ord(char) > 127 for char in stripped)
+
+
 def _prepared_scan_forms(raw: str) -> tuple[list[str], list[tuple[int, str]]]:
     """Normalize raw text, then split comments that decoding revealed.
 
@@ -1235,19 +1249,19 @@ def classify(text: str) -> dict:
     concealed_notes: list[dict[str, object]] = []
     severities: list[str] = []
     kept: dict[tuple[str, str], dict[str, int]] = {}
-    seen_segments: set[tuple[str, str]] = set()
+    scheduled_bodies = {body for kind, _start, body in segments if kind == "html_comment"}
 
     index = 0
     while index < len(segments):
         segment, source_offset, raw = segments[index]
         index += 1
-        if (segment, raw) in seen_segments:
+        if segment == "html_comment" and not _comment_body_needs_scan(raw):
             continue
-        seen_segments.add((segment, raw))
         scope = segment if segment == "text" else f"{segment}:{source_offset}"
         forms, revealed = _prepared_scan_forms(raw)
         for start, body in revealed:
-            if body.strip() and body != raw:
+            if body.strip() and body not in scheduled_bodies:
+                scheduled_bodies.add(body)
                 segments.append(("html_comment", start, body))
         for prepared in forms:
             surface_seen: dict[tuple[str, str], dict[str, int]] = {}
