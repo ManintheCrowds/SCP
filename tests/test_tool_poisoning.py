@@ -632,6 +632,58 @@ def test_many_unclosed_comment_openers_finish_and_have_a_tier() -> None:
         assert "error" not in inspected
 
 
+def test_rot_and_cleanup_run_once_per_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A page is cleaned and rot-decoded once. No boundaries means no extra scan."""
+    rot_lengths: list[int] = []
+    canon_lengths: list[int] = []
+    boundary_scans: list[int] = []
+    original_rot = sanitize_input._check_rot_decode
+    original_canon = sanitize_input._canonicalize_scan_layer
+    original_bounds = sanitize_input._supplemental_visible_hits
+
+    def track_rot(text: str):
+        rot_lengths.append(len(text))
+        return original_rot(text)
+
+    def track_canon(text: str):
+        canon_lengths.append(len(text))
+        return original_canon(text)
+
+    def track_bounds(spaced: str, spaced_bounds: list[int], gap, gap_bounds: list[int]):
+        boundary_scans.append(len(spaced_bounds))
+        return original_bounds(spaced, spaced_bounds, gap, gap_bounds)
+
+    monkeypatch.setattr(sanitize_input, "_check_rot_decode", track_rot)
+    monkeypatch.setattr(sanitize_input, "_canonicalize_scan_layer", track_canon)
+    monkeypatch.setattr(sanitize_input, "_supplemental_visible_hits", track_bounds)
+
+    prose = "The kernel schedules processes and manages memory. " * 400
+    sanitize_input.classify(prose)
+    assert boundary_scans == []
+    assert len([size for size in rot_lengths if size > 1000]) == 1
+    prose_passes = len([size for size in canon_lengths if size > 1000])
+
+    rot_lengths.clear()
+    canon_lengths.clear()
+    boundary_scans.clear()
+    page = "<!-- edit note -->".join((prose, prose))
+    sanitize_input.classify(page)
+    assert boundary_scans == [1]
+    assert len([size for size in rot_lengths if size > 1000]) == 1
+    assert len([size for size in canon_lengths if size > 1000]) == prose_passes
+
+    encoded = prose + " &amp; " + "<!-- note -->"
+    rot_lengths.clear()
+    canon_lengths.clear()
+    sanitize_input._decode_layers(encoded)
+    one_decode = len([size for size in canon_lengths if size > 1000])
+    rot_lengths.clear()
+    canon_lengths.clear()
+    sanitize_input.classify(encoded)
+    assert len([size for size in canon_lengths if size > 1000]) == one_decode
+    assert len([size for size in rot_lengths if size > 1000]) == 1
+
+
 def test_two_meg_unclosed_comments_stay_near_plain_prose() -> None:
     prose = ("Weekly garden notes stay ordinary and local. " * (2_000_000 // 44 + 1))[:2_000_000]
     forms = (

@@ -560,7 +560,8 @@ def _comment_slice(
             tail = text[cursor:]
             removed_parts.append(tail)
             spaced_parts.append(tail)
-            gap_parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, tail))
+            if found:
+                gap_parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, tail))
             break
         chunk = text[cursor:start]
         removed_parts.append(chunk)
@@ -685,40 +686,45 @@ def _conceal_comment_hit(mode: str, key: str, base: str) -> bool:
 
 
 def _supplemental_visible_hits(
-    text: str,
+    spaced: str,
+    spaced_bounds: list[int],
+    gap: str | None,
+    gap_bounds: list[int],
 ) -> tuple[list[tuple[int, str]], list[tuple[int, str]], list[tuple[int, str, str, str]]]:
-    """Phrase hits from the space-replaced and gap readings, including decoded comments."""
-    if (
-        "<!--" not in text
-        and "&" not in text
-        and "%" not in text
-        and "\uff1c" not in text
-        and "<!" not in text
-    ):
+    """Phrase hits around recorded comment boundaries. No full-page decode.
+
+    The caller already decoded and sliced. A form with no boundaries skips
+    this scan.
+    """
+    if not spaced_bounds and not gap_bounds:
         return [], [], []
-    decoded = _decode_layers(text)
-    _removed, spaced, gap, spaced_bounds, gap_bounds, _comments = _comment_slice(decoded)
     overrides: list[tuple[int, str]] = []
     reversals: list[tuple[int, str]] = []
     poisons: list[tuple[int, str, str, str]] = []
     for window, local_bounds in _boundary_windows(spaced, spaced_bounds):
-        cleaned = _finish_visible(window)
-        # Bounds still refer to the pre-cleanup window. The false-positive
-        # check is about inserted spaces, which cleanup does not move when
-        # the window is ordinary words.
+        scanned = window
+        bounds = local_bounds
+        if "&" in window or "%" in window or "\uff1c" in window:
+            decoded_window = _decode_layers(window)
+            if decoded_window != window:
+                scanned = decoded_window
+                bounds = []
+        cleaned = _finish_visible(scanned)
+        # Bounds refer to the pre-cleanup window. Inserted spaces stay put
+        # when the window is ordinary words.
         overrides.extend(
-            hit for hit in scan_override_phrases(window)
-            if not _match_cuts_a_longer_word(window, local_bounds, hit[0], hit[0] + len(hit[1]))
+            hit for hit in scan_override_phrases(scanned)
+            if not _match_cuts_a_longer_word(scanned, bounds, hit[0], hit[0] + len(hit[1]))
         )
         reversals.extend(
-            hit for hit in scan_reversal_phrases(window)
-            if not _match_cuts_a_longer_word(window, local_bounds, hit[0], hit[0] + len(hit[1]))
+            hit for hit in scan_reversal_phrases(scanned)
+            if not _match_cuts_a_longer_word(scanned, bounds, hit[0], hit[0] + len(hit[1]))
         )
         poisons.extend(
-            hit for hit in scan_tool_poisoning(window)
-            if not _match_cuts_a_longer_word(window, local_bounds, hit[0], hit[0] + len(hit[1]))
+            hit for hit in scan_tool_poisoning(scanned)
+            if not _match_cuts_a_longer_word(scanned, bounds, hit[0], hit[0] + len(hit[1]))
         )
-        if cleaned != window:
+        if cleaned != scanned:
             overrides.extend(scan_override_phrases(cleaned))
             reversals.extend(scan_reversal_phrases(cleaned))
             poisons.extend(scan_tool_poisoning(cleaned))
@@ -1436,18 +1442,6 @@ def extract_html_comments(
     return "".join(parts), comments
 
 
-def _html_comment_forms(
-    text: str,
-) -> tuple[list[str], list[tuple[int, str, bool]]]:
-    """Visible texts with comments removed and, when that differs, replaced by a space."""
-    removed, spaced, _gap, _spaced_bounds, _gap_bounds, comments = _comment_slice(text)
-    if not comments:
-        return [removed], comments
-    if spaced == removed:
-        return [removed], comments
-    return [removed, spaced], comments
-
-
 def _comment_body_needs_scan(body: str) -> bool:
     """True for every comment body that still has something to read.
 
@@ -1457,17 +1451,6 @@ def _comment_body_needs_scan(body: str) -> bool:
     if any(char == "\x00" or ord(char) in HIDDEN_UNICODE for char in body):
         return True
     return bool(body.strip())
-
-
-def _prepared_scan_forms(raw: str) -> tuple[list[str], list[tuple[int, str]]]:
-    """Normalize raw text, then split comments that decoding revealed.
-
-    Entity, URL, and full-width decoding can turn a marker into ``<!--``.
-    Both the removed and space-replaced readings are returned, plus any
-    comment bodies so a payload hidden inside the decoded comment is scanned.
-    """
-    prepared = _prepare_text_for_scan(raw)
-    return _html_comment_forms(prepared)
 
 
 _COMMENT_BATCH_SEP = "\ue000"
@@ -1701,15 +1684,38 @@ def reconcile_severity(result: dict) -> None:
     result["severity"] = _max_severity(current, floor)
 
 
+def _collect_boundary_hits(
+    slices: list[tuple[str, list[int], str | None, list[int]]],
+) -> tuple[list[tuple[int, str]], list[tuple[int, str]], list[tuple[int, str, str, str]]]:
+    """Reuse one sliced form. Forms with no recorded boundaries add nothing."""
+    overrides: list[tuple[int, str]] = []
+    reversals: list[tuple[int, str]] = []
+    poisons: list[tuple[int, str, str, str]] = []
+    for spaced, spaced_bounds, gap, gap_bounds in slices:
+        if not spaced_bounds and not gap_bounds:
+            continue
+        extra_override, extra_reversal, extra_poison = _supplemental_visible_hits(
+            spaced, spaced_bounds, gap, gap_bounds
+        )
+        overrides.extend(extra_override)
+        reversals.extend(extra_reversal)
+        poisons.extend(extra_poison)
+    return overrides, reversals, poisons
+
+
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
-    text_forms, comments = _html_comment_forms(text)
-    if len(text_forms) == 2 and _FRAGMENTED_TOKEN.search(text_forms[1]) is None:
-        text_forms = [text_forms[0]]
-    segments: list[tuple[str, int, str]] = [("text", 0, form) for form in text_forms]
-    for start, body, _closed in comments:
-        if _comment_body_needs_scan(body):
-            segments.append(("html_comment", start, body))
+    # One decode of the page, then one comment split. Rot runs on that cleaned
+    # visible text. Boundary readings are skipped when the split recorded none.
+    decoded = _decode_layers(text)
+    raw_comments: list[tuple[int, str, bool]] = []
+    if decoded == text:
+        removed, spaced, gap, spaced_bounds, gap_bounds, comments = _comment_slice(text)
+        visible_raw = removed
+    else:
+        visible_raw, _raw_spaced, _raw_gap, _raw_sb, _raw_gb, raw_comments = _comment_slice(text)
+        removed, spaced, gap, spaced_bounds, gap_bounds, comments = _comment_slice(decoded)
+    finished = _finish_visible(removed)
 
     legacy: dict[str, list[tuple[int, str]]] = {key: [] for key in _FINDING_CATEGORY}
     poison_notes: list[dict[str, object]] = []
@@ -1724,80 +1730,78 @@ def classify(text: str) -> dict:
             return False
         reported.add(key)
         return True
-    scheduled_bodies = {body for kind, _start, body in segments if kind == "html_comment"}
 
     pending_comments: list[tuple[int, str, str]] = []
-    extra_override, extra_reversal, extra_poison = _supplemental_visible_hits(text)
-    index = 0
-    while index < len(segments):
-        segment, source_offset, raw = segments[index]
-        index += 1
-        if segment == "html_comment":
-            if _comment_body_needs_scan(raw):
-                pending_comments.append((source_offset, raw, "literal"))
-            continue
-        if segment in ("decoded_closed", "decoded_open"):
-            if _comment_body_needs_scan(raw):
-                pending_comments.append((source_offset, raw, segment))
-            continue
-        scope = "text"
-        forms, revealed = _prepared_scan_forms(raw)
-        marker_positions = _encoded_comment_positions(raw) if revealed else []
-        for start, body, closed in revealed:
-            if _comment_body_needs_scan(body) and body not in scheduled_bodies:
+    scheduled_bodies: set[str] = set()
+    if decoded == text:
+        for start, body, _closed in comments:
+            if _comment_body_needs_scan(body):
                 scheduled_bodies.add(body)
-                kind = "decoded_closed" if closed else "decoded_open"
-                segments.append((kind, _closest_offset(marker_positions, start, len(raw)), body))
-        for prepared in forms:
-            surface_seen: dict[tuple[str, str], dict[str, int]] = {}
-            groups = _scan_finding_groups(raw, prepared, heavy=(prepared == forms[0]))
-            if segment == "text" and prepared == forms[0] and (extra_override or extra_reversal):
-                for key_name, extra in (
-                    ("override_phrases", extra_override),
-                    ("reversal_phrases", extra_reversal),
-                ):
-                    already = {
-                        " ".join(item[1].split()).casefold() for item in groups[key_name]
-                    }
-                    for hit in extra:
-                        key = " ".join(hit[1].split()).casefold()
-                        if key in already:
-                            continue
-                        already.add(key)
-                        groups[key_name].append(hit)
-                extra_override = []
-                extra_reversal = []
-            for key, hits in groups.items():
-                base = _base_severity_for_key(key)
-                for offset, phrase in hits:
-                    match = str(phrase)
-                    if not _keep_combined_hit(kept, surface_seen, scope, key, match):
-                        continue
-                    if not _first_report(key, match, source_offset):
-                        continue
-                    legacy[key].append((offset, match))
-                    severities.append(base)
-            poison_hits = list(scan_tool_poisoning(prepared))
-            if segment == "text" and prepared == forms[0] and extra_poison:
-                poison_hits.extend(extra_poison)
-                extra_poison = []
-            for offset, match, phrase, base in poison_hits:
-                if not _keep_combined_hit(kept, surface_seen, scope, "tool_poisoning", match):
+                pending_comments.append((start, body, "literal"))
+    else:
+        for start, body, _closed in raw_comments:
+            if _comment_body_needs_scan(body):
+                scheduled_bodies.add(body)
+                pending_comments.append((start, body, "literal"))
+        marker_positions = _encoded_comment_positions(text)
+        for start, body, closed in comments:
+            if not _comment_body_needs_scan(body) or body in scheduled_bodies:
+                continue
+            scheduled_bodies.add(body)
+            kind = "decoded_closed" if closed else "decoded_open"
+            pending_comments.append(
+                (_closest_offset(marker_positions, start, len(text)), body, kind)
+            )
+
+    extra_override, extra_reversal, extra_poison = _collect_boundary_hits(
+        [(spaced, spaced_bounds, gap, gap_bounds)]
+    )
+    scope = "text"
+    source_offset = 0
+    surface_seen: dict[tuple[str, str], dict[str, int]] = {}
+    groups = _scan_finding_groups(visible_raw, finished, heavy=True)
+    if extra_override or extra_reversal:
+        for key_name, extra in (
+            ("override_phrases", extra_override),
+            ("reversal_phrases", extra_reversal),
+        ):
+            already = {" ".join(item[1].split()).casefold() for item in groups[key_name]}
+            for hit in extra:
+                key = " ".join(hit[1].split()).casefold()
+                if key in already:
                     continue
-                if not _first_report("tool_poisoning", phrase, source_offset):
-                    continue
-                note = _location_record(
-                    category="tool_poisoning",
-                    offset=offset,
-                    match=match,
-                    segment="text",
-                    source_offset=source_offset,
-                    severity=base,
-                    base_severity=base,
-                    phrase=phrase,
-                )
-                poison_notes.append(note)
-                severities.append(base)
+                already.add(key)
+                groups[key_name].append(hit)
+    for key, hits in groups.items():
+        base = _base_severity_for_key(key)
+        for offset, phrase in hits:
+            match = str(phrase)
+            if not _keep_combined_hit(kept, surface_seen, scope, key, match):
+                continue
+            if not _first_report(key, match, source_offset):
+                continue
+            legacy[key].append((offset, match))
+            severities.append(base)
+    poison_hits = list(scan_tool_poisoning(finished))
+    if extra_poison:
+        poison_hits.extend(extra_poison)
+    for offset, match, phrase, base in poison_hits:
+        if not _keep_combined_hit(kept, surface_seen, scope, "tool_poisoning", match):
+            continue
+        if not _first_report("tool_poisoning", phrase, source_offset):
+            continue
+        note = _location_record(
+            category="tool_poisoning",
+            offset=offset,
+            match=match,
+            segment="text",
+            source_offset=source_offset,
+            severity=base,
+            base_severity=base,
+            phrase=phrase,
+        )
+        poison_notes.append(note)
+        severities.append(base)
 
     comment_legacy, comment_poison = _comment_batch_findings(pending_comments)
     comment_seen: dict[tuple[str, str], dict[str, int]] = {}
