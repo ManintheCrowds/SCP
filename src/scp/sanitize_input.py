@@ -520,47 +520,218 @@ def _override_gap_patterns() -> tuple[re.Pattern[str], ...]:
     return tuple(compiled)
 
 
-def _text_with_comment_gaps(text: str) -> str | None:
-    """Drop comments and mark each removal. None when nothing was removed."""
-    if "<!--" not in text:
-        return None
-    parts: list[str] = []
+def _comment_slice(
+    text: str,
+) -> tuple[str, str, str | None, list[int], list[int], list[tuple[int, str, bool]]]:
+    """Split comments into removed text, spaced text, and one gap per run.
+
+    Back-to-back comments are a single boundary. ``gap`` is None when the
+    text has no comments. Boundary lists index the spaced text and the gap text.
+    """
+    removed_parts: list[str] = []
+    spaced_parts: list[str] = []
+    gap_parts: list[str] = []
+    spaced_bounds: list[int] = []
+    gap_bounds: list[int] = []
+    comments: list[tuple[int, str, bool]] = []
     cursor = 0
+    removed_len = 0
+    spaced_len = 0
+    gap_len = 0
     length = len(text)
-    removed = False
+    found = False
     while cursor < length:
         start = text.find("<!--", cursor)
         if start < 0:
-            parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, text[cursor:]))
+            tail = text[cursor:]
+            removed_parts.append(tail)
+            spaced_parts.append(tail)
+            gap_parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, tail))
             break
-        parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, text[cursor:start]))
-        end, _body = _read_html_comment(text, start)
-        if end <= start:
-            end = min(start + 4, length)
-        parts.append(_COMMENT_GAP)
-        removed = True
-        cursor = end
-    if not removed:
-        return None
-    return "".join(parts)
+        chunk = text[cursor:start]
+        removed_parts.append(chunk)
+        spaced_parts.append(chunk)
+        gap_parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, chunk))
+        removed_len += len(chunk)
+        spaced_len += len(chunk)
+        gap_len += len(gap_parts[-1])
+        pos = start
+        while text.startswith("<!--", pos):
+            nxt, body, closed = _read_html_comment(text, pos)
+            if nxt <= pos:
+                nxt = min(pos + 4, length)
+                comments.append((pos, text[pos + 4 : nxt], False))
+                pos = nxt
+                break
+            comments.append((pos, body, closed))
+            pos = nxt
+        spaced_bounds.append(spaced_len)
+        spaced_parts.append(" ")
+        spaced_len += 1
+        gap_bounds.append(gap_len)
+        gap_parts.append(_COMMENT_GAP)
+        gap_len += 1
+        found = True
+        cursor = pos
+    removed = "".join(removed_parts)
+    spaced = "".join(spaced_parts)
+    if not found:
+        return removed, spaced, None, [], [], comments
+    return removed, spaced, "".join(gap_parts), spaced_bounds, gap_bounds, comments
+
+
+def _text_with_comment_gaps(text: str) -> str | None:
+    """Drop comments and mark each merged removal. None when nothing was removed."""
+    _removed, _spaced, gap, _spaced_bounds, _gap_bounds, _comments = _comment_slice(text)
+    return gap
+
+
+def _gap_match_phrase(raw_match: str) -> str:
+    return " ".join(raw_match.replace(_COMMENT_GAP, " ").replace(_SPACE_MARK, " ").split())
+
+
+def _scan_marked_overrides(normalized: str) -> list[tuple[int, str]]:
+    findings: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for pattern in _override_gap_patterns():
+        for match in pattern.finditer(normalized):
+            phrase = _gap_match_phrase(match.group(0))
+            if not phrase or phrase in seen:
+                continue
+            seen.add(phrase.casefold())
+            findings.append((match.start(), phrase))
+    return findings
 
 
 def scan_override_gaps(text: str) -> list[tuple[int, str]]:
     """Match override phrases whose missing spaces sit on removed comments."""
     normalized = _text_with_comment_gaps(text)
-    if normalized is None:
+    if not normalized:
         return []
-    findings: list[tuple[int, str]] = []
+    return _scan_marked_overrides(normalized)
+
+
+def _literal_gap_pattern(phrase: str) -> str:
+    """Literal phrase with an optional comment gap between letters."""
+    parts: list[str] = []
+    prev_alpha = False
+    for char in phrase:
+        if char.isspace():
+            parts.append(_GAP_OR_SPACE)
+            prev_alpha = False
+            continue
+        if char.isalpha() and prev_alpha:
+            parts.append(_OPTIONAL_COMMENT_GAP)
+        parts.append(re.escape(char))
+        prev_alpha = char.isalpha()
+    body = "".join(parts)
+    if phrase[:1].isalnum():
+        body = r"(?<!\w)" + body
+    if phrase[-1:].isalnum():
+        body = body + r"(?!\w)"
+    return body
+
+
+@lru_cache(maxsize=4)
+def _poison_gap_patterns(
+    phrases: tuple[tuple[str, str], ...],
+) -> tuple[tuple[re.Pattern[str], str, str], ...]:
+    compiled: list[tuple[re.Pattern[str], str, str]] = []
+    for phrase, severity in phrases:
+        if " " not in phrase:
+            continue
+        compiled.append((re.compile(_literal_gap_pattern(phrase), re.IGNORECASE), phrase, severity))
+    return tuple(compiled)
+
+
+def _scan_marked_poison(normalized: str) -> list[tuple[int, str, str, str]]:
+    findings: list[tuple[int, str, str, str]] = []
     seen: set[str] = set()
-    for pattern in _override_gap_patterns():
+    patterns = _poison_gap_patterns(tuple(_tool_poison_entries()))
+    for pattern, phrase, severity in patterns:
         for match in pattern.finditer(normalized):
-            phrase = match.group(0).replace(_COMMENT_GAP, " ").replace(_SPACE_MARK, " ")
-            key = " ".join(phrase.split()).casefold()
+            shown = _gap_match_phrase(match.group(0))
+            key = phrase.casefold()
             if key in seen:
                 continue
             seen.add(key)
-            findings.append((match.start(), phrase))
+            findings.append((match.start(), shown, phrase, severity))
     return findings
+
+
+def _conceal_comment_hit(mode: str, key: str, base: str) -> bool:
+    """Literal comments always raise. Closed decoded comments raise only for payloads."""
+    if mode == "literal":
+        return key != "hostile_ux"
+    if mode != "decoded_closed":
+        return False
+    if key in _INJECTION_FINDING_KEYS:
+        return True
+    return key == "tool_poisoning" and base in ("high", "critical")
+
+
+def _supplemental_visible_hits(
+    text: str,
+) -> tuple[list[tuple[int, str]], list[tuple[int, str]], list[tuple[int, str, str, str]]]:
+    """Phrase hits from the space-replaced and gap readings, including decoded comments."""
+    if (
+        "<!--" not in text
+        and "&" not in text
+        and "%" not in text
+        and "\uff1c" not in text
+        and "<!" not in text
+    ):
+        return [], [], []
+    decoded = _decode_layers(text)
+    _removed, spaced, gap, spaced_bounds, gap_bounds, _comments = _comment_slice(decoded)
+    overrides: list[tuple[int, str]] = []
+    reversals: list[tuple[int, str]] = []
+    poisons: list[tuple[int, str, str, str]] = []
+    for window in _boundary_windows(spaced, spaced_bounds):
+        cleaned = _finish_visible(window)
+        overrides.extend(scan_override_phrases(cleaned))
+        reversals.extend(scan_reversal_phrases(cleaned))
+        poisons.extend(scan_tool_poisoning(cleaned))
+    if gap:
+        for window in _boundary_windows(gap, gap_bounds):
+            overrides.extend(_scan_marked_overrides(window))
+            poisons.extend(_scan_marked_poison(window))
+    return overrides, reversals, poisons
+
+
+def _boundary_windows(text: str, bounds: list[int], radius: int = 160) -> list[str]:
+    """Slices around comment boundaries. Overlapping slices are merged."""
+    if not text or not bounds:
+        return []
+    intervals: list[list[int]] = []
+    last = len(text)
+    for pos in bounds:
+        lo = max(0, pos - radius)
+        hi = min(last, pos + radius + 1)
+        if intervals and lo <= intervals[-1][1]:
+            intervals[-1][1] = max(intervals[-1][1], hi)
+        else:
+            intervals.append([lo, hi])
+    return [text[lo:hi] for lo, hi in intervals]
+
+
+def _decode_layers(text: str) -> str:
+    """Entity, URL, and full-width decoding without comment removal."""
+    prepared = text
+    for _ in range(_CANONICALIZATION_MAX_LAYERS):
+        canonical = _canonicalize_scan_layer(prepared)
+        if canonical == prepared:
+            break
+        prepared = canonical
+    return prepared
+
+
+def _finish_visible(text: str) -> str:
+    """Fragmentation, hex, JSON letters, and base64 after comments are split out."""
+    text = _collapse_spaced_hex(text)
+    text = _collapse_fragmented_tokens(text)
+    text = _collapse_json_letter_arrays(text)
+    return _append_decoded_base64_snippets(text)
 
 
 def scan_leetspeak(text: str) -> list[tuple[int, str]]:
@@ -1071,7 +1242,7 @@ _COMMENT_END = 8
 _COMMENT_END_BANG = 9
 
 
-def _read_html_comment(text: str, start: int) -> tuple[int, str]:
+def _read_html_comment(text: str, start: int) -> tuple[int, str, bool]:
     """Read one WHATWG comment whose ``<!--`` opener begins at ``start``.
 
     ``<!-->`` and ``<!--->`` are empty comments. ``-->`` and ``--!>`` both
@@ -1090,7 +1261,7 @@ def _read_html_comment(text: str, start: int) -> tuple[int, str]:
                 state = _COMMENT_START_DASH
                 index += 1
             elif char == ">":
-                return index + 1, ""
+                return index + 1, "", True
             else:
                 state = _COMMENT
         elif state == _COMMENT_START_DASH:
@@ -1098,7 +1269,7 @@ def _read_html_comment(text: str, start: int) -> tuple[int, str]:
                 state = _COMMENT_END
                 index += 1
             elif char == ">":
-                return index + 1, ""
+                return index + 1, "", True
             else:
                 data.append("-")
                 state = _COMMENT
@@ -1146,7 +1317,7 @@ def _read_html_comment(text: str, start: int) -> tuple[int, str]:
                 state = _COMMENT
         elif state == _COMMENT_END:
             if char == ">":
-                return index + 1, "".join(data)
+                return index + 1, "".join(data), True
             if char == "!":
                 state = _COMMENT_END_BANG
                 index += 1
@@ -1162,13 +1333,13 @@ def _read_html_comment(text: str, start: int) -> tuple[int, str]:
                 state = _COMMENT_END_DASH
                 index += 1
             elif char == ">":
-                return index + 1, "".join(data)
+                return index + 1, "".join(data), True
             else:
                 data.append("--!")
                 state = _COMMENT
         else:
             raise RuntimeError(f"unknown html comment state: {state}")
-    return length, text[start + 4 :]
+    return length, text[start + 4 :], False
 
 
 def extract_html_comments(
@@ -1195,7 +1366,7 @@ def extract_html_comments(
             parts.append(text[cursor:])
             break
         parts.append(text[cursor:start])
-        end, body = _read_html_comment(text, start)
+        end, body, _closed = _read_html_comment(text, start)
         if end <= start:
             end = min(start + 4, length)
         comments.append((start, body))
@@ -1205,12 +1376,13 @@ def extract_html_comments(
     return "".join(parts), comments
 
 
-def _html_comment_forms(text: str) -> tuple[list[str], list[tuple[int, str]]]:
+def _html_comment_forms(
+    text: str,
+) -> tuple[list[str], list[tuple[int, str, bool]]]:
     """Visible texts with comments removed and, when that differs, replaced by a space."""
-    removed, comments = extract_html_comments(text, replacement="")
+    removed, spaced, _gap, _spaced_bounds, _gap_bounds, comments = _comment_slice(text)
     if not comments:
         return [removed], comments
-    spaced, _spaced_comments = extract_html_comments(text, replacement=" ")
     if spaced == removed:
         return [removed], comments
     return [removed, spaced], comments
@@ -1242,15 +1414,18 @@ _COMMENT_BATCH_SEP = "\ue000"
 
 
 def _comment_scan_text(body: str) -> str:
-    """Full cleanup for one comment body, including comments decoding revealed."""
-    prepared = _prepare_text_for_scan(body)
-    removed, nested = extract_html_comments(prepared, replacement="")
-    parts = [removed]
-    for _start, nested_body in nested:
+    """Removed and space-replaced cleanup of one comment body, including nested comments."""
+    decoded = _decode_layers(body)
+    removed, spaced, _gap, _spaced_bounds, _gap_bounds, nested = _comment_slice(decoded)
+    parts = [_finish_visible(removed)]
+    finished_spaced = _finish_visible(spaced)
+    if finished_spaced != parts[0]:
+        parts.append(finished_spaced)
+    for _start, nested_body, _closed in nested:
         if nested_body.strip():
-            parts.append(_prepare_text_for_scan(nested_body))
+            parts.append(_comment_scan_text(nested_body))
     if len(parts) == 1:
-        return removed
+        return parts[0]
     return _COMMENT_BATCH_SEP.join(parts)
 
 
@@ -1446,8 +1621,8 @@ def classify(text: str) -> dict:
     if len(text_forms) == 2 and _FRAGMENTED_TOKEN.search(text_forms[1]) is None:
         text_forms = [text_forms[0]]
     segments: list[tuple[str, int, str]] = [("text", 0, form) for form in text_forms]
-    for start, body in comments:
-        if body.strip():
+    for start, body, _closed in comments:
+        if _comment_body_needs_scan(body):
             segments.append(("html_comment", start, body))
 
     legacy: dict[str, list[tuple[int, str]]] = {key: [] for key in _FINDING_CATEGORY}
@@ -1457,44 +1632,47 @@ def classify(text: str) -> dict:
     kept: dict[tuple[str, str], dict[str, int]] = {}
     scheduled_bodies = {body for kind, _start, body in segments if kind == "html_comment"}
 
-    pending_comments: list[tuple[int, str, bool]] = []
-    gap_hits = scan_override_gaps(text)
+    pending_comments: list[tuple[int, str, str]] = []
+    extra_override, extra_reversal, extra_poison = _supplemental_visible_hits(text)
     index = 0
     while index < len(segments):
         segment, source_offset, raw = segments[index]
         index += 1
         if segment == "html_comment":
             if _comment_body_needs_scan(raw):
-                pending_comments.append((source_offset, raw, True))
+                pending_comments.append((source_offset, raw, "literal"))
             continue
-        if segment == "decoded_comment":
+        if segment in ("decoded_closed", "decoded_open"):
             if _comment_body_needs_scan(raw):
-                pending_comments.append((source_offset, raw, False))
+                pending_comments.append((source_offset, raw, segment))
             continue
         scope = "text"
         forms, revealed = _prepared_scan_forms(raw)
         marker_positions = _encoded_comment_positions(raw) if revealed else []
-        for start, body in revealed:
-            if body.strip() and body not in scheduled_bodies:
+        for start, body, closed in revealed:
+            if _comment_body_needs_scan(body) and body not in scheduled_bodies:
                 scheduled_bodies.add(body)
-                segments.append(
-                    ("decoded_comment", _closest_offset(marker_positions, start, len(raw)), body)
-                )
+                kind = "decoded_closed" if closed else "decoded_open"
+                segments.append((kind, _closest_offset(marker_positions, start, len(raw)), body))
         for prepared in forms:
             surface_seen: dict[tuple[str, str], dict[str, int]] = {}
             groups = _scan_finding_groups(raw, prepared, heavy=(prepared == forms[0]))
-            if segment == "text" and gap_hits and prepared == forms[0]:
-                already = {
-                    " ".join(item[1].split()).casefold()
-                    for item in groups["override_phrases"]
-                }
-                for hit in gap_hits:
-                    key = " ".join(hit[1].split()).casefold()
-                    if key in already:
-                        continue
-                    already.add(key)
-                    groups["override_phrases"].append(hit)
-                gap_hits = []
+            if segment == "text" and prepared == forms[0] and (extra_override or extra_reversal):
+                for key_name, extra in (
+                    ("override_phrases", extra_override),
+                    ("reversal_phrases", extra_reversal),
+                ):
+                    already = {
+                        " ".join(item[1].split()).casefold() for item in groups[key_name]
+                    }
+                    for hit in extra:
+                        key = " ".join(hit[1].split()).casefold()
+                        if key in already:
+                            continue
+                        already.add(key)
+                        groups[key_name].append(hit)
+                extra_override = []
+                extra_reversal = []
             for key, hits in groups.items():
                 base = _base_severity_for_key(key)
                 for offset, phrase in hits:
@@ -1503,7 +1681,11 @@ def classify(text: str) -> dict:
                         continue
                     legacy[key].append((offset, match))
                     severities.append(base)
-            for offset, match, phrase, base in scan_tool_poisoning(prepared):
+            poison_hits = list(scan_tool_poisoning(prepared))
+            if segment == "text" and prepared == forms[0] and extra_poison:
+                poison_hits.extend(extra_poison)
+                extra_poison = []
+            for offset, match, phrase, base in poison_hits:
                 if not _keep_combined_hit(kept, surface_seen, scope, "tool_poisoning", match):
                     continue
                 note = _location_record(
@@ -1521,7 +1703,8 @@ def classify(text: str) -> dict:
 
     comment_legacy, comment_poison = _comment_batch_findings(pending_comments)
     comment_seen: dict[tuple[str, str], dict[str, int]] = {}
-    for key, offset, match, source_offset, conceal in comment_legacy:
+    for key, offset, match, source_offset, mode in comment_legacy:
+        conceal = _conceal_comment_hit(mode, key, _base_severity_for_key(key))
         scope = "html_comment" if conceal else "decoded_comment"
         if not _keep_combined_hit(kept, comment_seen, scope, key, match):
             continue
@@ -1541,7 +1724,8 @@ def classify(text: str) -> dict:
                     base_severity=base,
                 )
             )
-    for offset, match, phrase, base, source_offset, conceal in comment_poison:
+    for offset, match, phrase, base, source_offset, mode in comment_poison:
+        conceal = _conceal_comment_hit(mode, "tool_poisoning", base)
         scope = "html_comment" if conceal else "decoded_comment"
         if not _keep_combined_hit(kept, comment_seen, scope, "tool_poisoning", match):
             continue
