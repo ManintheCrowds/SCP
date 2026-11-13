@@ -1131,9 +1131,15 @@ def _html_comment_forms(text: str) -> tuple[list[str], list[tuple[int, str]]]:
     return [removed, spaced], comments
 
 
-def _prepared_scan_forms(raw: str) -> list[str]:
-    """Normalized strings to scan for one segment."""
-    return [_prepare_text_for_scan(raw)]
+def _prepared_scan_forms(raw: str) -> tuple[list[str], list[tuple[int, str]]]:
+    """Normalize raw text, then split comments that decoding revealed.
+
+    Entity, URL, and full-width decoding can turn a marker into ``<!--``.
+    Both the removed and space-replaced readings are returned, plus any
+    comment bodies so a payload hidden inside the decoded comment is scanned.
+    """
+    prepared = _prepare_text_for_scan(raw)
+    return _html_comment_forms(prepared)
 
 
 def _keep_combined_hit(
@@ -1229,10 +1235,21 @@ def classify(text: str) -> dict:
     concealed_notes: list[dict[str, object]] = []
     severities: list[str] = []
     kept: dict[tuple[str, str], dict[str, int]] = {}
+    seen_segments: set[tuple[str, str]] = set()
 
-    for segment, source_offset, raw in segments:
+    index = 0
+    while index < len(segments):
+        segment, source_offset, raw = segments[index]
+        index += 1
+        if (segment, raw) in seen_segments:
+            continue
+        seen_segments.add((segment, raw))
         scope = segment if segment == "text" else f"{segment}:{source_offset}"
-        for prepared in _prepared_scan_forms(raw):
+        forms, revealed = _prepared_scan_forms(raw)
+        for start, body in revealed:
+            if body.strip() and body != raw:
+                segments.append(("html_comment", start, body))
+        for prepared in forms:
             surface_seen: dict[tuple[str, str], dict[str, int]] = {}
             for key, hits in _scan_finding_groups(raw, prepared).items():
                 base = _base_severity_for_key(key)
