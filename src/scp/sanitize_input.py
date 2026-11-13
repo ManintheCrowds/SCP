@@ -974,14 +974,17 @@ def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
     return findings
 
 
-def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
+def extract_html_comments(
+    text: str, *, replacement: str = ""
+) -> tuple[str, list[tuple[int, str]]]:
     """Split ``<!-- ... -->`` comments out of text.
 
-    Each full comment is removed from the visible text, matching how HTML
-    comments disappear for renderers. Comment bodies are returned separately as
-    ``(start, body)`` where ``start`` is the index of ``<!--`` in ``text``. A
-    missing closer runs to the end of the input. One forward ``str.find`` walk
-    stays linear when many comments are left unclosed.
+    ``replacement`` is written in place of each comment. The default removes
+    the comment so a token split inside a word joins again. A single space
+    keeps neighboring words apart. Scans use both and combine the hits.
+    Comment bodies are ``(start, body)`` where ``start`` is the index of
+    ``<!--``. A missing closer runs to the end of the input. One forward
+    ``str.find`` walk stays linear when many comments are left unclosed.
     """
     parts: list[str] = []
     comments: list[tuple[int, str]] = []
@@ -996,10 +999,55 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
         close = text.find("-->", start + 4)
         if close < 0:
             comments.append((start, text[start + 4 :]))
+            if replacement:
+                parts.append(replacement)
             break
         comments.append((start, text[start + 4 : close]))
+        if replacement:
+            parts.append(replacement)
         cursor = close + 3
     return "".join(parts), comments
+
+
+def _html_comment_forms(text: str) -> tuple[list[str], list[tuple[int, str]]]:
+    """Visible texts with comments removed and, when that differs, replaced by a space."""
+    removed, comments = extract_html_comments(text, replacement="")
+    if not comments:
+        return [removed], comments
+    spaced, _spaced_comments = extract_html_comments(text, replacement=" ")
+    if spaced == removed:
+        return [removed], comments
+    return [removed, spaced], comments
+
+
+def _prepared_scan_forms(raw: str) -> list[str]:
+    """Normalized strings to scan for one segment."""
+    return [_prepare_text_for_scan(raw)]
+
+
+def _keep_combined_hit(
+    kept: dict[tuple[str, str], dict[str, int]],
+    surface_seen: dict[tuple[str, str], dict[str, int]],
+    scope: str,
+    key: str,
+    match: str,
+) -> bool:
+    """Keep the larger set of matches across comment-removed and space-replaced text.
+
+    The first surface records every occurrence. A later surface adds a hit only
+    when it has more occurrences of that same normalized match than are already
+    kept, so a phrase that survives both readings is not stored twice.
+    """
+    norm = " ".join(match.split()).casefold()
+    slot = (scope, key)
+    local = surface_seen.setdefault(slot, {})
+    local[norm] = local.get(norm, 0) + 1
+    bucket = kept.setdefault(slot, {})
+    already = bucket.get(norm, 0)
+    if local[norm] <= already:
+        return False
+    bucket[norm] = local[norm]
+    return True
 
 
 def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
@@ -1059,8 +1107,8 @@ def reconcile_severity(result: dict) -> None:
 
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
-    visible, comments = extract_html_comments(text)
-    segments: list[tuple[str, int, str]] = [("text", 0, visible)]
+    text_forms, comments = _html_comment_forms(text)
+    segments: list[tuple[str, int, str]] = [("text", 0, form) for form in text_forms]
     for start, body in comments:
         if body.strip():
             segments.append(("html_comment", start, body))
@@ -1069,44 +1117,52 @@ def classify(text: str) -> dict:
     poison_notes: list[dict[str, object]] = []
     concealed_notes: list[dict[str, object]] = []
     severities: list[str] = []
+    kept: dict[tuple[str, str], dict[str, int]] = {}
 
     for segment, source_offset, raw in segments:
-        prepared = _prepare_text_for_scan(raw)
-        for key, hits in _scan_finding_groups(raw, prepared).items():
-            base = _base_severity_for_key(key)
-            severity = base if segment == "text" else _severity_for_concealment(base, key)
-            category = _FINDING_CATEGORY[key]
-            for offset, phrase in hits:
-                legacy[key].append((offset, str(phrase)))
+        scope = segment if segment == "text" else f"{segment}:{source_offset}"
+        for prepared in _prepared_scan_forms(raw):
+            surface_seen: dict[tuple[str, str], dict[str, int]] = {}
+            for key, hits in _scan_finding_groups(raw, prepared).items():
+                base = _base_severity_for_key(key)
+                severity = base if segment == "text" else _severity_for_concealment(base, key)
+                category = _FINDING_CATEGORY[key]
+                for offset, phrase in hits:
+                    match = str(phrase)
+                    if not _keep_combined_hit(kept, surface_seen, scope, key, match):
+                        continue
+                    legacy[key].append((offset, match))
+                    severities.append(severity)
+                    if segment == "html_comment":
+                        concealed_notes.append(
+                            _location_record(
+                                category=category,
+                                offset=offset,
+                                match=match,
+                                segment=segment,
+                                source_offset=source_offset,
+                                severity=severity,
+                                base_severity=base,
+                            )
+                        )
+            for offset, match, phrase, base in scan_tool_poisoning(prepared):
+                if not _keep_combined_hit(kept, surface_seen, scope, "tool_poisoning", match):
+                    continue
+                severity = base if segment == "text" else _severity_for_concealment(base, "tool_poisoning")
+                note = _location_record(
+                    category="tool_poisoning",
+                    offset=offset,
+                    match=match,
+                    segment=segment,
+                    source_offset=source_offset,
+                    severity=severity,
+                    base_severity=base,
+                    phrase=phrase,
+                )
+                poison_notes.append(note)
                 severities.append(severity)
                 if segment == "html_comment":
-                    concealed_notes.append(
-                        _location_record(
-                            category=category,
-                            offset=offset,
-                            match=str(phrase),
-                            segment=segment,
-                            source_offset=source_offset,
-                            severity=severity,
-                            base_severity=base,
-                        )
-                    )
-        for offset, match, phrase, base in scan_tool_poisoning(prepared):
-            severity = base if segment == "text" else _severity_for_concealment(base, "tool_poisoning")
-            note = _location_record(
-                category="tool_poisoning",
-                offset=offset,
-                match=match,
-                segment=segment,
-                source_offset=source_offset,
-                severity=severity,
-                base_severity=base,
-                phrase=phrase,
-            )
-            poison_notes.append(note)
-            severities.append(severity)
-            if segment == "html_comment":
-                concealed_notes.append(note)
+                    concealed_notes.append(note)
 
     injection_any = any(legacy[key] for key in _INJECTION_FINDING_KEYS) or any(
         severity in ("high", "critical") for severity in severities
