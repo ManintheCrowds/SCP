@@ -809,8 +809,12 @@ def _match_cuts_a_longer_word(text: str, bounds: set[int], start: int, end: int)
 
 
 def _text_needs_decode(text: str) -> bool:
-    """True when canonicalize can change the text. Plain ASCII does not."""
-    return "&" in text or "%" in text or not text.isascii()
+    """True when canonicalize can change the text. Plain ASCII does not.
+
+    A null byte is ASCII, but leaving it in place splits a phrase, so it
+    still has to be stripped before the phrase scan.
+    """
+    return "\x00" in text or "&" in text or "%" in text or not text.isascii()
 
 
 def _decode_layers(text: str) -> str:
