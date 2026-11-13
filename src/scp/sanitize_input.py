@@ -510,13 +510,27 @@ def _pattern_with_comment_gaps(pattern: str) -> str:
     return "".join(out)
 
 
+def _canonical_override(pattern: str) -> str:
+    """Shortest phrase the override regex describes, with single spaces."""
+    text = re.sub(r"\([^()]*\)\?", "", pattern)
+    text = re.sub(r"\(([^)|]+)\|[^)]*\)", r"\1", text)
+    text = text.replace(r"\s+", " ").replace(r"\.", ".")
+    text = re.sub(r"[()?]", "", text)
+    return " ".join(text.split())
+
+
 @lru_cache(maxsize=1)
-def _override_gap_patterns() -> tuple[re.Pattern[str], ...]:
-    compiled: list[re.Pattern[str]] = []
+def _override_gap_patterns() -> tuple[tuple[re.Pattern[str], str], ...]:
+    compiled: list[tuple[re.Pattern[str], str]] = []
     for pattern in OVERRIDE_PHRASES:
         if r"\s" not in pattern:
             continue
-        compiled.append(re.compile(_pattern_with_comment_gaps(pattern), re.IGNORECASE))
+        compiled.append(
+            (
+                re.compile(_pattern_with_comment_gaps(pattern), re.IGNORECASE),
+                _canonical_override(pattern),
+            )
+        )
     return tuple(compiled)
 
 
@@ -586,20 +600,19 @@ def _text_with_comment_gaps(text: str) -> str | None:
     return gap
 
 
-def _gap_match_phrase(raw_match: str) -> str:
-    return " ".join(raw_match.replace(_COMMENT_GAP, " ").replace(_SPACE_MARK, " ").split())
-
-
 def _scan_marked_overrides(normalized: str) -> list[tuple[int, str]]:
     findings: list[tuple[int, str]] = []
     seen: set[str] = set()
-    for pattern in _override_gap_patterns():
+    for pattern, canonical in _override_gap_patterns():
         for match in pattern.finditer(normalized):
-            phrase = _gap_match_phrase(match.group(0))
-            if not phrase or phrase in seen:
+            if canonical.casefold() in seen:
                 continue
-            seen.add(phrase.casefold())
-            findings.append((match.start(), phrase))
+            if _match_cuts_a_longer_word(
+                normalized, [], match.start(), match.end()
+            ):
+                continue
+            seen.add(canonical.casefold())
+            findings.append((match.start(), canonical))
     return findings
 
 
@@ -650,12 +663,13 @@ def _scan_marked_poison(normalized: str) -> list[tuple[int, str, str, str]]:
     patterns = _poison_gap_patterns(tuple(_tool_poison_entries()))
     for pattern, phrase, severity in patterns:
         for match in pattern.finditer(normalized):
-            shown = _gap_match_phrase(match.group(0))
             key = phrase.casefold()
             if key in seen:
                 continue
+            if _match_cuts_a_longer_word(normalized, [], match.start(), match.end()):
+                continue
             seen.add(key)
-            findings.append((match.start(), shown, phrase, severity))
+            findings.append((match.start(), phrase, phrase, severity))
     return findings
 
 
@@ -710,14 +724,8 @@ def _supplemental_visible_hits(
             poisons.extend(scan_tool_poisoning(cleaned))
     if gap:
         for window, local_bounds in _boundary_windows(gap, gap_bounds):
-            overrides.extend(
-                hit for hit in _scan_marked_overrides(window)
-                if not _match_cuts_a_longer_word(window, local_bounds, hit[0], hit[0] + len(hit[1]))
-            )
-            poisons.extend(
-                hit for hit in _scan_marked_poison(window)
-                if not _match_cuts_a_longer_word(window, local_bounds, hit[0], hit[0] + len(hit[1]))
-            )
+            overrides.extend(_scan_marked_overrides(window))
+            poisons.extend(_scan_marked_poison(window))
     return overrides, reversals, poisons
 
 
@@ -1708,6 +1716,14 @@ def classify(text: str) -> dict:
     concealed_notes: list[dict[str, object]] = []
     severities: list[str] = []
     kept: dict[tuple[str, str], dict[str, int]] = {}
+    reported: set[tuple[str, str, int]] = set()
+
+    def _first_report(category: str, phrase: str, source_offset: int) -> bool:
+        key = (category, " ".join(phrase.split()).casefold(), source_offset)
+        if key in reported:
+            return False
+        reported.add(key)
+        return True
     scheduled_bodies = {body for kind, _start, body in segments if kind == "html_comment"}
 
     pending_comments: list[tuple[int, str, str]] = []
@@ -1757,6 +1773,8 @@ def classify(text: str) -> dict:
                     match = str(phrase)
                     if not _keep_combined_hit(kept, surface_seen, scope, key, match):
                         continue
+                    if not _first_report(key, match, source_offset):
+                        continue
                     legacy[key].append((offset, match))
                     severities.append(base)
             poison_hits = list(scan_tool_poisoning(prepared))
@@ -1765,6 +1783,8 @@ def classify(text: str) -> dict:
                 extra_poison = []
             for offset, match, phrase, base in poison_hits:
                 if not _keep_combined_hit(kept, surface_seen, scope, "tool_poisoning", match):
+                    continue
+                if not _first_report("tool_poisoning", phrase, source_offset):
                     continue
                 note = _location_record(
                     category="tool_poisoning",
@@ -1786,6 +1806,8 @@ def classify(text: str) -> dict:
         scope = "html_comment" if conceal else "decoded_comment"
         if not _keep_combined_hit(kept, comment_seen, scope, key, match):
             continue
+        if not _first_report(key, match, source_offset):
+            continue
         base = _base_severity_for_key(key)
         severity = _severity_for_concealment(base, key) if conceal else base
         legacy[key].append((offset, match))
@@ -1806,6 +1828,8 @@ def classify(text: str) -> dict:
         conceal = _conceal_comment_hit(mode, "tool_poisoning", base)
         scope = "html_comment" if conceal else "decoded_comment"
         if not _keep_combined_hit(kept, comment_seen, scope, "tool_poisoning", match):
+            continue
+        if not _first_report("tool_poisoning", phrase, source_offset):
             continue
         severity = _severity_for_concealment(base, "tool_poisoning") if conceal else base
         note = _location_record(
