@@ -1535,6 +1535,41 @@ def _encoded_comment_positions(raw: str) -> list[int]:
     return positions
 
 
+def _comment_runs(text: str) -> list[tuple[int, int]]:
+    """Original (start, end) of each merged comment run."""
+    runs: list[tuple[int, int]] = []
+    cursor = 0
+    length = len(text)
+    while cursor < length:
+        start = text.find("<!--", cursor)
+        if start < 0:
+            break
+        pos = start
+        while text.startswith("<!--", pos):
+            nxt, _body, _closed = _read_html_comment(text, pos)
+            if nxt <= pos:
+                nxt = min(pos + 4, length)
+                pos = nxt
+                break
+            pos = nxt
+        runs.append((start, pos))
+        cursor = pos
+    return runs
+
+
+def _removed_to_source(index: int, runs: list[tuple[int, int]]) -> int:
+    """Map an index in the comment-removed text back to the original string."""
+    origin = 0
+    removed = 0
+    for start, end in runs:
+        chunk = start - origin
+        if index < removed + chunk:
+            return origin + (index - removed)
+        removed += chunk
+        origin = end
+    return origin + (index - removed)
+
+
 def _closest_offset(positions: list[int], target: int, limit: int) -> int:
     if not positions:
         return min(max(target, 0), limit)
@@ -1775,7 +1810,13 @@ def classify(text: str) -> dict:
         [(spaced, spaced_bounds, gap, gap_bounds)]
     )
     scope = "text"
-    source_offset = 0
+    source_runs = _comment_runs(text if decoded == text else decoded)
+
+    def _visible_source(offset: int) -> int:
+        if not source_runs or finished != removed:
+            return offset
+        return _removed_to_source(offset, source_runs)
+
     surface_seen: dict[tuple[str, str], dict[str, int]] = {}
     groups = _scan_finding_groups(visible_raw, finished, heavy=True)
     if extra_override or extra_reversal:
@@ -1796,7 +1837,7 @@ def classify(text: str) -> dict:
             match = str(phrase)
             if not _keep_combined_hit(kept, surface_seen, scope, key, match):
                 continue
-            if not _first_report(key, match, source_offset):
+            if not _first_report(key, match, _visible_source(offset)):
                 continue
             legacy[key].append((offset, match))
             severities.append(base)
@@ -1806,14 +1847,14 @@ def classify(text: str) -> dict:
     for offset, match, phrase, base in poison_hits:
         if not _keep_combined_hit(kept, surface_seen, scope, "tool_poisoning", match):
             continue
-        if not _first_report("tool_poisoning", phrase, source_offset):
+        if not _first_report("tool_poisoning", phrase, _visible_source(offset)):
             continue
         note = _location_record(
             category="tool_poisoning",
             offset=offset,
             match=match,
             segment="text",
-            source_offset=source_offset,
+            source_offset=_visible_source(offset),
             severity=base,
             base_severity=base,
             phrase=phrase,
