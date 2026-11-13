@@ -687,20 +687,42 @@ def _supplemental_visible_hits(
     overrides: list[tuple[int, str]] = []
     reversals: list[tuple[int, str]] = []
     poisons: list[tuple[int, str, str, str]] = []
-    for window in _boundary_windows(spaced, spaced_bounds):
+    for window, local_bounds in _boundary_windows(spaced, spaced_bounds):
         cleaned = _finish_visible(window)
-        overrides.extend(scan_override_phrases(cleaned))
-        reversals.extend(scan_reversal_phrases(cleaned))
-        poisons.extend(scan_tool_poisoning(cleaned))
+        # Bounds still refer to the pre-cleanup window. The false-positive
+        # check is about inserted spaces, which cleanup does not move when
+        # the window is ordinary words.
+        overrides.extend(
+            hit for hit in scan_override_phrases(window)
+            if not _match_cuts_a_longer_word(window, local_bounds, hit[0], hit[0] + len(hit[1]))
+        )
+        reversals.extend(
+            hit for hit in scan_reversal_phrases(window)
+            if not _match_cuts_a_longer_word(window, local_bounds, hit[0], hit[0] + len(hit[1]))
+        )
+        poisons.extend(
+            hit for hit in scan_tool_poisoning(window)
+            if not _match_cuts_a_longer_word(window, local_bounds, hit[0], hit[0] + len(hit[1]))
+        )
+        if cleaned != window:
+            overrides.extend(scan_override_phrases(cleaned))
+            reversals.extend(scan_reversal_phrases(cleaned))
+            poisons.extend(scan_tool_poisoning(cleaned))
     if gap:
-        for window in _boundary_windows(gap, gap_bounds):
-            overrides.extend(_scan_marked_overrides(window))
-            poisons.extend(_scan_marked_poison(window))
+        for window, local_bounds in _boundary_windows(gap, gap_bounds):
+            overrides.extend(
+                hit for hit in _scan_marked_overrides(window)
+                if not _match_cuts_a_longer_word(window, local_bounds, hit[0], hit[0] + len(hit[1]))
+            )
+            poisons.extend(
+                hit for hit in _scan_marked_poison(window)
+                if not _match_cuts_a_longer_word(window, local_bounds, hit[0], hit[0] + len(hit[1]))
+            )
     return overrides, reversals, poisons
 
 
-def _boundary_windows(text: str, bounds: list[int], radius: int = 160) -> list[str]:
-    """Slices around comment boundaries. Overlapping slices are merged."""
+def _boundary_windows(text: str, bounds: list[int], radius: int = 160) -> list[tuple[str, list[int]]]:
+    """Slices around comment boundaries, with bounds shifted into each slice."""
     if not text or not bounds:
         return []
     intervals: list[list[int]] = []
@@ -712,7 +734,37 @@ def _boundary_windows(text: str, bounds: list[int], radius: int = 160) -> list[s
             intervals[-1][1] = max(intervals[-1][1], hi)
         else:
             intervals.append([lo, hi])
-    return [text[lo:hi] for lo, hi in intervals]
+    return [
+        (text[lo:hi], [pos - lo for pos in bounds if lo <= pos < hi])
+        for lo, hi in intervals
+    ]
+
+
+def _match_cuts_a_longer_word(text: str, bounds: list[int], start: int, end: int) -> bool:
+    """True when a synthetic boundary splits a word the match does not fully cover.
+
+    ``ignore<!--x-->list`` must not count as the word ``ignore``. A boundary
+    that sits between two whole phrase words, as in ``ignore<!-- -->previous``,
+    is inside the match and stays.
+    """
+    edges = set(bounds)
+    if end in edges:
+        nxt = end + 1
+        if nxt < len(text) and text[nxt].isalnum():
+            return True
+    if start > 0 and (start - 1) in edges and text[start - 1] in {_COMMENT_GAP, " "}:
+        prev = start - 2
+        if prev >= 0 and text[prev].isalnum():
+            return True
+    if end < len(text) and text[end] == _COMMENT_GAP:
+        nxt = end + 1
+        if nxt < len(text) and text[nxt].isalnum():
+            return True
+    if start > 0 and text[start - 1] == _COMMENT_GAP:
+        prev = start - 2
+        if prev >= 0 and text[prev].isalnum():
+            return True
+    return False
 
 
 def _decode_layers(text: str) -> str:
