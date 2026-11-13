@@ -1172,22 +1172,14 @@ def _html_comment_forms(text: str) -> tuple[list[str], list[tuple[int, str]]]:
 
 
 def _comment_body_needs_scan(body: str) -> bool:
-    """False when a comment body cannot match a phrase or a path.
+    """True for every comment body that still has something to read.
 
-    Digit-only bodies are the common case for distinct ``<!--NNNNNN-->``
-    markers. Nulls, hidden characters, non-ASCII marks, letters, and path
-    punctuation still scan.
+    Digit-only, dotted, dashed, and entity bodies all go through the same
+    cleanup. Whitespace-only bodies do not.
     """
     if any(char == "\x00" or ord(char) in HIDDEN_UNICODE for char in body):
         return True
-    stripped = body.strip()
-    if not stripped:
-        return False
-    if any(ord(char) > 127 for char in stripped):
-        return True
-    if len(stripped) < 3:
-        return False
-    return any(char.isalpha() or char in "./\\~<>" for char in stripped)
+    return bool(body.strip())
 
 
 def _prepared_scan_forms(raw: str) -> tuple[list[str], list[tuple[int, str]]]:
@@ -1204,11 +1196,17 @@ def _prepared_scan_forms(raw: str) -> tuple[list[str], list[tuple[int, str]]]:
 _COMMENT_BATCH_SEP = "\ue000"
 
 
-def _prepare_comment_body(body: str) -> str:
-    """Decode a comment body only when it can still hide an encoded marker."""
-    if any(ord(char) > 127 or char in "&%" for char in body):
-        return _prepare_text_for_scan(body)
-    return body
+def _comment_scan_text(body: str) -> str:
+    """Full cleanup for one comment body, including comments decoding revealed."""
+    prepared = _prepare_text_for_scan(body)
+    removed, nested = extract_html_comments(prepared, replacement="")
+    parts = [removed]
+    for _start, nested_body in nested:
+        if nested_body.strip():
+            parts.append(_prepare_text_for_scan(nested_body))
+    if len(parts) == 1:
+        return removed
+    return _COMMENT_BATCH_SEP.join(parts)
 
 
 def _comment_batch_findings(
@@ -1222,8 +1220,12 @@ def _comment_batch_findings(
     parts: list[str] = []
     spans: list[tuple[int, int, int]] = []
     cursor = 0
+    prepared_by_body: dict[str, str] = {}
     for source_offset, body in bodies:
-        scanned = _prepare_comment_body(body)
+        scanned = prepared_by_body.get(body)
+        if scanned is None:
+            scanned = _comment_scan_text(body)
+            prepared_by_body[body] = scanned
         if parts:
             parts.append(_COMMENT_BATCH_SEP)
             cursor += 1
