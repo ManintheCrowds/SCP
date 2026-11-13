@@ -9,6 +9,7 @@ Scan text for prompt-injection patterns and hidden Unicode.
 import base64
 import bisect
 import codecs
+import difflib
 from functools import lru_cache
 import html
 import json
@@ -706,7 +707,7 @@ def _supplemental_visible_hits(
     overrides: list[tuple[int, str]] = []
     reversals: list[tuple[int, str]] = []
     poisons: list[tuple[int, str, str, str]] = []
-    for window, local_bounds in _boundary_windows(spaced, spaced_bounds):
+    for window, local_bounds, origin in _boundary_windows(spaced, spaced_bounds):
         scanned = window
         bounds = local_bounds
         if "&" in window or "%" in window or "\uff1c" in window:
@@ -718,30 +719,45 @@ def _supplemental_visible_hits(
         # One set for the window. Building it per hit is quadratic in the
         # number of comments when every comment produces a hit.
         edges = set(bounds)
+
+        def _keep(hit: tuple[int, str]) -> bool:
+            return not _match_cuts_a_longer_word(
+                scanned, edges, hit[0], hit[0] + len(hit[1])
+            )
+
         overrides.extend(
-            hit for hit in scan_override_phrases(scanned)
-            if not _match_cuts_a_longer_word(scanned, edges, hit[0], hit[0] + len(hit[1]))
+            (origin + hit[0], hit[1]) for hit in scan_override_phrases(scanned) if _keep(hit)
         )
         reversals.extend(
-            hit for hit in scan_reversal_phrases(scanned)
-            if not _match_cuts_a_longer_word(scanned, edges, hit[0], hit[0] + len(hit[1]))
+            (origin + hit[0], hit[1]) for hit in scan_reversal_phrases(scanned) if _keep(hit)
         )
         poisons.extend(
-            hit for hit in scan_tool_poisoning(scanned)
+            (origin + hit[0], hit[1], hit[2], hit[3])
+            for hit in scan_tool_poisoning(scanned)
             if not _match_cuts_a_longer_word(scanned, edges, hit[0], hit[0] + len(hit[1]))
         )
         if cleaned != scanned:
-            overrides.extend(scan_override_phrases(cleaned))
-            reversals.extend(scan_reversal_phrases(cleaned))
-            poisons.extend(scan_tool_poisoning(cleaned))
+            overrides.extend(
+                (origin + hit[0], hit[1]) for hit in scan_override_phrases(cleaned)
+            )
+            reversals.extend(
+                (origin + hit[0], hit[1]) for hit in scan_reversal_phrases(cleaned)
+            )
+            poisons.extend(
+                (origin + hit[0], hit[1], hit[2], hit[3]) for hit in scan_tool_poisoning(cleaned)
+            )
     if gap:
-        for window, local_bounds in _boundary_windows(gap, gap_bounds):
-            overrides.extend(_scan_marked_overrides(window))
-            poisons.extend(_scan_marked_poison(window))
+        for window, local_bounds, origin in _boundary_windows(gap, gap_bounds):
+            overrides.extend(
+                (origin + hit[0], hit[1]) for hit in _scan_marked_overrides(window)
+            )
+            poisons.extend(
+                (origin + hit[0], hit[1], hit[2], hit[3]) for hit in _scan_marked_poison(window)
+            )
     return overrides, reversals, poisons
 
 
-def _boundary_windows(text: str, bounds: list[int], radius: int = 160) -> list[tuple[str, list[int]]]:
+def _boundary_windows(text: str, bounds: list[int], radius: int = 160) -> list[tuple[str, list[int], int]]:
     """Slices around comment boundaries, with bounds shifted into each slice."""
     if not text or not bounds:
         return []
@@ -754,7 +770,7 @@ def _boundary_windows(text: str, bounds: list[int], radius: int = 160) -> list[t
             intervals[-1][1] = max(intervals[-1][1], hi)
         else:
             intervals.append([lo, hi])
-    windows: list[tuple[str, list[int]]] = []
+    windows: list[tuple[str, list[int], int]] = []
     cursor = 0
     total = len(bounds)
     for lo, hi in intervals:
@@ -765,7 +781,7 @@ def _boundary_windows(text: str, bounds: list[int], radius: int = 160) -> list[t
         while probe < total and bounds[probe] < hi:
             local.append(bounds[probe] - lo)
             probe += 1
-        windows.append((text[lo:hi], local))
+        windows.append((text[lo:hi], local, lo))
     return windows
 
 
@@ -1525,7 +1541,7 @@ def _comment_scan_text(body: str) -> tuple[str, bool]:
         )
         parts.append(_finish_visible(removed))
         if spaced != removed and spaced_bounds:
-            for window, _local in _boundary_windows(spaced, spaced_bounds):
+            for window, _local, _origin in _boundary_windows(spaced, spaced_bounds):
                 parts.append(_finish_visible(window))
         if depth >= _MAX_COMMENT_DEPTH and nested:
             capped = True
@@ -1625,6 +1641,161 @@ class _RemovedOffsetIndex:
         if slot >= len(self.breaks):
             return self.tail_origin + (index - self.tail_removed)
         return self.origin_at[slot] + (index - self.removed_at[slot])
+
+
+class _SpacedOffsetIndex:
+    """Bisect map from a space-replaced index back to the pre-slice string.
+
+    Each comment run is one inserted space. A hit in that reading has to land
+    on the same raw offset as the comments-removed reading.
+    """
+
+    def __init__(self, runs: list[tuple[int, int]]) -> None:
+        space_at: list[int] = []
+        chunk_origin: list[int] = []
+        chunk_spaced: list[int] = []
+        comment_start: list[int] = []
+        origin = 0
+        spaced = 0
+        for start, end in runs:
+            chunk = start - origin
+            chunk_origin.append(origin)
+            chunk_spaced.append(spaced)
+            space_at.append(spaced + chunk)
+            comment_start.append(start)
+            spaced += chunk + 1
+            origin = end
+        self.space_at = space_at
+        self.chunk_origin = chunk_origin
+        self.chunk_spaced = chunk_spaced
+        self.comment_start = comment_start
+        self.tail_origin = origin
+        self.tail_spaced = spaced
+
+    def map(self, index: int) -> int:
+        slot = bisect.bisect_right(self.space_at, index)
+        if slot > 0 and self.space_at[slot - 1] == index:
+            return self.comment_start[slot - 1]
+        if slot >= len(self.space_at):
+            return self.tail_origin + (index - self.tail_spaced)
+        return self.chunk_origin[slot] + (index - self.chunk_spaced[slot])
+
+
+def _compose_maps(parent: list[int] | None, child: list[int] | None) -> list[int] | None:
+    """Compose child (newer → middle) with parent (middle → older)."""
+    if child is None:
+        return parent
+    if parent is None:
+        return child
+    return [parent[index] if index < len(parent) else index for index in child]
+
+
+_ENTITY_RE = re.compile(r"&(?:#x[0-9a-fA-F]+|#\d+|[A-Za-z][A-Za-z0-9]+);")
+_URL_BYTE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+
+
+def _replacement_map(text: str, pattern: re.Pattern[str], replace) -> tuple[str, list[int] | None]:
+    """Replace matches and point every output character at a source index."""
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return text, None
+    parts: list[str] = []
+    source: list[int] = []
+    last = 0
+    changed = False
+    for match in matches:
+        parts.append(text[last : match.start()])
+        source.extend(range(last, match.start()))
+        replacement = replace(match)
+        if replacement != match.group(0):
+            changed = True
+        parts.append(replacement)
+        if len(replacement) == match.end() - match.start():
+            source.extend(range(match.start(), match.end()))
+        else:
+            anchor = match.start()
+            source.extend([anchor] * len(replacement))
+        last = match.end()
+    parts.append(text[last:])
+    source.extend(range(last, len(text)))
+    if not changed:
+        return text, None
+    return "".join(parts), source
+
+
+def _decode_source_map(original: str, decoded: str) -> list[int] | None:
+    """Map each decoded index back to the raw string. None when nothing moved."""
+    if decoded == original:
+        return None
+    current = original
+    mapping: list[int] | None = None
+    if "\x00" in current:
+        stripped, step = _replacement_map(current, re.compile("\x00"), lambda _match: "")
+        mapping = _compose_maps(mapping, step)
+        current = stripped
+    if "&" in current:
+        unescaped, step = _replacement_map(
+            current, _ENTITY_RE, lambda match: html.unescape(match.group(0))
+        )
+        if unescaped == html.unescape(current):
+            mapping = _compose_maps(mapping, step)
+            current = unescaped
+    if "%" in current:
+        unquoted, step = _replacement_map(
+            current, _URL_BYTE_RE, lambda match: urllib.parse.unquote(match.group(0))
+        )
+        if unquoted == urllib.parse.unquote(current):
+            mapping = _compose_maps(mapping, step)
+            current = unquoted
+    if current == decoded:
+        return mapping
+    # A later canonicalize step still moved characters. Align the two strings.
+    return _compose_maps(mapping, _align_changed_text(current, decoded))
+
+
+def _align_changed_text(before: str, after: str) -> list[int] | None:
+    if before == after:
+        return None
+    source = [0] * len(after)
+    matcher = difflib.SequenceMatcher(a=before, b=after, autojunk=False)
+    for tag, i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for step in range(j2 - j1):
+                source[j1 + step] = i1 + step
+        else:
+            anchor = min(i1, len(before) - 1) if before else 0
+            for step in range(j2 - j1):
+                source[j1 + step] = anchor
+    return source
+
+
+def _finish_source_map(before: str, after: str) -> list[int] | None:
+    """Map a finished index back through fragment, hex, and JSON collapse."""
+    if before == after:
+        return None
+    current = before
+    mapping: list[int] | None = None
+    for pattern, replace in (
+        (_SPACED_HEX_RUN, lambda match: re.sub(r"\s+", "", match.group(0))),
+        (
+            _FRAGMENTED_TOKEN,
+            lambda match: (
+                collapsed
+                if len(collapsed := re.sub(r"[\s_\-./\\]+", "", match.group(0))) >= 5
+                else match.group(0)
+            ),
+        ),
+        (
+            _JSON_LETTER_ARRAY,
+            lambda match: "".join(re.findall(r'"([A-Za-z])"', match.group(0))) or match.group(0),
+        ),
+    ):
+        updated, step = _replacement_map(current, pattern, replace)
+        mapping = _compose_maps(mapping, step)
+        current = updated
+    if current == after:
+        return mapping
+    return _compose_maps(mapping, _align_changed_text(current, after))
 
 
 def _closest_offset(positions: list[int], target: int, limit: int) -> int:
@@ -1869,51 +2040,79 @@ def classify(text: str) -> dict:
         [(spaced, spaced_bounds, gap, gap_bounds)]
     )
     scope = "text"
-    source_index = _RemovedOffsetIndex(_comment_runs(text if decoded == text else decoded))
+    sliced = text if decoded == text else decoded
+    comment_runs = _comment_runs(sliced)
+    source_index = _RemovedOffsetIndex(comment_runs)
+    spaced_index = _SpacedOffsetIndex(comment_runs)
+    decode_map = _decode_source_map(text, decoded)
+    finish_map = _finish_source_map(removed, finished)
+
+    def _through_decode(index: int) -> int:
+        if decode_map is not None and 0 <= index < len(decode_map):
+            return decode_map[index]
+        return index
 
     def _visible_source(offset: int) -> int:
-        if not source_index.breaks or finished != removed:
-            return offset
-        return source_index.map(offset)
+        removed_index = finish_map[offset] if finish_map is not None and offset < len(finish_map) else offset
+        decoded_index = source_index.map(removed_index) if source_index.breaks else removed_index
+        return _through_decode(decoded_index)
+
+    def _spaced_source(offset: int) -> int:
+        decoded_index = spaced_index.map(offset) if spaced_index.space_at else offset
+        return _through_decode(decoded_index)
 
     surface_seen: dict[tuple[str, str], dict[str, int]] = {}
     groups = _scan_finding_groups(visible_raw, finished, heavy=True)
+    # Hidden-character hits are offsets into the pre-finish text. Phrase hits
+    # are offsets into the finished text. Boundary hits are offsets into the
+    # spaced reading. All three are stored as raw offsets before dedup.
+    raw_groups: dict[str, list[tuple[int, str]]] = {key: [] for key in groups}
+    for key, hits in groups.items():
+        mapper = _visible_source if key not in {"hidden_unicode", "null_byte"} else _through_decode
+        if key in {"hidden_unicode", "null_byte"} and source_index.breaks and visible_raw == removed:
+            mapper = source_index.map
+        raw_groups[key] = [(mapper(offset), phrase) for offset, phrase in hits]
     if extra_override or extra_reversal:
         for key_name, extra in (
             ("override_phrases", extra_override),
             ("reversal_phrases", extra_reversal),
         ):
-            already = {" ".join(item[1].split()).casefold() for item in groups[key_name]}
+            already = {" ".join(item[1].split()).casefold() for item in raw_groups[key_name]}
             for hit in extra:
                 key = " ".join(hit[1].split()).casefold()
                 if key in already:
                     continue
                 already.add(key)
-                groups[key_name].append(hit)
-    for key, hits in groups.items():
+                raw_groups[key_name].append((_spaced_source(hit[0]), hit[1]))
+    for key, hits in raw_groups.items():
         base = _base_severity_for_key(key)
         for offset, phrase in hits:
             match = str(phrase)
             if not _keep_combined_hit(kept, surface_seen, scope, key, match):
                 continue
-            if not _first_report(key, match, _visible_source(offset)):
+            if not _first_report(key, match, offset):
                 continue
             legacy[key].append((offset, match))
             severities.append(base)
-    poison_hits = list(scan_tool_poisoning(finished))
-    if extra_poison:
-        poison_hits.extend(extra_poison)
+    poison_hits = [
+        (_visible_source(offset), match, phrase, base)
+        for offset, match, phrase, base in scan_tool_poisoning(finished)
+    ]
+    poison_hits.extend(
+        (_spaced_source(offset), match, phrase, base)
+        for offset, match, phrase, base in extra_poison
+    )
     for offset, match, phrase, base in poison_hits:
         if not _keep_combined_hit(kept, surface_seen, scope, "tool_poisoning", match):
             continue
-        if not _first_report("tool_poisoning", phrase, _visible_source(offset)):
+        if not _first_report("tool_poisoning", phrase, offset):
             continue
         note = _location_record(
             category="tool_poisoning",
             offset=offset,
             match=match,
             segment="text",
-            source_offset=_visible_source(offset),
+            source_offset=offset,
             severity=base,
             base_severity=base,
             phrase=phrase,
