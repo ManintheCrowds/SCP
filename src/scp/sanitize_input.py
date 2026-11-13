@@ -1509,7 +1509,11 @@ _COMMENT_MARKERS = re.compile(r"<!-*>?|--!?>")
 _CAP_FINDING = "comment scan stopped at the depth or size cap"
 
 _MAX_COMMENT_DEPTH = 8
-_MAX_COMMENT_BODY_WORK = 2_000_000
+
+
+def _comment_rescan_budget() -> int:
+    """Nested re-scans, not the first read of a comment, share the input cap."""
+    return scp_limits.max_input_chars()
 
 
 def _flatten_comment_markers(body: str) -> str:
@@ -1534,8 +1538,11 @@ def _comment_scan_text(body: str) -> tuple[str, bool]:
         if current in seen:
             continue
         seen.add(current)
-        work += len(current)
-        if work > _MAX_COMMENT_BODY_WORK or depth > _MAX_COMMENT_DEPTH:
+        # The first read of a comment is ordinary work. Only nested re-scans
+        # count, so a long benign comment does not trip the cap.
+        if depth > 0:
+            work += len(current)
+        if (depth > 0 and work > _comment_rescan_budget()) or depth > _MAX_COMMENT_DEPTH:
             capped = True
             parts.append(_finish_visible(_flatten_comment_markers(current)))
             break
