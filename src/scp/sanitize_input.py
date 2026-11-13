@@ -1254,19 +1254,56 @@ def _comment_scan_text(body: str) -> str:
     return _COMMENT_BATCH_SEP.join(parts)
 
 
+_ENCODED_COMMENT_MARKERS = (
+    "<!--",
+    "&lt;!--",
+    "&LT;!--",
+    "%3C!--",
+    "%3c!--",
+    "&#60;!--",
+    "&#x3C;!--",
+    "&#x3c;!--",
+    "\uff1c!--",
+)
+
+
+def _encoded_comment_positions(raw: str) -> list[int]:
+    """Start indexes of literal and encoded comment openers. One pass per marker."""
+    positions: list[int] = []
+    for marker in _ENCODED_COMMENT_MARKERS:
+        idx = raw.find(marker)
+        while idx >= 0:
+            positions.append(idx)
+            idx = raw.find(marker, idx + len(marker))
+    positions.sort()
+    return positions
+
+
+def _closest_offset(positions: list[int], target: int, limit: int) -> int:
+    if not positions:
+        return min(max(target, 0), limit)
+    slot = bisect.bisect_left(positions, target)
+    choices = []
+    if slot < len(positions):
+        choices.append(positions[slot])
+    if slot > 0:
+        choices.append(positions[slot - 1])
+    return min(choices, key=lambda item: abs(item - target))
+
+
 def _comment_batch_findings(
-    bodies: list[tuple[int, str]],
-) -> tuple[list[tuple[str, int, str, int]], list[tuple[int, str, str, str, int]]]:
+    bodies: list[tuple[int, str, bool]],
+) -> tuple[list[tuple[str, int, str, int, bool]], list[tuple[int, str, str, str, int, bool]]]:
     """Scan many comment bodies in one pass.
 
     A private-use separator stops a phrase from forming across two comments.
     Each returned offset is relative to that comment body.
     """
     parts: list[str] = []
-    spans: list[tuple[int, int, int]] = []
+    spans: list[tuple[int, int, int, bool]] = []
     cursor = 0
     prepared_by_body: dict[str, str] = {}
-    for source_offset, body in bodies:
+    for source_offset, body, conceal in bodies:
         scanned = prepared_by_body.get(body)
         if scanned is None:
             scanned = _comment_scan_text(body)
@@ -1277,28 +1314,28 @@ def _comment_batch_findings(
         start = cursor
         parts.append(scanned)
         cursor += len(scanned)
-        spans.append((start, cursor, source_offset))
+        spans.append((start, cursor, source_offset, conceal))
     if not parts:
         return [], []
     batch = "".join(parts)
     starts = [span[0] for span in spans]
 
-    def locate(offset: int) -> tuple[int, int] | None:
+    def locate(offset: int) -> tuple[int, int, bool] | None:
         slot = bisect.bisect_right(starts, offset) - 1
         if slot < 0:
             return None
-        start, end, source_offset = spans[slot]
+        start, end, source_offset, conceal = spans[slot]
         if offset >= end:
             return None
-        return offset - start, source_offset
+        return offset - start, source_offset, conceal
 
-    legacy_hits: list[tuple[str, int, str, int]] = []
-    poison_hits: list[tuple[int, str, str, str, int]] = []
-    for source_offset, body in bodies:
+    legacy_hits: list[tuple[str, int, str, int, bool]] = []
+    poison_hits: list[tuple[int, str, str, str, int, bool]] = []
+    for source_offset, body, conceal in bodies:
         for offset, phrase in scan_hidden_unicode(body):
-            legacy_hits.append(("hidden_unicode", offset, str(phrase), source_offset))
+            legacy_hits.append(("hidden_unicode", offset, str(phrase), source_offset, conceal))
         for offset, phrase in scan_null_bytes(body):
-            legacy_hits.append(("null_byte", offset, str(phrase), source_offset))
+            legacy_hits.append(("null_byte", offset, str(phrase), source_offset, conceal))
     for key, hits in _scan_finding_groups(batch, batch).items():
         if key in ("hidden_unicode", "null_byte"):
             continue
@@ -1306,14 +1343,14 @@ def _comment_batch_findings(
             located = locate(offset)
             if located is None:
                 continue
-            local_offset, source_offset = located
-            legacy_hits.append((key, local_offset, str(phrase), source_offset))
+            local_offset, source_offset, conceal = located
+            legacy_hits.append((key, local_offset, str(phrase), source_offset, conceal))
     for offset, match, phrase, base in scan_tool_poisoning(batch):
         located = locate(offset)
         if located is None:
             continue
-        local_offset, source_offset = located
-        poison_hits.append((local_offset, match, phrase, base, source_offset))
+        local_offset, source_offset, conceal = located
+        poison_hits.append((local_offset, match, phrase, base, source_offset, conceal))
     return legacy_hits, poison_hits
 
 
@@ -1342,23 +1379,29 @@ def _keep_combined_hit(
     return True
 
 
-def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
+def _scan_finding_groups(
+    raw: str, prepared: str, *, heavy: bool = True
+) -> dict[str, list[tuple[int, str]]]:
+    """Phrase scans always run. Rot, homoglyphs, and mythic scans are once per text.
+
+    Comment spacing does not change letters, so the extra reading skips those.
+    """
     return {
         "override_phrases": scan_override_phrases(prepared),
         "leetspeak_phrases": scan_leetspeak(prepared),
-        "hidden_unicode": scan_hidden_unicode(raw),
-        "null_byte": scan_null_bytes(raw),
+        "hidden_unicode": scan_hidden_unicode(raw) if heavy else [],
+        "null_byte": scan_null_bytes(raw) if heavy else [],
         "path_traversal": scan_path_traversal(prepared),
-        "encoding_evasion_rot": _check_rot_decode(prepared),
+        "encoding_evasion_rot": _check_rot_decode(prepared) if heavy else [],
         "reversal_phrases": scan_reversal_phrases(prepared),
         "power_words": scan_power_words(prepared),
-        "morse_like": scan_morse_like(prepared),
+        "morse_like": scan_morse_like(prepared) if heavy else [],
         "encoding_blocks": scan_encoding_blocks(prepared),
-        "homoglyphs": scan_homoglyphs(prepared),
-        "multilingual_override": scan_multilingual_override(prepared),
+        "homoglyphs": scan_homoglyphs(prepared) if heavy else [],
+        "multilingual_override": scan_multilingual_override(prepared) if heavy else [],
         "semantic_aliases": scan_semantic_aliases(prepared),
-        "jailbreak_mythic": scan_jailbreak_mythic(prepared),
-        "hostile_ux": scan_hostile_ux(prepared),
+        "jailbreak_mythic": scan_jailbreak_mythic(prepared) if heavy else [],
+        "hostile_ux": scan_hostile_ux(prepared) if heavy else [],
     }
 
 
@@ -1400,6 +1443,8 @@ def reconcile_severity(result: dict) -> None:
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
     text_forms, comments = _html_comment_forms(text)
+    if len(text_forms) == 2 and _FRAGMENTED_TOKEN.search(text_forms[1]) is None:
+        text_forms = [text_forms[0]]
     segments: list[tuple[str, int, str]] = [("text", 0, form) for form in text_forms]
     for start, body in comments:
         if body.strip():
@@ -1412,7 +1457,7 @@ def classify(text: str) -> dict:
     kept: dict[tuple[str, str], dict[str, int]] = {}
     scheduled_bodies = {body for kind, _start, body in segments if kind == "html_comment"}
 
-    pending_comments: list[tuple[int, str]] = []
+    pending_comments: list[tuple[int, str, bool]] = []
     gap_hits = scan_override_gaps(text)
     index = 0
     while index < len(segments):
@@ -1420,17 +1465,24 @@ def classify(text: str) -> dict:
         index += 1
         if segment == "html_comment":
             if _comment_body_needs_scan(raw):
-                pending_comments.append((source_offset, raw))
+                pending_comments.append((source_offset, raw, True))
+            continue
+        if segment == "decoded_comment":
+            if _comment_body_needs_scan(raw):
+                pending_comments.append((source_offset, raw, False))
             continue
         scope = "text"
         forms, revealed = _prepared_scan_forms(raw)
+        marker_positions = _encoded_comment_positions(raw) if revealed else []
         for start, body in revealed:
             if body.strip() and body not in scheduled_bodies:
                 scheduled_bodies.add(body)
-                segments.append(("html_comment", start, body))
+                segments.append(
+                    ("decoded_comment", _closest_offset(marker_positions, start, len(raw)), body)
+                )
         for prepared in forms:
             surface_seen: dict[tuple[str, str], dict[str, int]] = {}
-            groups = _scan_finding_groups(raw, prepared)
+            groups = _scan_finding_groups(raw, prepared, heavy=(prepared == forms[0]))
             if segment == "text" and gap_hits and prepared == forms[0]:
                 already = {
                     " ".join(item[1].split()).casefold()
@@ -1469,33 +1521,36 @@ def classify(text: str) -> dict:
 
     comment_legacy, comment_poison = _comment_batch_findings(pending_comments)
     comment_seen: dict[tuple[str, str], dict[str, int]] = {}
-    for key, offset, match, source_offset in comment_legacy:
-        if not _keep_combined_hit(kept, comment_seen, "html_comment", key, match):
+    for key, offset, match, source_offset, conceal in comment_legacy:
+        scope = "html_comment" if conceal else "decoded_comment"
+        if not _keep_combined_hit(kept, comment_seen, scope, key, match):
             continue
         base = _base_severity_for_key(key)
-        severity = _severity_for_concealment(base, key)
+        severity = _severity_for_concealment(base, key) if conceal else base
         legacy[key].append((offset, match))
         severities.append(severity)
-        concealed_notes.append(
-            _location_record(
-                category=_FINDING_CATEGORY[key],
-                offset=offset,
-                match=match,
-                segment="html_comment",
-                source_offset=source_offset,
-                severity=severity,
-                base_severity=base,
+        if conceal:
+            concealed_notes.append(
+                _location_record(
+                    category=_FINDING_CATEGORY[key],
+                    offset=offset,
+                    match=match,
+                    segment="html_comment",
+                    source_offset=source_offset,
+                    severity=severity,
+                    base_severity=base,
+                )
             )
-        )
-    for offset, match, phrase, base, source_offset in comment_poison:
-        if not _keep_combined_hit(kept, comment_seen, "html_comment", "tool_poisoning", match):
+    for offset, match, phrase, base, source_offset, conceal in comment_poison:
+        scope = "html_comment" if conceal else "decoded_comment"
+        if not _keep_combined_hit(kept, comment_seen, scope, "tool_poisoning", match):
             continue
-        severity = _severity_for_concealment(base, "tool_poisoning")
+        severity = _severity_for_concealment(base, "tool_poisoning") if conceal else base
         note = _location_record(
             category="tool_poisoning",
             offset=offset,
             match=match,
-            segment="html_comment",
+            segment="html_comment" if conceal else "text",
             source_offset=source_offset,
             severity=severity,
             base_severity=base,
@@ -1503,7 +1558,8 @@ def classify(text: str) -> dict:
         )
         poison_notes.append(note)
         severities.append(severity)
-        concealed_notes.append(note)
+        if conceal:
+            concealed_notes.append(note)
 
     injection_any = any(legacy[key] for key in _INJECTION_FINDING_KEYS) or any(
         severity in ("high", "critical") for severity in severities
