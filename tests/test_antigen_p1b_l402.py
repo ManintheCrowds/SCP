@@ -129,6 +129,7 @@ def test_fetch_402_enriched_metadata():
     assert exc.value.l402 is not None
     assert exc.value.l402["macaroon"] == MACAROON
     assert exc.value.l402["invoice"] == INVOICE
+    mock_resp.close.assert_called_once()
 
 
 def test_fetch_l402_token_retry_200(issuer):
