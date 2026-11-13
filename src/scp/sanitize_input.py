@@ -478,6 +478,46 @@ def scan_override_phrases(text: str) -> list[tuple[int, str]]:
     return findings
 
 
+_GAP_MARK = "\x1f"
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+@lru_cache(maxsize=1)
+def _override_gap_patterns() -> tuple[re.Pattern[str], ...]:
+    """Override patterns where each required space may be missing.
+
+    The gap is one optional sentinel, not a repeating quantifier, so the
+    match stays linear.
+    """
+    gap = r"(?:\x1f)?"
+    compiled: list[re.Pattern[str]] = []
+    for pattern in OVERRIDE_PHRASES:
+        if r"\s" not in pattern:
+            continue
+        compiled.append(re.compile(pattern.replace(r"\s+", gap), re.IGNORECASE))
+    return tuple(compiled)
+
+
+def scan_override_gaps(text: str) -> list[tuple[int, str]]:
+    """Match override phrases after comments are removed.
+
+    Whitespace runs become one sentinel and each gap may be absent, so one
+    comment can join a word while another used to separate words.
+    """
+    normalized = _WHITESPACE_RUN.sub(_GAP_MARK, text)
+    findings: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for pattern in _override_gap_patterns():
+        for match in pattern.finditer(normalized):
+            phrase = match.group(0).replace(_GAP_MARK, " ")
+            key = " ".join(phrase.split()).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append((match.start(), phrase))
+    return findings
+
+
 def scan_leetspeak(text: str) -> list[tuple[int, str]]:
     findings = []
     for pattern in LEETSPEAK_PHRASES:
@@ -1265,7 +1305,19 @@ def classify(text: str) -> dict:
                 segments.append(("html_comment", start, body))
         for prepared in forms:
             surface_seen: dict[tuple[str, str], dict[str, int]] = {}
-            for key, hits in _scan_finding_groups(raw, prepared).items():
+            groups = _scan_finding_groups(raw, prepared)
+            if segment == "text" and prepared == forms[0]:
+                already = {
+                    " ".join(item[1].split()).casefold()
+                    for item in groups["override_phrases"]
+                }
+                for hit in scan_override_gaps(prepared):
+                    key = " ".join(hit[1].split()).casefold()
+                    if key in already:
+                        continue
+                    already.add(key)
+                    groups["override_phrases"].append(hit)
+            for key, hits in groups.items():
                 base = _base_severity_for_key(key)
                 severity = base if segment == "text" else _severity_for_concealment(base, key)
                 category = _FINDING_CATEGORY[key]
