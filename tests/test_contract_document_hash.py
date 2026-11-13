@@ -8,14 +8,15 @@ from pathlib import Path
 
 import pytest
 
-# Synced with OpenHarness docs/contracts/scp_mcp_v1.md (v1.0)
+# Synced with OpenHarness docs/contracts/scp_mcp_v1.md (v1.0).
+# Pin is the LF byte string stored in git, not a CRLF working-copy hash.
 EXPECTED_SCP_MCP_V1_SHA256 = (
-    "226f19b3cf237a2d7fe6793d4f7f4be5bee5631693f489662c48d126b4094f42"
+    "69a40c210d4a4999358ad1655c60ded39e442a8d451fe2f69a1e1a0f31a5ae4f"
 )
 
 # Synced with OpenHarness docs/contracts/scp_mcp_v1.1.md (optional add-ons)
 EXPECTED_SCP_MCP_V1_1_SHA256 = (
-    "722aca69cc97550dfe742c5fefffbc7f958d871ab269b7373a2359351af734ab"
+    "b4c826997cab5ff380ce779278d41e25171b4df309027d2fdbd847245e4167db"
 )
 
 # Synced with OpenHarness docs/contracts/scp_antigen_mcp_v1.md (SCP vendor — AppSec quarantine path + body caps)
@@ -30,9 +31,18 @@ def contracts_dir() -> Path:
     return root / "docs" / "contracts"
 
 
+def _contract_bytes(path: Path) -> bytes:
+    """LF form of a vendored contract.
+
+    Windows checkouts may rewrite newlines to CRLF. The pin matches the LF
+    bytes in git, so the same file hashes the same on both platforms.
+    """
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
+
 def _assert_contract_sha(path: Path, expected: str, label: str) -> None:
     assert path.is_file(), f"Missing vendored contract: {path}"
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256(_contract_bytes(path)).hexdigest()
     assert digest == expected, (
         f"{label} hash mismatch. Update EXPECTED constant if synced from OpenHarness. "
         f"got={digest} expected={expected}"

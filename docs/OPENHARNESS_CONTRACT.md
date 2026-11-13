@@ -15,9 +15,9 @@ This repository vendors **copies for verification** at [`docs/contracts/`](contr
 For each changed contract file (`scp_mcp_v1.md`, `scp_mcp_v1.1.md`, `scp_antigen_mcp_v1.md`):
 
 1. Copy from OpenHarness over this repo’s [`docs/contracts/`](contracts/) counterpart (preserve UTF-8, LF).
-2. Compute SHA-256:
-   - PowerShell: `(Get-FileHash -Algorithm SHA256 -Path docs/contracts/<file>).Hash.ToLowerInvariant()`
+2. Compute SHA-256 of the LF bytes (the form stored in git). A Windows checkout that rewrote newlines to CRLF will not match `sha256sum` until those newlines are normalized; `.gitattributes` marks these files `eol=lf`.
    - POSIX: `sha256sum docs/contracts/<file>`
+   - PowerShell, LF checkout: `(Get-FileHash -Algorithm SHA256 -Path docs/contracts/<file>).Hash.ToLowerInvariant()`
 3. Update the matching `EXPECTED_*_SHA256` constant in [`tests/test_contract_document_hash.py`](../tests/test_contract_document_hash.py).
 4. Run `pytest tests/test_contract_document_hash.py tests/test_mcp_contract_v1.py -v`.
 5. Document in [CHANGELOG.md](../CHANGELOG.md) and set **CONTRACT_HASH** for v1.0 releases (same value as `EXPECTED_SCP_MCP_V1_SHA256`).

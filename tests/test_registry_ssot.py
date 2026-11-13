@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from tests.path_guards import create_junction, symlink_or_skip
 from scp import pattern_record as pr
 from scp import registry_fetch
 from scp import registry_ssot
@@ -273,7 +275,8 @@ def test_apply_merge_rejects_registry_fetch_symlink_to_quarantine_root(isolated_
     )
     q = scp_utils.quarantine(forged, reason="registry_fetch", source="evil")
     qpath = Path(q["path"])
-    (qpath.parent / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(
+    symlink_or_skip(
+        qpath.parent / scp_utils.REGISTRY_FETCH_LAYOUT,
         qpath.parent,
         target_is_directory=True,
     )
@@ -285,3 +288,50 @@ def test_apply_merge_rejects_registry_fetch_symlink_to_quarantine_root(isolated_
 
     assert res["merged"] is False
     assert res["reason"] == "quarantine_path_rejected"
+
+
+def test_apply_merge_rejects_fetch_dir_reported_as_junction(isolated_ssot, monkeypatch):
+    """A junction is not a symlink; resolve() must not be allowed to follow it."""
+    snap = _snap([_rec("junction.reported.001")])
+    qpath = _stage_fetch_quarantine(snap)
+    fetch_dir = qpath.parent
+
+    def claim_junction(path: object) -> bool:
+        return os.path.normcase(os.fspath(path)) == os.path.normcase(os.fspath(fetch_dir))
+
+    monkeypatch.setattr(os.path, "isjunction", claim_junction, raising=False)
+    res = registry_ssot.apply_merge(qpath, approve=True)
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_path_rejected"
+
+
+def test_apply_merge_rejects_symlink_quarantine_file(isolated_ssot, tmp_path):
+    snap = _snap([_rec("symlink.file.001")])
+    qpath = _stage_fetch_quarantine(snap)
+    alias = qpath.parent / "alias.txt"
+    symlink_or_skip(alias, qpath, target_is_directory=False)
+    res = registry_ssot.apply_merge(alias, approve=True)
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_path_rejected"
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="NTFS directory junctions exist only on Windows"
+)
+def test_apply_merge_rejects_registry_fetch_junction(isolated_ssot):
+    """A junction to a sibling directory must not make that sibling mergeable."""
+    snap = _snap([_rec("junction.sibling.001")])
+    qpath = _stage_fetch_quarantine(snap)
+    fetch_dir = qpath.parent
+    root = fetch_dir.parent
+    sibling = root / "notes"
+    sibling.mkdir()
+    for child in list(fetch_dir.iterdir()):
+        child.rename(sibling / child.name)
+    fetch_dir.rmdir()
+    create_junction(fetch_dir, sibling)
+
+    res = registry_ssot.apply_merge(fetch_dir / qpath.name, approve=True)
+    assert res["merged"] is False
+    assert res["reason"] == "quarantine_path_rejected"
+    assert (sibling / qpath.name).is_file()

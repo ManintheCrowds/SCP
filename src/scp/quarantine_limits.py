@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import time
 import uuid
 from collections.abc import Iterator
@@ -18,6 +19,8 @@ _ENV_EVICT = "SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE"
 _DEFAULT_MAX_CONTENT = 1_048_576  # 1 MiB per entry
 _DEFAULT_MAX_TOTAL = 100 * 1024 * 1024  # 100 MiB total stored
 _HARD_MAX_TOTAL = 512 * 1024 * 1024 * 1024  # 512 GiB sanity ceiling
+# ntpath.FILE_ATTRIBUTE_REPARSE_POINT. Absent from stat on non-Windows builds.
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _parse_positive_int(env_key: str, default: int, *, hard_max: int | None = None) -> int:
@@ -90,8 +93,66 @@ def _require_layout_subdirs(layout_subdirs: frozenset[str]) -> frozenset[str]:
     return layout_subdirs
 
 
+def _path_is_reparse_point(path: Path) -> bool:
+    """True for symlinks, directory junctions, and other NTFS reparse points.
+
+    ``Path.is_symlink`` is false for junctions, and junctions need no special
+    privilege to create. Missing paths are not reparse points. A path that
+    cannot be classified is treated as a reparse point so callers fail closed.
+    """
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None:
+        try:
+            if isjunction(os.fspath(path)):
+                return True
+        except OSError:
+            return True
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    attributes = int(getattr(st, "st_file_attributes", 0) or 0)
+    if attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+        return True
+    tag = int(getattr(st, "st_reparse_tag", 0) or 0)
+    return tag != 0
+
+
+def _contains_reparse_point(path: Path, root: Path) -> bool:
+    """True when ``path`` or a parent strictly below ``root`` is a reparse point.
+
+    ``root`` itself is not inspected. Comparison is lexical, so a junction is
+    not followed before it can be recognized.
+    """
+    root_key = os.path.normcase(os.path.normpath(os.fspath(root.absolute())))
+    current = Path(os.path.normpath(os.fspath(path.absolute())))
+    seen: set[str] = set()
+    while True:
+        current_key = os.path.normcase(os.fspath(current))
+        if current_key in seen:
+            return True
+        seen.add(current_key)
+        if current_key == root_key:
+            return False
+        if _path_is_reparse_point(current):
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
+
+
 def _safe_existing_layout_dir(root: Path, sub: Path) -> bool:
-    if sub.is_symlink() or not sub.is_dir():
+    """True when ``sub`` is a real directory strictly inside ``root``.
+
+    Symlinks, junctions, and other reparse points are rejected even when
+    ``resolve()`` would land back inside ``root``.
+    """
+    if _path_is_reparse_point(sub) or not sub.is_dir():
         return False
     try:
         root_resolved = root.resolve()

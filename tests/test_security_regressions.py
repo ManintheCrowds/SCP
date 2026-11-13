@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from tests.path_guards import create_junction, symlink_or_skip
 from scp import mask_secrets, quarantine_limits, sanitize_input, scp_utils
 
 
@@ -925,6 +928,88 @@ def test_list_and_purge_include_registry_fetch_layout(tmp_path, monkeypatch) -> 
     assert scp_utils.list_quarantine() == []
 
 
+def test_layout_dir_reported_as_junction_is_not_trusted(tmp_path, monkeypatch) -> None:
+    """Junctions are not symlinks, but they must not count as a safe layout dir."""
+    root = tmp_path / "quarantine"
+    layout = root / "registry_fetch"
+    sibling = root / "notes"
+    root.mkdir()
+    layout.mkdir()
+    sibling.mkdir()
+
+    def claim_junction(path: object) -> bool:
+        return os.path.normcase(os.fspath(path)) == os.path.normcase(os.fspath(layout))
+
+    monkeypatch.setattr(os.path, "isjunction", claim_junction, raising=False)
+    assert quarantine_limits._safe_existing_layout_dir(root, layout) is False
+    assert quarantine_limits._safe_existing_layout_dir(root, sibling) is True
+
+
+def test_reparse_attribute_rejects_layout_without_isjunction(
+    tmp_path, monkeypatch
+) -> None:
+    """Python 3.10 has no os.path.isjunction; the reparse attribute still rejects."""
+    root = tmp_path / "quarantine"
+    layout = root / "registry_fetch"
+    root.mkdir()
+    layout.mkdir()
+    monkeypatch.delattr(quarantine_limits.os.path, "isjunction", raising=False)
+    real_lstat = quarantine_limits.os.lstat
+    layout_key = os.path.normcase(os.fspath(layout))
+
+    def lstat(path, *, dir_fd=None):
+        if os.path.normcase(os.fspath(path)) == layout_key:
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR,
+                st_file_attributes=0x400,
+                st_reparse_tag=0,
+            )
+        if dir_fd is None:
+            return real_lstat(path)
+        return real_lstat(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(quarantine_limits.os, "lstat", lstat)
+    assert quarantine_limits._path_is_reparse_point(layout) is True
+    assert quarantine_limits._safe_existing_layout_dir(root, layout) is False
+
+
+def test_symlink_mode_is_a_reparse_point_without_isjunction(
+    tmp_path, monkeypatch
+) -> None:
+    target = tmp_path / "entry"
+    target.mkdir()
+    monkeypatch.delattr(quarantine_limits.os.path, "isjunction", raising=False)
+
+    def lstat(path, *, dir_fd=None):
+        return SimpleNamespace(
+            st_mode=stat.S_IFLNK,
+            st_file_attributes=0,
+            st_reparse_tag=0,
+        )
+
+    monkeypatch.setattr(quarantine_limits.os, "lstat", lstat)
+    assert quarantine_limits._path_is_reparse_point(target) is True
+
+
+def test_multiline_quarantine_matches_utf8_lf_budget(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    monkeypatch.setenv("SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE", "0")
+    content = "alpha\nbeta\n"
+    incoming = _incoming_quarantine_bytes(content)
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_CONTENT_BYTES", str(incoming))
+    monkeypatch.setenv("SCP_QUARANTINE_MAX_TOTAL_BYTES", str(incoming))
+    out = scp_utils.quarantine(content, reason="r", source="s")
+    text_path = tmp_path / f"{out['quarantine_id']}.txt"
+    meta_path = tmp_path / f"{out['quarantine_id']}.json"
+    text_bytes = text_path.read_bytes()
+    meta_bytes = meta_path.read_bytes()
+    assert text_bytes == content.encode("utf-8")
+    assert b"\r" not in text_bytes
+    assert b"\r" not in meta_bytes
+    assert text_path.stat().st_size + meta_path.stat().st_size == incoming
+    assert _quota_bytes(tmp_path) <= incoming
+
+
 def test_registry_fetch_layout_symlink_is_not_trusted(tmp_path, monkeypatch) -> None:
     root = tmp_path / "quarantine"
     outside = tmp_path / "outside"
@@ -937,7 +1022,11 @@ def test_registry_fetch_layout_symlink_is_not_trusted(tmp_path, monkeypatch) -> 
         '{"quarantine_id": "aaaaaaaa", "reason": "registry_fetch", "source": "s"}',
         encoding="utf-8",
     )
-    (root / scp_utils.REGISTRY_FETCH_LAYOUT).symlink_to(outside, target_is_directory=True)
+    symlink_or_skip(
+        root / scp_utils.REGISTRY_FETCH_LAYOUT,
+        outside,
+        target_is_directory=True,
+    )
 
     assert all(entry["quarantine_id"] != qid for entry in scp_utils.list_quarantine())
     purged = scp_utils.purge_quarantine(quarantine_id=qid)
@@ -952,6 +1041,80 @@ def test_registry_fetch_layout_symlink_is_not_trusted(tmp_path, monkeypatch) -> 
             layout=scp_utils.REGISTRY_FETCH_LAYOUT,
         )
     assert sorted(p.name for p in outside.iterdir()) == [f"{qid}.json", f"{qid}.txt"]
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="NTFS directory junctions exist only on Windows"
+)
+def test_registry_fetch_layout_junction_is_not_trusted(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "quarantine"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(root))
+    qid = "aaaaaaaa"
+    (outside / f"{qid}.txt").write_text("outside evidence", encoding="utf-8", newline="\n")
+    (outside / f"{qid}.json").write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "registry_fetch", "source": "s"}',
+        encoding="utf-8",
+        newline="\n",
+    )
+    link = root / scp_utils.REGISTRY_FETCH_LAYOUT
+    create_junction(link, outside)
+    assert not link.is_symlink()
+
+    assert all(entry["quarantine_id"] != qid for entry in scp_utils.list_quarantine())
+    purged = scp_utils.purge_quarantine(quarantine_id=qid)
+    assert purged == {"purged": 0, "ids": []}
+    assert (outside / f"{qid}.txt").read_text(encoding="utf-8") == "outside evidence"
+    with pytest.raises(ValueError, match="unsafe quarantine layout"):
+        scp_utils.quarantine(
+            "new registry payload",
+            reason="registry_fetch",
+            source="s",
+            layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+    assert (outside / f"{qid}.txt").is_file()
+    assert (outside / f"{qid}.json").is_file()
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="NTFS directory junctions exist only on Windows"
+)
+def test_registry_fetch_junction_inside_quarantine_is_not_trusted(
+    tmp_path, monkeypatch
+) -> None:
+    """A junction to another directory inside the quarantine root is still unsafe.
+
+    ``resolve()`` would report that target as inside the root, so the reparse
+    check has to reject it before following the junction.
+    """
+    root = tmp_path / "quarantine"
+    nested = root / "notes"
+    root.mkdir()
+    nested.mkdir()
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(root))
+    qid = "aaaaaaaa"
+    (nested / f"{qid}.txt").write_text("nested evidence", encoding="utf-8", newline="\n")
+    (nested / f"{qid}.json").write_text(
+        '{"quarantine_id": "aaaaaaaa", "reason": "registry_fetch", "source": "s"}',
+        encoding="utf-8",
+        newline="\n",
+    )
+    create_junction(root / scp_utils.REGISTRY_FETCH_LAYOUT, nested)
+
+    assert all(entry["quarantine_id"] != qid for entry in scp_utils.list_quarantine())
+    purged = scp_utils.purge_quarantine(quarantine_id=qid)
+    assert purged == {"purged": 0, "ids": []}
+    assert (nested / f"{qid}.txt").read_text(encoding="utf-8") == "nested evidence"
+    with pytest.raises(ValueError, match="unsafe quarantine layout"):
+        scp_utils.quarantine(
+            "new registry payload",
+            reason="registry_fetch",
+            source="s",
+            layout=scp_utils.REGISTRY_FETCH_LAYOUT,
+        )
+    assert sorted(path.name for path in nested.iterdir()) == [f"{qid}.json", f"{qid}.txt"]
 
 
 def test_quarantine_failed_content_write_does_not_evict_existing_entries(
