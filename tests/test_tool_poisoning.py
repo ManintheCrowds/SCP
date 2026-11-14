@@ -471,6 +471,15 @@ def test_redirect_inside_unclosed_comments_uses_the_raw_offset() -> None:
         assert content[hits[0]["source_offset"] : hits[0]["source_offset"] + 4] == "<!--"
 
 
+def test_ligature_expansion_keeps_the_following_raw_offset() -> None:
+    content = "\ufb01le cat ~/.ssh/id_rsa"
+    result = sanitize_input.classify(content)
+    ssh = _poison_phrase(result, "~/.ssh")
+    assert len(ssh) == 1
+    assert ssh[0]["offset"] == content.index("~/.ssh")
+    assert ssh[0]["source_offset"] == content.index("~/.ssh")
+
+
 def test_nfkc_and_bare_entity_offsets_are_raw() -> None:
     accented = "cafe\u0301 cat ~/.ssh/id_rsa cafe\u0301"
     bare = "&amp x cat ~/.ssh/id_rsa &amp y"

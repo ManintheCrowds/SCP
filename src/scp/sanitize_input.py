@@ -1901,7 +1901,14 @@ def _advance(current: str, mapping: list[int] | None, updated: str, step: list[i
 
 
 def _nfkc_with_map(text: str) -> tuple[str, list[int] | None]:
-    """NFKC each base character together with the combining marks that follow it."""
+    """NFKC each base character together with the combining marks that follow it.
+
+    Combining marks are never ASCII, so an ASCII run is one slice. The ASCII
+    character immediately before a mark stays in that cluster, which is what
+    composes ``e`` plus an acute into one character at the base index.
+    """
+    if text.isascii():
+        return text, None
     normalized = unicodedata.normalize("NFKC", text)
     if normalized == text:
         return text, None
@@ -1910,6 +1917,27 @@ def _nfkc_with_map(text: str) -> tuple[str, list[int] | None]:
     index = 0
     length = len(text)
     while index < length:
+        if ord(text[index]) < 128:
+            run = index
+            index += 1
+            while index < length and ord(text[index]) < 128:
+                index += 1
+            if index < length and unicodedata.category(text[index]).startswith("M"):
+                if index - 1 > run:
+                    parts.append(text[run : index - 1])
+                    source.extend(range(run, index - 1))
+                base = index - 1
+                end = index
+                while end < length and unicodedata.category(text[end]).startswith("M"):
+                    end += 1
+                mapped = unicodedata.normalize("NFKC", text[base:end])
+                parts.append(mapped)
+                source.extend([base] * len(mapped))
+                index = end
+                continue
+            parts.append(text[run:index])
+            source.extend(range(run, index))
+            continue
         end = index + 1
         while end < length and unicodedata.category(text[end]).startswith("M"):
             end += 1
@@ -1984,6 +2012,13 @@ def _unescape_with_map(text: str) -> tuple[str, list[int] | None]:
     unescaped = html.unescape(text)
     if unescaped == text:
         return text, None
+    # Semicolon entities are the common case. The window walk is only for a
+    # named entity that html.unescape accepts without a semicolon.
+    replaced, step = _replacement_map(
+        text, _ENTITY_RE, lambda match: html.unescape(match.group(0))
+    )
+    if replaced == unescaped:
+        return replaced, step
     parts: list[str] = []
     source: list[int] = []
     index = 0
