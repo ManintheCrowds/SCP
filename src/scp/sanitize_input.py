@@ -1777,24 +1777,26 @@ def _advance(current: str, mapping: list[int] | None, updated: str, step: list[i
 
 
 def _nfkc_with_map(text: str) -> tuple[str, list[int] | None]:
-    """NFKC one character at a time so a ligature expands without a global align."""
+    """NFKC each base character together with the combining marks that follow it."""
     normalized = unicodedata.normalize("NFKC", text)
     if normalized == text:
         return text, None
     parts: list[str] = []
     source: list[int] = []
-    for index, char in enumerate(text):
-        if ord(char) < 128:
-            parts.append(char)
-            source.append(index)
-            continue
-        mapped = unicodedata.normalize("NFKC", char)
+    index = 0
+    length = len(text)
+    while index < length:
+        end = index + 1
+        while end < length and unicodedata.category(text[end]).startswith("M"):
+            end += 1
+        mapped = unicodedata.normalize("NFKC", text[index:end])
         parts.append(mapped)
         source.extend([index] * len(mapped))
+        index = end
     produced = "".join(parts)
     if produced == normalized:
         return produced, source
-    return normalized, _linear_span_map(text, normalized)
+    return normalized, None
 
 
 def _combining_with_map(text: str) -> tuple[str, list[int] | None]:
@@ -1843,30 +1845,60 @@ def _tag_block_with_map(text: str) -> tuple[str, list[int] | None]:
     produced = "".join(parts)
     if produced == decoded:
         return produced, source
-    return decoded, _linear_span_map(text, decoded)
+    return decoded, None
 
 
-def _linear_span_map(before: str, after: str) -> list[int] | None:
-    """Map one changed span. Several scattered edits stay on the transform maps."""
-    if before == after or not after:
-        return None
-    start = 0
-    limit = min(len(before), len(after))
-    while start < limit and before[start] == after[start]:
-        start += 1
-    end_before = len(before)
-    end_after = len(after)
-    while end_before > start and end_after > start and before[end_before - 1] == after[end_after - 1]:
-        end_before -= 1
-        end_after -= 1
-    anchor = min(start, max(len(before) - 1, 0))
-    source = list(range(start))
-    source.extend([anchor] * (end_after - start))
-    source.extend(range(end_before, len(before)))
-    if len(source) != len(after):
-        source = source[: len(after)]
-        source.extend([anchor] * (len(after) - len(source)))
-    return source
+def _unescape_with_map(text: str) -> tuple[str, list[int] | None]:
+    """HTML unescape, including a named entity that has no semicolon.
+
+    Each output character points at the raw character it came from. A missing
+    semicolon still consumes the entity name, which a single global align
+    would pin to the first entity in the string.
+    """
+    if "&" not in text:
+        return text, None
+    unescaped = html.unescape(text)
+    if unescaped == text:
+        return text, None
+    parts: list[str] = []
+    source: list[int] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] != "&":
+            parts.append(text[index])
+            source.append(index)
+            index += 1
+            continue
+        window_end = min(length, index + 64)
+        chosen: tuple[int, str] | None = None
+        for end in range(index + 2, window_end + 1):
+            chunk = text[index:end]
+            replacement = html.unescape(chunk)
+            if replacement == chunk:
+                continue
+            if end < length:
+                longer = html.unescape(text[index : end + 1])
+                extra = text[end]
+                if not longer.startswith(replacement):
+                    continue
+                if longer != replacement + extra and longer != replacement + html.unescape(extra):
+                    continue
+            chosen = (end, replacement)
+            break
+        if chosen is None:
+            parts.append(text[index])
+            source.append(index)
+            index += 1
+            continue
+        end, replacement = chosen
+        parts.append(replacement)
+        source.extend([index] * len(replacement))
+        index = end
+    produced = "".join(parts)
+    if produced == unescaped:
+        return produced, source
+    return unescaped, None
 
 
 def _mapped_canonicalize(text: str) -> tuple[str, list[int] | None]:
@@ -1900,17 +1932,10 @@ def _mapped_canonicalize(text: str) -> tuple[str, list[int] | None]:
             if updated == urllib.parse.unquote(current):
                 current, mapping = _advance(current, mapping, updated, step)
             else:
-                unquoted = urllib.parse.unquote(current)
-                current, mapping = _advance(current, mapping, unquoted, _linear_span_map(current, unquoted))
+                current = urllib.parse.unquote(current)
         if "&" in current:
-            updated, step = _replacement_map(
-                current, _ENTITY_RE, lambda match: html.unescape(match.group(0))
-            )
-            if updated == html.unescape(current):
-                current, mapping = _advance(current, mapping, updated, step)
-            else:
-                unescaped = html.unescape(current)
-                current, mapping = _advance(current, mapping, unescaped, _linear_span_map(current, unescaped))
+            updated, step = _unescape_with_map(current)
+            current, mapping = _advance(current, mapping, updated, step)
         if current == before:
             break
     return current, mapping
@@ -1923,7 +1948,7 @@ def _decode_source_map(original: str, decoded: str) -> list[int] | None:
     current, mapping = _mapped_canonicalize(original)
     if current == decoded:
         return mapping
-    return _compose_maps(mapping, _linear_span_map(current, decoded))
+    return mapping
 
 
 def _base64_append_with_map(text: str) -> tuple[str, list[int] | None]:
@@ -1995,7 +2020,7 @@ def _finish_source_map(before: str, after: str) -> list[int] | None:
     current, mapping = _advance(current, mapping, updated, step)
     if current == after:
         return mapping
-    return _compose_maps(mapping, _linear_span_map(current, after))
+    return mapping
 
 
 def _closest_offset(positions: list[int], target: int, limit: int) -> int:

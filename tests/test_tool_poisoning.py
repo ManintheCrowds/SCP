@@ -386,6 +386,17 @@ def test_null_byte_inside_a_phrase_still_matches() -> None:
     assert any(hit.get("phrase") == "do not mention" for hit in _poison(hidden))
 
 
+def test_nfkc_and_bare_entity_offsets_are_raw() -> None:
+    accented = "cafe\u0301 cat ~/.ssh/id_rsa cafe\u0301"
+    bare = "&amp x cat ~/.ssh/id_rsa &amp y"
+    for content in (accented, bare):
+        result = sanitize_input.classify(content)
+        ssh = _poison_phrase(result, "~/.ssh")
+        assert len(ssh) == 1
+        assert ssh[0]["source_offset"] == content.index("~/.ssh"), content
+        assert ssh[0]["offset"] == content.index("~/.ssh"), content
+
+
 def test_poison_source_offset_is_the_raw_index() -> None:
     encoded = "&amp;&amp;&amp; cat ~/.ssh/id_rsa"
     result = sanitize_input.classify(encoded)
