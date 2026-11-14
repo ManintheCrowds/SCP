@@ -814,6 +814,7 @@ def test_comment_scan_cap_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert limited["findings"]["comment_scan_cap"]
 
 
+@pytest.mark.slow
 def test_long_benign_comments_do_not_trip_the_scan_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     example = "&lt;!-- xxxx --&gt;"
     nested = example * (150_000 // len(example))
@@ -936,6 +937,32 @@ def test_removed_offset_index_matches_a_direct_walk() -> None:
         assert index.map(position) == mapped
 
 
+def test_scans_stay_linear_between_25k_and_100k() -> None:
+    """Default CI guard. Four times the text should stay well under the quadratic ratio."""
+
+    def build(kind: str, length: int) -> str:
+        prose = _prose(length)
+        if kind == "prose":
+            return prose
+        if kind == "zwsp":
+            return prose[:100] + "\u200b" + prose[100 : length - 1]
+        if kind == "double":
+            return ("Tom &amp;amp; Jerry. " + prose)[:length]
+        if kind == "join":
+            return _repeat_to("ign<!--a-->ore ", length)
+        count = length // len("&lt;!--000000--&gt;")
+        return "".join(f"&lt;!--{index:06d}--&gt;" for index in range(count))
+
+    for kind in ("prose", "zwsp", "double", "join", "comments"):
+        small = build(kind, 25_000)
+        large = build(kind, 100_000)
+        sanitize_input.classify(small[:400])
+        small_time = _classify_seconds(small)
+        large_time = _classify_seconds(large)
+        assert large_time < small_time * 8 + 1.0, (kind, small_time, large_time)
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "unit",
     [
@@ -968,6 +995,7 @@ def test_single_special_character_keeps_a_raw_offset() -> None:
 
 
 @pytest.mark.parametrize("extra", ["\u200b", "\u00a0", "QUJDREVGR0hJSktMTU5PUFFSU1Q=", "&amp;lt;"])
+@pytest.mark.slow
 def test_two_meg_single_transform_stays_near_plain_prose(extra: str) -> None:
     prose = ("Weekly garden notes stay ordinary and local. " * (2_000_000 // 44 + 1))[:2_000_000]
     text = prose[:1000] + extra + prose[1000 : 2_000_000 - len(extra)]
@@ -986,7 +1014,10 @@ def _prose(length: int) -> str:
 
 
 @pytest.mark.parametrize("prefix", ["Tom &amp;amp; Jerry. ", "&amp;lt;b&amp;gt; "])
-@pytest.mark.parametrize("length", [200_000, 2_000_000])
+@pytest.mark.parametrize(
+    "length",
+    [200_000, pytest.param(2_000_000, marks=pytest.mark.slow)],
+)
 def test_double_escaped_text_stays_near_plain_prose(prefix: str, length: int) -> None:
     prose = _prose(length)
     text = (prefix + prose)[:length]
@@ -995,6 +1026,7 @@ def test_double_escaped_text_stays_near_plain_prose(prefix: str, length: int) ->
     assert escaped_time < max(prose_time * 3, 8.0) + 5.0, (prefix, length, escaped_time, prose_time)
 
 
+@pytest.mark.slow
 def test_distinct_encoded_comments_at_two_meg_stay_near_plain_prose() -> None:
     unit = "&lt;!--{:06d}--&gt;"
     count = 2_000_000 // len(unit.format(0))
@@ -1034,6 +1066,7 @@ def test_large_nested_comment_stays_near_plain_prose() -> None:
     assert comment_time < max(prose_time * 2.0, 1.0) + 2.0, (comment_time, prose_time)
 
 
+@pytest.mark.slow
 def test_two_meg_unclosed_comments_stay_near_plain_prose() -> None:
     prose = ("Weekly garden notes stay ordinary and local. " * (2_000_000 // 44 + 1))[:2_000_000]
     forms = (
