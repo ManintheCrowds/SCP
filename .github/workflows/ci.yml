@@ -36,7 +36,6 @@ jobs:
           -m "not slow"
 
   slow-sanitizer:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,13 +72,13 @@ jobs:
 
   # Required status context for main branch protection. Must keep this job id as CI.
   CI:
-    needs: [contract, promptfoo-eval]
+    needs: [contract, promptfoo-eval, slow-sanitizer]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Gate on upstream jobs
         run: |
-          echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }}"
-          if [ "${{ needs.contract.result }}" != "success" ] || [ "${{ needs.promptfoo-eval.result }}" != "success" ]; then
+          echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }} slow-sanitizer=${{ needs.slow-sanitizer.result }}"
+          if [ "${{ needs.contract.result }}" != "success" ] || [ "${{ needs.promptfoo-eval.result }}" != "success" ] || [ "${{ needs.slow-sanitizer.result }}" != "success" ]; then
             exit 1
           fi

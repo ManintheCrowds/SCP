@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -972,6 +973,18 @@ def test_removed_offset_index_matches_a_direct_walk() -> None:
         else:
             mapped = origin + (position - cursor)
         assert index.map(position) == mapped
+
+
+def test_slow_sanitizer_gates_pull_requests() -> None:
+    """The 2M guards run on a pull request and can fail the required CI check."""
+    workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+    text = workflow.read_text(encoding="utf-8")
+    job = text.split("slow-sanitizer:", 1)[1].split("\n  promptfoo-eval:", 1)[0]
+    assert "if:" not in job
+    assert '-m "not slow"' in text
+    assert "pytest tests/test_tool_poisoning.py -m slow" in text
+    assert "needs: [contract, promptfoo-eval, slow-sanitizer]" in text
+    assert 'needs.slow-sanitizer.result' in text
 
 
 def test_scans_stay_linear_between_25k_and_100k() -> None:
