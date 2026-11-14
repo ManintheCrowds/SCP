@@ -29,7 +29,7 @@ OVERRIDE_PHRASES = [
     r"never\s+reveal\s+(these|them|this|that|the|your|my|any)\b",
     r"do\s+not\s+tell\s+(the\s+)?user",
     r"forget\s+(all\s+)?(previous|prior)\s+instructions",
-    r"disregard\s+(all\s+)?(previous|prior)\b",
+    r"disregard\s+(all\s+)?(?:previous(?:ly)?|prior)(?![A-Za-z])(?!\s+notices)",
     r"you\s+are\s+now\s+(operating\s+in\s+)?unrestricted\s+administrator\s+mode",
     r"you\s+are\s+now\s+in\s+debug\s+mode",
     r"override\s+(system\s+)?(prompt|instructions)",
