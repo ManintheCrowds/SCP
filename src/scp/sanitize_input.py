@@ -29,7 +29,7 @@ OVERRIDE_PHRASES = [
     r"never\s+reveal\s+(these|them|this|that|the|your|my|any)\b",
     r"do\s+not\s+tell\s+(the\s+)?user",
     r"forget\s+(all\s+)?(previous|prior)\s+instructions",
-    r"disregard\s+(all\s+)?(?:previous(?:ly)?|prior)(?![A-Za-z])(?!\s+notices)",
+    r"disregard\s+(all\s+)?(?:previous(?:ly)?|prior)(?![A-Za-z])",
     r"you\s+are\s+now\s+(operating\s+in\s+)?unrestricted\s+administrator\s+mode",
     r"you\s+are\s+now\s+in\s+debug\s+mode",
     r"override\s+(system\s+)?(prompt|instructions)",
@@ -485,12 +485,43 @@ def scan_override_phrases(text: str) -> list[tuple[int, str]]:
     findings = []
     for pattern in OVERRIDE_PHRASES:
         for m in re.finditer(pattern, text, re.IGNORECASE):
+            if _is_benign_disregard_notices(text, m.start(), m.end()):
+                continue
             findings.append((m.start(), m.group(0)))
     return findings
 
 
 _COMMENT_GAP = "\ue001"
 _SPACE_MARK = "\ue002"
+_BENIGN_DISREGARD_NEGATION = re.compile(
+    r"(?:\bdo\s+not\b|\bdon['’]?t\b|\bnever\b|\bnot\b)\s*$",
+    re.IGNORECASE,
+)
+_BENIGN_NOTICES_TAIL = re.compile(r"\s*notices\b", re.IGNORECASE)
+_TRAILING_WORD = re.compile(r"[A-Za-z0-9]")
+
+
+def _is_benign_disregard_notices(text: str, start: int, end: int) -> bool:
+    """True for a negated 'disregard ... notices' that ends the clause.
+
+    ``notices`` has to be the whole next word. A continuation such as
+    ``and instructions`` is a payload, and ``noticesX`` is not the word
+    ``notices``.
+    """
+    prefix = (
+        text[max(0, start - 48) : start]
+        .replace(_COMMENT_GAP, "")
+        .replace(_SPACE_MARK, "")
+    )
+    if _BENIGN_DISREGARD_NEGATION.search(prefix) is None:
+        return False
+    tail = text[end : end + 64].replace(_COMMENT_GAP, "").replace(_SPACE_MARK, "")
+    noticed = _BENIGN_NOTICES_TAIL.match(tail)
+    if noticed is None:
+        return False
+    return _TRAILING_WORD.search(tail[noticed.end() :]) is None
+
+
 _WHITESPACE_RUN = re.compile(r"\s+")
 _GAP_OR_SPACE = "(?:" + re.escape(_COMMENT_GAP) + "|" + re.escape(_SPACE_MARK) + ")+"
 _OPTIONAL_COMMENT_GAP = "(?:" + re.escape(_COMMENT_GAP) + ")?"
@@ -653,6 +684,8 @@ def _scan_marked_overrides(normalized: str) -> list[tuple[int, str]]:
             phrase = _phrase_from_gap_match(canonical, source, match)
             key = phrase.casefold()
             if not phrase or key in seen or "\\" in phrase:
+                continue
+            if _is_benign_disregard_notices(normalized, match.start(), match.end()):
                 continue
             if _match_cuts_a_longer_word(
                 normalized, set(), match.start(), match.end()
