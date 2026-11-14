@@ -2134,21 +2134,25 @@ def _closest_offset(positions: list[int], target: int, limit: int) -> int:
 
 
 def _comment_batch_findings(
-    bodies: list[tuple[int, str, bool]],
-) -> tuple[list[tuple[str, int, str, int, bool]], list[tuple[int, str, str, str, int, bool]], bool]:
+    bodies: list[tuple[int, str, str, int | None]],
+    decode_map: list[int] | None = None,
+) -> tuple[list[tuple[str, int, str, int, str]], list[tuple[int, str, str, str, int, str]], bool]:
     """Scan many comment bodies in one pass.
 
     A private-use separator stops a phrase from forming across two comments.
-    Each returned offset is relative to that comment body. The bool is true
-    when a nested walk stopped at the depth cap or the character budget.
+    Each returned offset is a raw index. ``decoded_start`` is the comment
+    opener in the decoded page; encoded openers are longer than ``<!--``, so
+    adding 4 to the raw marker lands inside the entity. The bool-like mode
+    string is ``literal``, ``decoded_closed``, or ``decoded_open``. The cap
+    flag is true when a nested walk stopped at the depth cap or the budget.
     """
     parts: list[str] = []
-    spans: list[tuple[int, int, int, bool]] = []
+    spans: list[tuple[int, int, int, str, int | None]] = []
     cursor = 0
     prepared_by_body: dict[str, tuple[str, bool, list[int]]] = {}
     capped = False
     scan_maps: list[list[int]] = []
-    for source_offset, body, conceal in bodies:
+    for source_offset, body, mode, decoded_start in bodies:
         scanned = prepared_by_body.get(body)
         if scanned is None:
             scanned = _comment_scan_text(body)
@@ -2163,7 +2167,7 @@ def _comment_batch_findings(
         start = cursor
         parts.append(scanned)
         cursor += len(scanned)
-        spans.append((start, cursor, source_offset, conceal))
+        spans.append((start, cursor, source_offset, mode, decoded_start))
         scan_maps.append(scan_map)
     if not parts:
         return [], [], capped
@@ -2174,28 +2178,36 @@ def _comment_batch_findings(
         scan_map = scan_maps[slot] if slot < len(scan_maps) else []
         # The body begins just after the four-character <!-- opener.
         if 0 <= local < len(scan_map) and scan_map[local] >= 0:
-            return source_offset + 4 + scan_map[local]
-        return source_offset + 4 + local
+            body_index = scan_map[local]
+        else:
+            body_index = local
+        decoded_start = spans[slot][4]
+        if decoded_start is None:
+            return source_offset + 4 + body_index
+        decoded_index = decoded_start + 4 + body_index
+        if decode_map is not None and 0 <= decoded_index < len(decode_map):
+            return decode_map[decoded_index]
+        return decoded_index
 
-    def locate(offset: int) -> tuple[int, int, bool] | None:
+    def locate(offset: int) -> tuple[int, int, str] | None:
         slot = bisect.bisect_right(starts, offset) - 1
         if slot < 0:
             return None
-        start, end, source_offset, conceal = spans[slot]
+        start, end, source_offset, mode, _decoded_start = spans[slot]
         if offset >= end:
             return None
         local = offset - start
-        return raw_at(local, source_offset, slot), source_offset, conceal
+        return raw_at(local, source_offset, slot), source_offset, mode
 
-    legacy_hits: list[tuple[str, int, str, int, bool]] = []
-    poison_hits: list[tuple[int, str, str, str, int, bool]] = []
-    for source_offset, body, conceal in bodies:
+    legacy_hits: list[tuple[str, int, str, int, str]] = []
+    poison_hits: list[tuple[int, str, str, str, int, str]] = []
+    for source_offset, body, mode, _decoded_start in bodies:
         # Finish strips these, so they are read on the raw body. Plain ASCII has none.
         if "\x00" in body or not body.isascii():
             for offset, phrase in scan_hidden_unicode(body):
-                legacy_hits.append(("hidden_unicode", offset, str(phrase), source_offset, conceal))
+                legacy_hits.append(("hidden_unicode", offset, str(phrase), source_offset, mode))
             for offset, phrase in scan_null_bytes(body):
-                legacy_hits.append(("null_byte", offset, str(phrase), source_offset, conceal))
+                legacy_hits.append(("null_byte", offset, str(phrase), source_offset, mode))
     for key, hits in _scan_finding_groups(batch, batch).items():
         if key in ("hidden_unicode", "null_byte"):
             continue
@@ -2347,18 +2359,18 @@ def classify(text: str) -> dict:
         reported.add(key)
         return True
 
-    pending_comments: list[tuple[int, str, str]] = []
+    pending_comments: list[tuple[int, str, str, int | None]] = []
     scheduled_bodies: set[str] = set()
     if decoded == text:
         for start, body, _closed in comments:
             if _comment_body_needs_scan(body):
                 scheduled_bodies.add(body)
-                pending_comments.append((start, body, "literal"))
+                pending_comments.append((start, body, "literal", None))
     else:
         for start, body, _closed in raw_comments:
             if _comment_body_needs_scan(body):
                 scheduled_bodies.add(body)
-                pending_comments.append((start, body, "literal"))
+                pending_comments.append((start, body, "literal", None))
         marker_positions = _encoded_comment_positions(text)
         for start, body, closed in comments:
             if not _comment_body_needs_scan(body) or body in scheduled_bodies:
@@ -2366,7 +2378,12 @@ def classify(text: str) -> dict:
             scheduled_bodies.add(body)
             kind = "decoded_closed" if closed else "decoded_open"
             pending_comments.append(
-                (_closest_offset(marker_positions, start, len(text)), body, kind)
+                (
+                    _closest_offset(marker_positions, start, len(text)),
+                    body,
+                    kind,
+                    start,
+                )
             )
 
     extra_override, extra_reversal, extra_poison = _collect_boundary_hits(
@@ -2453,7 +2470,9 @@ def classify(text: str) -> dict:
         poison_notes.append(note)
         severities.append(base)
 
-    comment_legacy, comment_poison, comment_capped = _comment_batch_findings(pending_comments)
+    comment_legacy, comment_poison, comment_capped = _comment_batch_findings(
+        pending_comments, decode_map
+    )
     comment_seen: dict[tuple[str, str], dict[str, int]] = {}
     for key, offset, match, source_offset, mode in comment_legacy:
         conceal = _conceal_comment_hit(mode, key, _base_severity_for_key(key))
