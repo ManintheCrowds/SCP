@@ -553,12 +553,38 @@ def _pattern_with_comment_gaps(pattern: str) -> str:
 
 
 def _canonical_override(pattern: str) -> str:
-    """Shortest phrase the override regex describes, with single spaces."""
-    text = re.sub(r"\([^()]*\)\?", "", pattern)
-    text = re.sub(r"\(([^)|]+)\|[^)]*\)", r"\1", text)
+    """Shortest phrase the override regex describes, with single spaces.
+
+    Lookaheads and non-capturing groups are syntax, not part of the phrase.
+    """
+    text = pattern
+    previous = None
+    while text != previous:
+        previous = text
+        text = re.sub(r"\(\?(?:[=!]|<[=!])[^()]*\)", "", text)
+        text = re.sub(r"\((?:\?:)?[^()]*\)\?", "", text)
+        text = re.sub(r"\((?:\?:)?([^()|]+)\|[^()]*\)", r"\1", text)
     text = text.replace(r"\s+", " ").replace(r"\.", ".").replace(r"\b", "").replace(r"\B", "")
     text = re.sub(r"[()?]", "", text)
     return " ".join(text.split())
+
+
+def _drop_shorter_same_start(hits: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    """Drop a phrase that is a prefix of a longer hit at the same raw offset.
+
+    ``never reveal the<!--x-->m`` matches both ``the`` and ``them``. The
+    longer word is the one the comment split.
+    """
+    folded = [(offset, phrase, phrase.casefold()) for offset, phrase in hits]
+    kept: list[tuple[int, str]] = []
+    for offset, phrase, key in folded:
+        if any(
+            other_offset == offset and other != key and other.startswith(key)
+            for other_offset, _other_phrase, other in folded
+        ):
+            continue
+        kept.append((offset, phrase))
+    return kept
 
 
 def _phrase_from_gap_match(canonical: str, pattern: str, match: re.Match[str]) -> str:
@@ -2434,6 +2460,7 @@ def classify(text: str) -> dict:
                     continue
                 already.add(key)
                 raw_groups[key_name].append((_spaced_source(hit[0]), hit[1]))
+    raw_groups["override_phrases"] = _drop_shorter_same_start(raw_groups["override_phrases"])
     for key, hits in raw_groups.items():
         base = _base_severity_for_key(key)
         for offset, phrase in hits:
