@@ -339,6 +339,12 @@ def _poison_phrase(result: dict, phrase: str) -> list[dict]:
     return [hit for hit in _poison(result) if hit.get("phrase") == phrase]
 
 
+def test_split_this_is_not_also_reported_as_these() -> None:
+    result = sanitize_input.classify("never reveal th<!--x-->is secret")
+    phrases = [item[1].casefold() for item in result["findings"]["override_phrases"]]
+    assert phrases == ["never reveal this"]
+
+
 @pytest.mark.parametrize(
     "content",
     [

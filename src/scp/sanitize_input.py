@@ -530,32 +530,36 @@ def _canonical_override(pattern: str) -> str:
     return " ".join(text.split())
 
 
-def _phrase_from_gap_match(canonical: str, match: re.Match[str]) -> str:
+def _phrase_from_gap_match(canonical: str, pattern: str, match: re.Match[str]) -> str:
     """Canonical phrase, with the alternative that actually matched."""
     phrase = canonical
+    alternatives = re.findall(r"\(([A-Za-z]+(?:\|[A-Za-z]+)+)\)", pattern)
     for group in match.groups():
-        if not group or not re.fullmatch(r"[A-Za-z]+", group):
+        if not group:
             continue
-        words = phrase.split()
-        if group.casefold() in {word.casefold() for word in words}:
+        word = group.replace(_COMMENT_GAP, "").replace(_SPACE_MARK, "")
+        if not re.fullmatch(r"[A-Za-z]+", word):
             continue
-        replaced = False
-        for index, word in enumerate(words):
-            if word.casefold() != group.casefold() and (
-                group.casefold().startswith(word.casefold()) or word.casefold().startswith(group.casefold())
-            ):
-                words[index] = group
-                replaced = True
-                break
-        if not replaced and words:
-            words[-1] = group
-        phrase = " ".join(words)
+        for alternative in alternatives:
+            options = alternative.split("|")
+            if word.casefold() not in {option.casefold() for option in options}:
+                continue
+            first = options[0]
+            if first.casefold() != word.casefold():
+                phrase = re.sub(
+                    rf"\b{re.escape(first)}\b",
+                    word,
+                    phrase,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+            break
     return phrase
 
 
 @lru_cache(maxsize=1)
-def _override_gap_patterns() -> tuple[tuple[re.Pattern[str], str], ...]:
-    compiled: list[tuple[re.Pattern[str], str]] = []
+def _override_gap_patterns() -> tuple[tuple[re.Pattern[str], str, str], ...]:
+    compiled: list[tuple[re.Pattern[str], str, str]] = []
     for pattern in OVERRIDE_PHRASES:
         if r"\s" not in pattern:
             continue
@@ -563,6 +567,7 @@ def _override_gap_patterns() -> tuple[tuple[re.Pattern[str], str], ...]:
             (
                 re.compile(_pattern_with_comment_gaps(pattern), re.IGNORECASE),
                 _canonical_override(pattern),
+                pattern,
             )
         )
     return tuple(compiled)
@@ -643,9 +648,9 @@ def _text_with_comment_gaps(text: str) -> str | None:
 def _scan_marked_overrides(normalized: str) -> list[tuple[int, str]]:
     findings: list[tuple[int, str]] = []
     seen: set[str] = set()
-    for pattern, canonical in _override_gap_patterns():
+    for pattern, canonical, source in _override_gap_patterns():
         for match in pattern.finditer(normalized):
-            phrase = _phrase_from_gap_match(canonical, match)
+            phrase = _phrase_from_gap_match(canonical, source, match)
             key = phrase.casefold()
             if not phrase or key in seen or "\\" in phrase:
                 continue
