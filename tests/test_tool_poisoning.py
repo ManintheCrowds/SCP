@@ -987,8 +987,13 @@ def test_slow_sanitizer_gates_pull_requests() -> None:
     assert 'needs.slow-sanitizer.result' in text
 
 
-def test_scans_stay_linear_between_25k_and_100k() -> None:
-    """Default CI guard. Four times the text should stay well under the quadratic ratio."""
+def test_scans_stay_linear_between_50k_and_200k() -> None:
+    """Default CI guard. Four times the text should stay near linear.
+
+    A one-second slack hid the comment-join quadratic: at a quarter megabyte
+    the ratio was already about 8 to 11. Half a second is enough for timer
+    noise once the samples are 50K and 200K.
+    """
 
     def build(kind: str, length: int) -> str:
         prose = _prose(length)
@@ -1000,16 +1005,18 @@ def test_scans_stay_linear_between_25k_and_100k() -> None:
             return ("Tom &amp;amp; Jerry. " + prose)[:length]
         if kind == "join":
             return _repeat_to("ign<!--a-->ore ", length)
+        if kind == "empty":
+            return _repeat_to("ignore <!---->", length)
         count = length // len("&lt;!--000000--&gt;")
         return "".join(f"&lt;!--{index:06d}--&gt;" for index in range(count))
 
-    for kind in ("prose", "zwsp", "double", "join", "comments"):
-        small = build(kind, 25_000)
-        large = build(kind, 100_000)
+    for kind in ("prose", "zwsp", "double", "join", "empty", "comments"):
+        small = build(kind, 50_000)
+        large = build(kind, 200_000)
         sanitize_input.classify(small[:400])
         small_time = _classify_seconds(small)
         large_time = _classify_seconds(large)
-        assert large_time < small_time * 8 + 1.0, (kind, small_time, large_time)
+        assert large_time < small_time * 8 + 0.5, (kind, small_time, large_time)
 
 
 @pytest.mark.slow
