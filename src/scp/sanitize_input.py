@@ -832,6 +832,7 @@ TOOL_POISONING_DEFAULTS: list[dict[str, str]] = [
     {"phrase": "override the recipient", "severity": "medium"},
 ]
 
+_DOTENV_BENIGN_SUFFIXES = ("example", "sample", "template", "dist", "default", "defaults")
 _SEVERITY_ORDER = ("none", "low", "medium", "high", "critical")
 _SEVERITY_RANK = {name: index for index, name in enumerate(_SEVERITY_ORDER)}
 _RAISED_SEVERITY = {
@@ -942,6 +943,14 @@ def _compile_poison_phrase(phrase: str) -> re.Pattern[str]:
         inner = stripped[1:-1].strip()
         if inner:
             return re.compile(r"<\s*" + re.escape(inner) + r"\s*>", re.IGNORECASE)
+    if stripped == ".env":
+        benign_suffixes = "|".join(re.escape(suffix) for suffix in _DOTENV_BENIGN_SUFFIXES)
+        return re.compile(
+            r"(?<![\w.])\.env"
+            r"(?:(?:\.(?!(?:" + benign_suffixes + r")(?:\b|\.))[A-Za-z0-9_-]+)*)"
+            r"(?![\w.])",
+            re.IGNORECASE,
+        )
     escaped = re.escape(stripped).replace(r"\ ", r"\s+")
     ends_alnum = stripped[-1].isalnum()
     if stripped.startswith("."):
