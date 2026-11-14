@@ -1553,23 +1553,50 @@ def _comment_rescan_budget() -> int:
 
 def _flatten_comment_markers(body: str) -> str:
     """Drop comment markers once so a payload after them is visible text."""
-    return _COMMENT_MARKERS.sub(" ", body)
+    return _flatten_comment_markers_mapped(body)[0]
 
 
-def _comment_scan_text(body: str) -> tuple[str, bool]:
+def _flatten_comment_markers_mapped(body: str) -> tuple[str, list[int]]:
+    """Flatten markers and map each output character back into ``body``."""
+    parts: list[str] = []
+    source: list[int] = []
+    last = 0
+    for match in _COMMENT_MARKERS.finditer(body):
+        parts.append(body[last : match.start()])
+        source.extend(range(last, match.start()))
+        parts.append(" ")
+        source.append(match.start())
+        last = match.end()
+    parts.append(body[last:])
+    source.extend(range(last, len(body)))
+    return "".join(parts), source
+
+
+def _comment_scan_text(body: str) -> tuple[str, bool, list[int]]:
     """Cleanup for one comment body. Closed nesting is walked iteratively.
 
     An unclosed nested body is scanned once, with its markers removed, and is
-    not queued again. Hitting the depth cap or the character budget still
-    returns the flattened text and reports that the cap was hit.
+    not queued again. The index list maps each scanned character back to
+    ``body``. Hitting the depth cap or the character budget still returns the
+    flattened text and reports that the cap was hit.
     """
     parts: list[str] = []
-    stack: list[tuple[str, int]] = [(body, 0)]
+    maps: list[list[int]] = []
+    # text, depth, index of text[0] inside the original body
+    stack: list[tuple[str, int, int]] = [(body, 0, 0)]
     seen: set[str] = set()
     work = 0
     capped = False
+
+    def push(piece: str, piece_map: list[int]) -> None:
+        if parts:
+            parts.append(_COMMENT_BATCH_SEP)
+            maps.append([-1])
+        parts.append(piece)
+        maps.append(piece_map if len(piece_map) == len(piece) else [0] * len(piece))
+
     while stack:
-        current, depth = stack.pop()
+        current, depth, origin = stack.pop()
         if current in seen:
             continue
         seen.add(current)
@@ -1579,34 +1606,67 @@ def _comment_scan_text(body: str) -> tuple[str, bool]:
             work += len(current)
         if (depth > 0 and work > _comment_rescan_budget()) or depth > _MAX_COMMENT_DEPTH:
             capped = True
-            parts.append(_finish_visible(_flatten_comment_markers(current)))
+            flat, flat_map = _flatten_comment_markers_mapped(current)
+            push(flat, [origin + index for index in flat_map])
             break
         decoded = _decode_layers(current) if _text_needs_decode(current) else current
+        decode_map = _decode_source_map(current, decoded) if decoded != current else None
+
+        def place(index: int) -> int:
+            if decode_map is not None and 0 <= index < len(decode_map):
+                return origin + decode_map[index]
+            return origin + index
+
         removed, spaced, _gap, spaced_bounds, _gap_bounds, nested = _comment_slice(
             decoded, gaps=False
         )
-        parts.append(_finish_visible(removed))
+        runs = _comment_runs(decoded)
+        removed_index = _RemovedOffsetIndex(runs)
+        finished = _finish_visible(removed)
+        if finished == removed:
+            push(
+                finished,
+                [
+                    place(removed_index.map(index) if runs else index)
+                    for index in range(len(finished))
+                ],
+            )
+        else:
+            push(finished, [place(0)] * len(finished))
         if spaced != removed and spaced_bounds:
-            for window, _local, _origin in _boundary_windows(spaced, spaced_bounds):
-                parts.append(_finish_visible(window))
+            spaced_index = _SpacedOffsetIndex(runs)
+            for window, _local, window_origin in _boundary_windows(spaced, spaced_bounds):
+                finished_window = _finish_visible(window)
+                if finished_window == window:
+                    push(
+                        finished_window,
+                        [place(spaced_index.map(window_origin + index)) for index in range(len(window))],
+                    )
+                else:
+                    push(finished_window, [place(spaced_index.map(window_origin))] * len(finished_window))
         if depth >= _MAX_COMMENT_DEPTH and nested:
             capped = True
-            parts.append(_finish_visible(_flatten_comment_markers(current)))
+            flat, flat_map = _flatten_comment_markers_mapped(current)
+            push(flat, [origin + index for index in flat_map])
             continue
-        for _start, nested_body, closed in nested:
+        for start, nested_body, closed in nested:
             if not nested_body.strip():
                 continue
+            body_at = place(start + 4)
             if not closed:
-                parts.append(_finish_visible(_flatten_comment_markers(nested_body)))
+                flat, flat_map = _flatten_comment_markers_mapped(nested_body)
+                finished_flat = _finish_visible(flat)
+                if finished_flat == flat:
+                    push(finished_flat, [body_at + index for index in flat_map])
+                else:
+                    push(finished_flat, [body_at] * len(finished_flat))
                 continue
             if len(nested_body) >= len(current):
                 continue
-            stack.append((nested_body, depth + 1))
+            stack.append((nested_body, depth + 1, body_at))
     if not parts:
-        return "", capped
-    if len(parts) == 1:
-        return parts[0], capped
-    return _COMMENT_BATCH_SEP.join(parts), capped
+        return "", capped, []
+    return "".join(parts), capped, [index for piece in maps for index in piece]
 
 
 _ENCODED_COMMENT_MARKERS = (
@@ -2047,14 +2107,15 @@ def _comment_batch_findings(
     parts: list[str] = []
     spans: list[tuple[int, int, int, bool]] = []
     cursor = 0
-    prepared_by_body: dict[str, tuple[str, bool]] = {}
+    prepared_by_body: dict[str, tuple[str, bool, list[int]]] = {}
     capped = False
+    scan_maps: list[list[int]] = []
     for source_offset, body, conceal in bodies:
         scanned = prepared_by_body.get(body)
         if scanned is None:
             scanned = _comment_scan_text(body)
             prepared_by_body[body] = scanned
-        text, body_capped = scanned
+        text, body_capped, scan_map = scanned
         if body_capped:
             capped = True
         scanned = text
@@ -2065,10 +2126,18 @@ def _comment_batch_findings(
         parts.append(scanned)
         cursor += len(scanned)
         spans.append((start, cursor, source_offset, conceal))
+        scan_maps.append(scan_map)
     if not parts:
         return [], [], capped
     batch = "".join(parts)
     starts = [span[0] for span in spans]
+
+    def raw_at(local: int, source_offset: int, slot: int) -> int:
+        scan_map = scan_maps[slot] if slot < len(scan_maps) else []
+        # The body begins just after the four-character <!-- opener.
+        if 0 <= local < len(scan_map) and scan_map[local] >= 0:
+            return source_offset + 4 + scan_map[local]
+        return source_offset + 4 + local
 
     def locate(offset: int) -> tuple[int, int, bool] | None:
         slot = bisect.bisect_right(starts, offset) - 1
@@ -2077,7 +2146,8 @@ def _comment_batch_findings(
         start, end, source_offset, conceal = spans[slot]
         if offset >= end:
             return None
-        return offset - start, source_offset, conceal
+        local = offset - start
+        return raw_at(local, source_offset, slot), source_offset, conceal
 
     legacy_hits: list[tuple[str, int, str, int, bool]] = []
     poison_hits: list[tuple[int, str, str, str, int, bool]] = []
