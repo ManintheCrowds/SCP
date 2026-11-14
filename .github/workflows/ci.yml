@@ -1,4 +1,4 @@
-# PURPOSE: Run OpenHarness MCP contract conformance (tool names vs scp_mcp_v1).
+# PURPOSE: Run OpenHarness MCP contract conformance and the sanitizer regression tests.
 # Branch protection requires a check context named exactly "CI" (not the workflow name).
 name: CI
 
@@ -7,6 +7,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
 
 jobs:
   contract:
@@ -21,8 +24,30 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install package and dev deps
         run: pip install -e ".[dev]"
-      - name: MCP contract v1 (pytest)
-        run: pytest tests/test_mcp_contract_v1.py -v
+      - name: MCP contract and sanitizer tests
+        run: >
+          pytest
+          tests/test_mcp_contract_v1.py
+          tests/test_tool_poisoning.py
+          tests/test_sanitize_encoding_evasion.py
+          tests/test_sanitize_fragmentation.py
+          tests/test_security_regressions.py
+          -q
+          -m "not slow"
+
+  slow-sanitizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package and dev deps
+        run: pip install -e ".[dev]"
+      - name: Full-size sanitizer timing tests
+        env:
+          SCP_THREAT_REGISTRY_PATH: src/scp/scp_threat_registry.json
+        run: pytest tests/test_tool_poisoning.py -m slow -q
 
   promptfoo-eval:
     runs-on: ubuntu-latest
@@ -47,13 +72,13 @@ jobs:
 
   # Required status context for main branch protection. Must keep this job id as CI.
   CI:
-    needs: [contract, promptfoo-eval]
+    needs: [contract, promptfoo-eval, slow-sanitizer]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Gate on upstream jobs
         run: |
-          echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }}"
-          if [ "${{ needs.contract.result }}" != "success" ] || [ "${{ needs.promptfoo-eval.result }}" != "success" ]; then
+          echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }} slow-sanitizer=${{ needs.slow-sanitizer.result }}"
+          if [ "${{ needs.contract.result }}" != "success" ] || [ "${{ needs.promptfoo-eval.result }}" != "success" ] || [ "${{ needs.slow-sanitizer.result }}" != "success" ]; then
             exit 1
           fi

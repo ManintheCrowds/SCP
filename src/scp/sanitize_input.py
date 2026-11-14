@@ -26,10 +26,10 @@ OVERRIDE_PHRASES = [
     r"ignore\s+(all\s+)?(previous|prior)\s+instructions",
     r"ignore\s+all\s+previous\s+instructions",
     r"ignore\s+prior\s+rules",
-    r"never\s+reveal\s+(this|that|the)",
+    r"never\s+reveal\s+(these|them|this|that|the|your|my|any)\b",
     r"do\s+not\s+tell\s+(the\s+)?user",
     r"forget\s+(all\s+)?(previous|prior)\s+instructions",
-    r"disregard\s+(all\s+)?(previous|prior)",
+    r"disregard\s+(all\s+)?(?:previous(?![A-Za-z])|previously\s+(?:stated\s+instructions|given\s+rules)|previous_instructions|prior(?![A-Za-z])|earlier\s+instructions)",
     r"you\s+are\s+now\s+(operating\s+in\s+)?unrestricted\s+administrator\s+mode",
     r"you\s+are\s+now\s+in\s+debug\s+mode",
     r"override\s+(system\s+)?(prompt|instructions)",
@@ -409,8 +409,19 @@ def _append_decoded_base64_snippets(text: str) -> str:
     return current
 
 
+_NULL_ENTITY_RE = re.compile(r"&#0+;|&#x0+;", re.IGNORECASE)
+
+
+def _strip_null_entities(text: str) -> str:
+    """Drop numeric entities that encode a null before they become U+FFFD."""
+    if "&#" not in text:
+        return text
+    return _NULL_ENTITY_RE.sub("", text)
+
+
 def _canonicalize_scan_layer(text: str) -> str:
-    prepared = _strip_null_bytes(text)
+    prepared = _strip_null_entities(text)
+    prepared = _strip_null_bytes(prepared)
     prepared = _decode_tag_block(prepared)
     prepared = _strip_invisible_unicode(prepared)
     prepared = _strip_excessive_combining(prepared)
@@ -474,8 +485,456 @@ def scan_override_phrases(text: str) -> list[tuple[int, str]]:
     findings = []
     for pattern in OVERRIDE_PHRASES:
         for m in re.finditer(pattern, text, re.IGNORECASE):
+            if _is_benign_disregard_notices(text, m.start(), m.end()):
+                continue
             findings.append((m.start(), m.group(0)))
     return findings
+
+
+_COMMENT_GAP = "\ue001"
+_SPACE_MARK = "\ue002"
+_BENIGN_DISREGARD_NEGATION = re.compile(
+    r"(?:\bdo\s+not\b|\bdon['’]?t\b|\bnever\b|\bnot\b)\s*$",
+    re.IGNORECASE,
+)
+_BENIGN_NOTICES_TAIL = re.compile(r"\s*notices\b", re.IGNORECASE)
+_TRAILING_WORD = re.compile(r"[A-Za-z0-9]")
+
+
+def _is_benign_disregard_notices(text: str, start: int, end: int) -> bool:
+    """True for a negated 'disregard ... notices' that ends the clause.
+
+    ``notices`` has to be the whole next word. A continuation such as
+    ``and instructions`` is a payload, and ``noticesX`` is not the word
+    ``notices``.
+    """
+    prefix = (
+        text[max(0, start - 48) : start]
+        .replace(_COMMENT_GAP, "")
+        .replace(_SPACE_MARK, "")
+    )
+    if _BENIGN_DISREGARD_NEGATION.search(prefix) is None:
+        return False
+    tail = text[end : end + 64].replace(_COMMENT_GAP, "").replace(_SPACE_MARK, "")
+    noticed = _BENIGN_NOTICES_TAIL.match(tail)
+    if noticed is None:
+        return False
+    return _TRAILING_WORD.search(tail[noticed.end() :]) is None
+
+
+_WHITESPACE_RUN = re.compile(r"\s+")
+_GAP_OR_SPACE = "(?:" + re.escape(_COMMENT_GAP) + "|" + re.escape(_SPACE_MARK) + ")+"
+_OPTIONAL_COMMENT_GAP = "(?:" + re.escape(_COMMENT_GAP) + ")?"
+
+
+def _pattern_with_comment_gaps(pattern: str) -> str:
+    """Require a real space or a comment boundary between words.
+
+    A comment boundary may also sit inside a word. It is one optional
+    character, not a repeating wildcard.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith(r"\s+", index):
+            out.append(_GAP_OR_SPACE)
+            index += 3
+            continue
+        if pattern[index] == "\\" and index + 1 < len(pattern):
+            out.append(pattern[index : index + 2])
+            index += 2
+            continue
+        char = pattern[index]
+        out.append(char)
+        if char.isalpha() and index + 1 < len(pattern) and pattern[index + 1].isalpha():
+            out.append(_OPTIONAL_COMMENT_GAP)
+        index += 1
+    return "".join(out)
+
+
+def _canonical_override(pattern: str) -> str:
+    """Shortest phrase the override regex describes, with single spaces.
+
+    Lookaheads and non-capturing groups are syntax, not part of the phrase.
+    """
+    text = pattern
+    previous = None
+    while text != previous:
+        previous = text
+        text = re.sub(r"\(\?(?:[=!]|<[=!])[^()]*\)", "", text)
+        text = re.sub(r"\((?:\?:)?[^()]*\)\?", "", text)
+        text = re.sub(r"\((?:\?:)?([^()|]+)\|[^()]*\)", r"\1", text)
+    text = text.replace(r"\s+", " ").replace(r"\.", ".").replace(r"\b", "").replace(r"\B", "")
+    text = re.sub(r"[()?]", "", text)
+    return " ".join(text.split())
+
+
+def _drop_shorter_same_start(hits: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    """Drop a phrase that is a prefix of a longer hit at the same raw offset.
+
+    ``never reveal the<!--x-->m`` matches both ``the`` and ``them``. The
+    longer word is the one the comment split.
+    """
+    folded = [(offset, phrase, phrase.casefold()) for offset, phrase in hits]
+    kept: list[tuple[int, str]] = []
+    for offset, phrase, key in folded:
+        if any(
+            other_offset == offset and other != key and other.startswith(key)
+            for other_offset, _other_phrase, other in folded
+        ):
+            continue
+        kept.append((offset, phrase))
+    return kept
+
+
+def _phrase_from_gap_match(canonical: str, pattern: str, match: re.Match[str]) -> str:
+    """Canonical phrase, with the alternative that actually matched."""
+    phrase = canonical
+    alternatives = re.findall(r"\(([A-Za-z]+(?:\|[A-Za-z]+)+)\)", pattern)
+    for group in match.groups():
+        if not group:
+            continue
+        word = group.replace(_COMMENT_GAP, "").replace(_SPACE_MARK, "")
+        if not re.fullmatch(r"[A-Za-z]+", word):
+            continue
+        for alternative in alternatives:
+            options = alternative.split("|")
+            if word.casefold() not in {option.casefold() for option in options}:
+                continue
+            first = options[0]
+            if first.casefold() != word.casefold():
+                phrase = re.sub(
+                    rf"\b{re.escape(first)}\b",
+                    word,
+                    phrase,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+            break
+    return phrase
+
+
+@lru_cache(maxsize=1)
+def _override_gap_patterns() -> tuple[tuple[re.Pattern[str], str, str], ...]:
+    compiled: list[tuple[re.Pattern[str], str, str]] = []
+    for pattern in OVERRIDE_PHRASES:
+        if r"\s" not in pattern:
+            continue
+        compiled.append(
+            (
+                re.compile(_pattern_with_comment_gaps(pattern), re.IGNORECASE),
+                _canonical_override(pattern),
+                pattern,
+            )
+        )
+    return tuple(compiled)
+
+
+def _comment_slice(
+    text: str,
+    *,
+    gaps: bool = True,
+) -> tuple[str, str, str | None, list[int], list[int], list[tuple[int, str, bool]]]:
+    """Split comments into removed text, spaced text, and one gap per run.
+
+    Back-to-back comments are a single boundary. ``gap`` is None when the
+    text has no comments or when ``gaps`` is false. Boundary lists index the
+    spaced text and the gap text.
+    """
+    removed_parts: list[str] = []
+    spaced_parts: list[str] = []
+    gap_parts: list[str] = []
+    spaced_bounds: list[int] = []
+    gap_bounds: list[int] = []
+    comments: list[tuple[int, str, bool]] = []
+    cursor = 0
+    removed_len = 0
+    spaced_len = 0
+    gap_len = 0
+    length = len(text)
+    found = False
+    while cursor < length:
+        start = text.find("<!--", cursor)
+        if start < 0:
+            tail = text[cursor:]
+            removed_parts.append(tail)
+            spaced_parts.append(tail)
+            if found and gaps:
+                gap_parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, tail))
+            break
+        chunk = text[cursor:start]
+        removed_parts.append(chunk)
+        spaced_parts.append(chunk)
+        if gaps:
+            gap_parts.append(_WHITESPACE_RUN.sub(_SPACE_MARK, chunk))
+            gap_len += len(gap_parts[-1])
+        removed_len += len(chunk)
+        spaced_len += len(chunk)
+        pos = start
+        while text.startswith("<!--", pos):
+            nxt, body, closed = _read_html_comment(text, pos)
+            if nxt <= pos:
+                nxt = min(pos + 4, length)
+                comments.append((pos, text[pos + 4 : nxt], False))
+                pos = nxt
+                break
+            comments.append((pos, body, closed))
+            pos = nxt
+        spaced_bounds.append(spaced_len)
+        spaced_parts.append(" ")
+        spaced_len += 1
+        if gaps:
+            gap_bounds.append(gap_len)
+            gap_parts.append(_COMMENT_GAP)
+            gap_len += 1
+        found = True
+        cursor = pos
+    removed = "".join(removed_parts)
+    spaced = "".join(spaced_parts)
+    if not found:
+        return removed, spaced, None, [], [], comments
+    return removed, spaced, "".join(gap_parts), spaced_bounds, gap_bounds, comments
+
+
+def _text_with_comment_gaps(text: str) -> str | None:
+    """Drop comments and mark each merged removal. None when nothing was removed."""
+    _removed, _spaced, gap, _spaced_bounds, _gap_bounds, _comments = _comment_slice(text)
+    return gap
+
+
+def _scan_marked_overrides(normalized: str) -> list[tuple[int, str]]:
+    findings: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for pattern, canonical, source in _override_gap_patterns():
+        for match in pattern.finditer(normalized):
+            phrase = _phrase_from_gap_match(canonical, source, match)
+            key = phrase.casefold()
+            if not phrase or key in seen or "\\" in phrase:
+                continue
+            if _is_benign_disregard_notices(normalized, match.start(), match.end()):
+                continue
+            if _match_cuts_a_longer_word(
+                normalized, set(), match.start(), match.end()
+            ):
+                continue
+            seen.add(key)
+            findings.append((match.start(), phrase))
+    return findings
+
+
+def scan_override_gaps(text: str) -> list[tuple[int, str]]:
+    """Match override phrases whose missing spaces sit on removed comments."""
+    normalized = _text_with_comment_gaps(text)
+    if not normalized:
+        return []
+    return _scan_marked_overrides(normalized)
+
+
+def _literal_gap_pattern(phrase: str) -> str:
+    """Literal phrase with an optional comment gap between letters."""
+    parts: list[str] = []
+    prev_alpha = False
+    for char in phrase:
+        if char.isspace():
+            parts.append(_GAP_OR_SPACE)
+            prev_alpha = False
+            continue
+        if char.isalpha() and prev_alpha:
+            parts.append(_OPTIONAL_COMMENT_GAP)
+        parts.append(re.escape(char))
+        prev_alpha = char.isalpha()
+    body = "".join(parts)
+    if phrase[:1].isalnum():
+        body = r"(?<!\w)" + body
+    if phrase[-1:].isalnum():
+        body = body + r"(?!\w)"
+    return body
+
+
+@lru_cache(maxsize=4)
+def _poison_gap_patterns(
+    phrases: tuple[tuple[str, str], ...],
+) -> tuple[tuple[re.Pattern[str], str, str], ...]:
+    compiled: list[tuple[re.Pattern[str], str, str]] = []
+    for phrase, severity in phrases:
+        if " " not in phrase:
+            continue
+        compiled.append((re.compile(_literal_gap_pattern(phrase), re.IGNORECASE), phrase, severity))
+    return tuple(compiled)
+
+
+def _scan_marked_poison(normalized: str) -> list[tuple[int, str, str, str]]:
+    findings: list[tuple[int, str, str, str]] = []
+    seen: set[str] = set()
+    patterns = _poison_gap_patterns(tuple(_tool_poison_entries()))
+    for pattern, phrase, severity in patterns:
+        for match in pattern.finditer(normalized):
+            key = phrase.casefold()
+            if key in seen:
+                continue
+            if _match_cuts_a_longer_word(normalized, set(), match.start(), match.end()):
+                continue
+            seen.add(key)
+            findings.append((match.start(), phrase, phrase, severity))
+    return findings
+
+
+def _conceal_comment_hit(mode: str, key: str, base: str) -> bool:
+    """Literal comments always raise. Closed decoded comments raise only for payloads."""
+    if mode == "literal":
+        return key != "hostile_ux"
+    if mode != "decoded_closed":
+        return False
+    if key in _INJECTION_FINDING_KEYS:
+        return True
+    return key == "tool_poisoning" and base in ("high", "critical")
+
+
+def _supplemental_visible_hits(
+    spaced: str,
+    spaced_bounds: list[int],
+    gap: str | None,
+    gap_bounds: list[int],
+) -> tuple[list[tuple[int, str]], list[tuple[int, str]], list[tuple[int, str, str, str]]]:
+    """Phrase hits around recorded comment boundaries. No full-page decode.
+
+    The caller already decoded and sliced. A form with no boundaries skips
+    this scan.
+    """
+    if not spaced_bounds and not gap_bounds:
+        return [], [], []
+    overrides: list[tuple[int, str]] = []
+    reversals: list[tuple[int, str]] = []
+    poisons: list[tuple[int, str, str, str]] = []
+    for window, local_bounds, origin in _boundary_windows(spaced, spaced_bounds):
+        scanned = window
+        bounds = local_bounds
+        if "&" in window or "%" in window or "\uff1c" in window:
+            decoded_window = _decode_layers(window)
+            if decoded_window != window:
+                scanned = decoded_window
+                bounds = []
+        cleaned = _finish_visible(scanned)
+        # One set for the window. Building it per hit is quadratic in the
+        # number of comments when every comment produces a hit.
+        edges = set(bounds)
+
+        def _keep(hit: tuple[int, str]) -> bool:
+            return not _match_cuts_a_longer_word(
+                scanned, edges, hit[0], hit[0] + len(hit[1])
+            )
+
+        overrides.extend(
+            (origin + hit[0], hit[1]) for hit in scan_override_phrases(scanned) if _keep(hit)
+        )
+        reversals.extend(
+            (origin + hit[0], hit[1]) for hit in scan_reversal_phrases(scanned) if _keep(hit)
+        )
+        poisons.extend(
+            (origin + hit[0], hit[1], hit[2], hit[3])
+            for hit in scan_tool_poisoning(scanned)
+            if not _match_cuts_a_longer_word(scanned, edges, hit[0], hit[0] + len(hit[1]))
+        )
+        if cleaned != scanned:
+            overrides.extend(
+                (origin + hit[0], hit[1]) for hit in scan_override_phrases(cleaned)
+            )
+            reversals.extend(
+                (origin + hit[0], hit[1]) for hit in scan_reversal_phrases(cleaned)
+            )
+            poisons.extend(
+                (origin + hit[0], hit[1], hit[2], hit[3]) for hit in scan_tool_poisoning(cleaned)
+            )
+    if gap:
+        for window, local_bounds, origin in _boundary_windows(gap, gap_bounds):
+            overrides.extend(
+                (origin + hit[0], hit[1]) for hit in _scan_marked_overrides(window)
+            )
+            poisons.extend(
+                (origin + hit[0], hit[1], hit[2], hit[3]) for hit in _scan_marked_poison(window)
+            )
+    return overrides, reversals, poisons
+
+
+def _boundary_windows(text: str, bounds: list[int], radius: int = 160) -> list[tuple[str, list[int], int]]:
+    """Slices around comment boundaries, with bounds shifted into each slice."""
+    if not text or not bounds:
+        return []
+    intervals: list[list[int]] = []
+    last = len(text)
+    for pos in bounds:
+        lo = max(0, pos - radius)
+        hi = min(last, pos + radius + 1)
+        if intervals and lo <= intervals[-1][1]:
+            intervals[-1][1] = max(intervals[-1][1], hi)
+        else:
+            intervals.append([lo, hi])
+    windows: list[tuple[str, list[int], int]] = []
+    cursor = 0
+    total = len(bounds)
+    for lo, hi in intervals:
+        while cursor < total and bounds[cursor] < lo:
+            cursor += 1
+        local: list[int] = []
+        probe = cursor
+        while probe < total and bounds[probe] < hi:
+            local.append(bounds[probe] - lo)
+            probe += 1
+        windows.append((text[lo:hi], local, lo))
+    return windows
+
+
+def _match_cuts_a_longer_word(text: str, bounds: set[int], start: int, end: int) -> bool:
+    """True when one phrase word is only a prefix or suffix of a longer word.
+
+    ``ignore<!--x-->list`` must not count as the word ``ignore``. A boundary
+    outside a multi-word phrase, next to unrelated letters, does not cancel
+    that phrase: ``instructions<!--c-->x`` still matches.
+    """
+    matched = text[start:end]
+    if any(char.isspace() or char in (_COMMENT_GAP, _SPACE_MARK) for char in matched):
+        return False
+    edges = bounds
+
+    def _continues(boundary: int, step: int) -> bool:
+        if boundary < 0 or boundary >= len(text):
+            return False
+        if boundary not in edges and text[boundary] != _COMMENT_GAP:
+            return False
+        nxt = boundary + step
+        return 0 <= nxt < len(text) and text[nxt].isalnum()
+
+    return _continues(end, 1) or _continues(start - 1, -1)
+
+
+def _text_needs_decode(text: str) -> bool:
+    """True when canonicalize can change the text. Plain ASCII does not.
+
+    A null byte is ASCII, but leaving it in place splits a phrase, so it
+    still has to be stripped before the phrase scan.
+    """
+    return "\x00" in text or "&" in text or "%" in text or not text.isascii()
+
+
+def _decode_layers(text: str) -> str:
+    """Entity, URL, and full-width decoding without comment removal."""
+    if not _text_needs_decode(text):
+        return text
+    prepared = text
+    for _ in range(_CANONICALIZATION_MAX_LAYERS):
+        canonical = _canonicalize_scan_layer(prepared)
+        if canonical == prepared:
+            break
+        prepared = canonical
+    return prepared
+
+
+def _finish_visible(text: str) -> str:
+    """Fragmentation, hex, JSON letters, and base64 after comments are split out."""
+    text = _collapse_spaced_hex(text)
+    text = _collapse_fragmented_tokens(text)
+    text = _collapse_json_letter_arrays(text)
+    return _append_decoded_base64_snippets(text)
 
 
 def scan_leetspeak(text: str) -> list[tuple[int, str]]:
@@ -974,14 +1433,143 @@ def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
     return findings
 
 
-def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
-    """Split ``<!-- ... -->`` comments out of text.
+_COMMENT_START = 0
+_COMMENT_START_DASH = 1
+_COMMENT = 2
+_COMMENT_LT = 3
+_COMMENT_LT_BANG = 4
+_COMMENT_LT_BANG_DASH = 5
+_COMMENT_LT_BANG_DASH_DASH = 6
+_COMMENT_END_DASH = 7
+_COMMENT_END = 8
+_COMMENT_END_BANG = 9
 
-    Each full comment is removed from the visible text, matching how HTML
-    comments disappear for renderers. Comment bodies are returned separately as
-    ``(start, body)`` where ``start`` is the index of ``<!--`` in ``text``. A
-    missing closer runs to the end of the input. One forward ``str.find`` walk
-    stays linear when many comments are left unclosed.
+
+def _read_html_comment(text: str, start: int) -> tuple[int, str, bool]:
+    """Read one WHATWG comment whose ``<!--`` opener begins at ``start``.
+
+    ``<!-->`` and ``<!--->`` are empty comments. ``-->`` and ``--!>`` both
+    close a comment. A missing closer runs to EOF and the body is the raw
+    tail, so the bytes after the opener are still scanned. Null bytes are
+    kept so the null-byte check still sees them.
+    """
+    length = len(text)
+    index = start + 4
+    data: list[str] = []
+    state = _COMMENT_START
+    while index < length:
+        char = text[index]
+        if state == _COMMENT_START:
+            if char == "-":
+                state = _COMMENT_START_DASH
+                index += 1
+            elif char == ">":
+                return index + 1, "", True
+            else:
+                state = _COMMENT
+        elif state == _COMMENT_START_DASH:
+            if char == "-":
+                state = _COMMENT_END
+                index += 1
+            elif char == ">":
+                return index + 1, "", True
+            else:
+                data.append("-")
+                state = _COMMENT
+        elif state == _COMMENT:
+            # Skip ordinary runs in C. Only '<' and '-' change the tokenizer state.
+            next_mark = length
+            for mark in ("<", "-"):
+                found = text.find(mark, index)
+                if found >= 0:
+                    next_mark = min(next_mark, found)
+            if next_mark > index:
+                data.append(text[index:next_mark])
+                index = next_mark
+                if index >= length:
+                    break
+                char = text[index]
+            if char == "<":
+                data.append("<")
+                state = _COMMENT_LT
+                index += 1
+            elif char == "-":
+                state = _COMMENT_END_DASH
+                index += 1
+            else:
+                data.append(char)
+                index += 1
+        elif state == _COMMENT_LT:
+            if char == "!":
+                data.append("!")
+                state = _COMMENT_LT_BANG
+                index += 1
+            elif char == "<":
+                data.append("<")
+                index += 1
+            else:
+                state = _COMMENT
+        elif state == _COMMENT_LT_BANG:
+            if char == "-":
+                state = _COMMENT_LT_BANG_DASH
+                index += 1
+            else:
+                state = _COMMENT
+        elif state == _COMMENT_LT_BANG_DASH:
+            if char == "-":
+                state = _COMMENT_LT_BANG_DASH_DASH
+                index += 1
+            else:
+                state = _COMMENT_END_DASH
+        elif state == _COMMENT_LT_BANG_DASH_DASH:
+            state = _COMMENT_END
+        elif state == _COMMENT_END_DASH:
+            if char == "-":
+                state = _COMMENT_END
+                index += 1
+            else:
+                data.append("-")
+                state = _COMMENT
+        elif state == _COMMENT_END:
+            if char == ">":
+                return index + 1, "".join(data), True
+            if char == "!":
+                state = _COMMENT_END_BANG
+                index += 1
+            elif char == "-":
+                data.append("-")
+                index += 1
+            else:
+                data.append("--")
+                state = _COMMENT
+        elif state == _COMMENT_END_BANG:
+            if char == "-":
+                data.append("--!")
+                state = _COMMENT_END_DASH
+                index += 1
+            elif char == ">":
+                return index + 1, "".join(data), True
+            else:
+                data.append("--!")
+                state = _COMMENT
+        else:
+            raise RuntimeError(f"unknown html comment state: {state}")
+    return length, text[start + 4 :], False
+
+
+def extract_html_comments(
+    text: str, *, replacement: str = ""
+) -> tuple[str, list[tuple[int, str]]]:
+    """Split HTML comments out of text.
+
+    ``replacement`` is written in place of each comment. The default removes
+    the comment so a token split inside a word joins again. A single space
+    keeps neighboring words apart. Scans use both and combine the hits.
+    Comment bodies are ``(start, body)`` where ``start`` is the index of
+    ``<!--``. Closers follow the WHATWG tokenizer, including empty ``<!-->``
+    and ``<!--->`` comments and the ``--!>`` closer. A missing closer runs to
+    the end of the input. One forward walk stays linear when many comments
+    are left unclosed.
     """
     parts: list[str] = []
     comments: list[tuple[int, str]] = []
@@ -993,32 +1581,760 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
             parts.append(text[cursor:])
             break
         parts.append(text[cursor:start])
-        close = text.find("-->", start + 4)
-        if close < 0:
-            comments.append((start, text[start + 4 :]))
-            break
-        comments.append((start, text[start + 4 : close]))
-        cursor = close + 3
+        end, body, _closed = _read_html_comment(text, start)
+        if end <= start:
+            end = min(start + 4, length)
+        comments.append((start, body))
+        if replacement:
+            parts.append(replacement)
+        cursor = end
     return "".join(parts), comments
 
 
-def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
+def _comment_body_needs_scan(body: str) -> bool:
+    """True for every comment body that still has something to read.
+
+    Digit-only, dotted, dashed, and entity bodies all go through the same
+    cleanup. Whitespace-only bodies do not, unless they hide a null or a
+    zero-width character.
+    """
+    if body.strip():
+        return True
+    return any(char == "\x00" or ord(char) in HIDDEN_UNICODE for char in body)
+
+
+_COMMENT_BATCH_SEP = "\ue000"
+_COMMENT_MARKERS = re.compile(r"<!-*>?|--!?>")
+_CAP_FINDING = "comment scan stopped at the depth or size cap"
+
+_MAX_COMMENT_DEPTH = 8
+
+
+def _comment_rescan_budget() -> int:
+    """Nested re-scans, not the first read of a comment, share the input cap."""
+    return scp_limits.max_input_chars()
+
+
+def _flatten_comment_markers(body: str) -> str:
+    """Drop comment markers once so a payload after them is visible text."""
+    return _flatten_comment_markers_mapped(body)[0]
+
+
+def _flatten_comment_markers_mapped(body: str) -> tuple[str, list[int]]:
+    """Flatten markers and map each output character back into ``body``."""
+    parts: list[str] = []
+    source: list[int] = []
+    last = 0
+    for match in _COMMENT_MARKERS.finditer(body):
+        parts.append(body[last : match.start()])
+        source.extend(range(last, match.start()))
+        parts.append(" ")
+        source.append(match.start())
+        last = match.end()
+    parts.append(body[last:])
+    source.extend(range(last, len(body)))
+    return "".join(parts), source
+
+
+def _comment_scan_text(body: str) -> tuple[str, bool, list[int]]:
+    """Cleanup for one comment body. Closed nesting is walked iteratively.
+
+    An unclosed nested body is scanned once, with its markers removed, and is
+    not queued again. The index list maps each scanned character back to
+    ``body``. Hitting the depth cap or the character budget still returns the
+    flattened text and reports that the cap was hit.
+    """
+    parts: list[str] = []
+    maps: list[list[int]] = []
+    # text, depth, index of text[0] inside the original body
+    stack: list[tuple[str, int, int]] = [(body, 0, 0)]
+    seen: set[str] = set()
+    work = 0
+    capped = False
+
+    def push(piece: str, piece_map: list[int]) -> None:
+        if parts:
+            parts.append(_COMMENT_BATCH_SEP)
+            maps.append([-1])
+        parts.append(piece)
+        maps.append(piece_map if len(piece_map) == len(piece) else [0] * len(piece))
+
+    while stack:
+        current, depth, origin = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        # The first read of a comment is ordinary work. Only nested re-scans
+        # count, so a long benign comment does not trip the cap.
+        if depth > 0:
+            work += len(current)
+        if (depth > 0 and work > _comment_rescan_budget()) or depth > _MAX_COMMENT_DEPTH:
+            capped = True
+            flat, flat_map = _flatten_comment_markers_mapped(current)
+            push(flat, [origin + index for index in flat_map])
+            break
+        decoded = _decode_layers(current) if _text_needs_decode(current) else current
+        decode_map = _decode_source_map(current, decoded) if decoded != current else None
+
+        def place(index: int) -> int:
+            if decode_map is not None and 0 <= index < len(decode_map):
+                return origin + decode_map[index]
+            return origin + index
+
+        removed, spaced, _gap, spaced_bounds, _gap_bounds, nested = _comment_slice(
+            decoded, gaps=False
+        )
+        runs = _comment_runs(decoded)
+        removed_index = _RemovedOffsetIndex(runs)
+        finished = _finish_visible(removed)
+        if finished == removed:
+            push(
+                finished,
+                [
+                    place(removed_index.map(index) if runs else index)
+                    for index in range(len(finished))
+                ],
+            )
+        else:
+            push(finished, [place(0)] * len(finished))
+        if spaced != removed and spaced_bounds:
+            spaced_index = _SpacedOffsetIndex(runs)
+            for window, _local, window_origin in _boundary_windows(spaced, spaced_bounds):
+                finished_window = _finish_visible(window)
+                if finished_window == window:
+                    push(
+                        finished_window,
+                        [place(spaced_index.map(window_origin + index)) for index in range(len(window))],
+                    )
+                else:
+                    push(finished_window, [place(spaced_index.map(window_origin))] * len(finished_window))
+        if depth >= _MAX_COMMENT_DEPTH and nested:
+            capped = True
+            flat, flat_map = _flatten_comment_markers_mapped(current)
+            push(flat, [origin + index for index in flat_map])
+            continue
+        for start, nested_body, closed in nested:
+            if not nested_body.strip():
+                continue
+            body_at = place(start + 4)
+            if not closed:
+                flat, flat_map = _flatten_comment_markers_mapped(nested_body)
+                finished_flat = _finish_visible(flat)
+                if finished_flat == flat:
+                    push(finished_flat, [body_at + index for index in flat_map])
+                else:
+                    push(finished_flat, [body_at] * len(finished_flat))
+                continue
+            if len(nested_body) >= len(current):
+                continue
+            stack.append((nested_body, depth + 1, body_at))
+    if not parts:
+        return "", capped, []
+    return "".join(parts), capped, [index for piece in maps for index in piece]
+
+
+_ENCODED_COMMENT_MARKERS = (
+    "<!--",
+    "&lt;!--",
+    "&LT;!--",
+    "%3C!--",
+    "%3c!--",
+    "&#60;!--",
+    "&#x3C;!--",
+    "&#x3c;!--",
+    "\uff1c!--",
+)
+
+
+def _encoded_comment_positions(raw: str) -> list[int]:
+    """Start indexes of literal and encoded comment openers. One pass per marker."""
+    positions: list[int] = []
+    for marker in _ENCODED_COMMENT_MARKERS:
+        idx = raw.find(marker)
+        while idx >= 0:
+            positions.append(idx)
+            idx = raw.find(marker, idx + len(marker))
+    positions.sort()
+    return positions
+
+
+def _comment_runs(text: str) -> list[tuple[int, int]]:
+    """Original (start, end) of each merged comment run."""
+    runs: list[tuple[int, int]] = []
+    cursor = 0
+    length = len(text)
+    while cursor < length:
+        start = text.find("<!--", cursor)
+        if start < 0:
+            break
+        pos = start
+        while text.startswith("<!--", pos):
+            nxt, _body, _closed = _read_html_comment(text, pos)
+            if nxt <= pos:
+                nxt = min(pos + 4, length)
+                pos = nxt
+                break
+            pos = nxt
+        runs.append((start, pos))
+        cursor = pos
+    return runs
+
+
+class _RemovedOffsetIndex:
+    """Bisect map from a comment-removed index back to the original string.
+
+    Built once per form. A linear walk per hit is quadratic when each comment
+    produces a hit.
+    """
+
+    def __init__(self, runs: list[tuple[int, int]]) -> None:
+        breaks: list[int] = []
+        origin_at: list[int] = []
+        removed_at: list[int] = []
+        origin = 0
+        removed = 0
+        for start, end in runs:
+            chunk = start - origin
+            breaks.append(removed + chunk)
+            origin_at.append(origin)
+            removed_at.append(removed)
+            removed += chunk
+            origin = end
+        self.breaks = breaks
+        self.origin_at = origin_at
+        self.removed_at = removed_at
+        self.tail_origin = origin
+        self.tail_removed = removed
+
+    def map(self, index: int) -> int:
+        slot = bisect.bisect_right(self.breaks, index)
+        if slot >= len(self.breaks):
+            return self.tail_origin + (index - self.tail_removed)
+        return self.origin_at[slot] + (index - self.removed_at[slot])
+
+
+class _SpacedOffsetIndex:
+    """Bisect map from a space-replaced index back to the pre-slice string.
+
+    Each comment run is one inserted space. A hit in that reading has to land
+    on the same raw offset as the comments-removed reading.
+    """
+
+    def __init__(self, runs: list[tuple[int, int]]) -> None:
+        space_at: list[int] = []
+        chunk_origin: list[int] = []
+        chunk_spaced: list[int] = []
+        comment_start: list[int] = []
+        origin = 0
+        spaced = 0
+        for start, end in runs:
+            chunk = start - origin
+            chunk_origin.append(origin)
+            chunk_spaced.append(spaced)
+            space_at.append(spaced + chunk)
+            comment_start.append(start)
+            spaced += chunk + 1
+            origin = end
+        self.space_at = space_at
+        self.chunk_origin = chunk_origin
+        self.chunk_spaced = chunk_spaced
+        self.comment_start = comment_start
+        self.tail_origin = origin
+        self.tail_spaced = spaced
+
+    def map(self, index: int) -> int:
+        slot = bisect.bisect_right(self.space_at, index)
+        if slot > 0 and self.space_at[slot - 1] == index:
+            return self.comment_start[slot - 1]
+        if slot >= len(self.space_at):
+            return self.tail_origin + (index - self.tail_spaced)
+        return self.chunk_origin[slot] + (index - self.chunk_spaced[slot])
+
+
+def _compose_maps(parent: list[int] | None, child: list[int] | None) -> list[int] | None:
+    """Compose child (newer → middle) with parent (middle → older)."""
+    if child is None:
+        return parent
+    if parent is None:
+        return child
+    return [parent[index] if index < len(parent) else index for index in child]
+
+
+_ENTITY_RE = re.compile(r"&(?:#x[0-9a-fA-F]+|#\d+|[A-Za-z][A-Za-z0-9]+);")
+_URL_BYTE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+
+
+def _replacement_map(text: str, pattern: re.Pattern[str], replace) -> tuple[str, list[int] | None]:
+    """Replace matches and point every output character at a source index."""
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return text, None
+    parts: list[str] = []
+    source: list[int] = []
+    last = 0
+    changed = False
+    for match in matches:
+        parts.append(text[last : match.start()])
+        source.extend(range(last, match.start()))
+        replacement = replace(match)
+        if replacement != match.group(0):
+            changed = True
+        parts.append(replacement)
+        span = match.end() - match.start()
+        if len(replacement) == span:
+            source.extend(range(match.start(), match.end()))
+        elif replacement:
+            source.extend([match.start()] * len(replacement))
+        last = match.end()
+    parts.append(text[last:])
+    source.extend(range(last, len(text)))
+    if not changed:
+        return text, None
+    # A same-length substitution does not move later characters.
+    if len(source) == len(text) and source == list(range(len(text))):
+        return "".join(parts), None
+    return "".join(parts), source
+
+
+def _advance(current: str, mapping: list[int] | None, updated: str, step: list[int] | None) -> tuple[str, list[int] | None]:
+    return updated, _compose_maps(mapping, step)
+
+
+def _nfkc_with_map(text: str) -> tuple[str, list[int] | None]:
+    """NFKC each base character together with the combining marks that follow it.
+
+    Combining marks are never ASCII, so an ASCII run is one slice. The ASCII
+    character immediately before a mark stays in that cluster, which is what
+    composes ``e`` plus an acute into one character at the base index.
+    """
+    if text.isascii():
+        return text, None
+    normalized = unicodedata.normalize("NFKC", text)
+    if normalized == text:
+        return text, None
+    parts: list[str] = []
+    source: list[int] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if ord(text[index]) < 128:
+            run = index
+            index += 1
+            while index < length and ord(text[index]) < 128:
+                index += 1
+            if index < length and unicodedata.category(text[index]).startswith("M"):
+                if index - 1 > run:
+                    parts.append(text[run : index - 1])
+                    source.extend(range(run, index - 1))
+                base = index - 1
+                end = index
+                while end < length and unicodedata.category(text[end]).startswith("M"):
+                    end += 1
+                mapped = unicodedata.normalize("NFKC", text[base:end])
+                parts.append(mapped)
+                source.extend([base] * len(mapped))
+                index = end
+                continue
+            parts.append(text[run:index])
+            source.extend(range(run, index))
+            continue
+        end = index + 1
+        while end < length and unicodedata.category(text[end]).startswith("M"):
+            end += 1
+        mapped = unicodedata.normalize("NFKC", text[index:end])
+        parts.append(mapped)
+        source.extend([index] * len(mapped))
+        index = end
+    produced = "".join(parts)
+    if produced == normalized:
+        return produced, source
+    return normalized, None
+
+
+def _combining_with_map(text: str) -> tuple[str, list[int] | None]:
+    stripped = _strip_excessive_combining(text)
+    if stripped == text:
+        return text, None
+    parts: list[str] = []
+    source: list[int] = []
+    combining = 0
+    for index, char in enumerate(text):
+        if unicodedata.category(char).startswith("M"):
+            combining += 1
+            if combining <= 3:
+                parts.append(char)
+                source.append(index)
+        else:
+            combining = 0
+            parts.append(char)
+            source.append(index)
+    return "".join(parts), source
+
+
+def _tag_block_with_map(text: str) -> tuple[str, list[int] | None]:
+    if not any(_TAG_CHAR_START <= ord(char) <= _TAG_CHAR_END for char in text):
+        return text, None
+    decoded = _decode_tag_block(text)
+    if decoded == text:
+        return text, None
+    parts: list[str] = []
+    source: list[int] = []
+    index = 0
+    while index < len(text):
+        code = ord(text[index])
+        if _TAG_CHAR_START <= code <= _TAG_CHAR_END:
+            start = index
+            chars: list[str] = []
+            while index < len(text) and _TAG_CHAR_START <= ord(text[index]) <= _TAG_CHAR_END:
+                chars.append(chr(ord(text[index]) - _TAG_CHAR_START))
+                index += 1
+            parts.append("".join(chars))
+            source.extend([start] * len(chars))
+        else:
+            parts.append(text[index])
+            source.append(index)
+            index += 1
+    produced = "".join(parts)
+    if produced == decoded:
+        return produced, source
+    return decoded, None
+
+
+def _unescape_with_map(text: str) -> tuple[str, list[int] | None]:
+    """HTML unescape, including a named entity that has no semicolon.
+
+    Each output character points at the raw character it came from. A missing
+    semicolon still consumes the entity name, which a single global align
+    would pin to the first entity in the string.
+    """
+    if "&" not in text:
+        return text, None
+    unescaped = html.unescape(text)
+    if unescaped == text:
+        return text, None
+    # Semicolon entities are the common case. The window walk is only for a
+    # named entity that html.unescape accepts without a semicolon.
+    replaced, step = _replacement_map(
+        text, _ENTITY_RE, lambda match: html.unescape(match.group(0))
+    )
+    if replaced == unescaped:
+        return replaced, step
+    parts: list[str] = []
+    source: list[int] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] != "&":
+            parts.append(text[index])
+            source.append(index)
+            index += 1
+            continue
+        window_end = min(length, index + 64)
+        chosen: tuple[int, str] | None = None
+        for end in range(index + 2, window_end + 1):
+            chunk = text[index:end]
+            replacement = html.unescape(chunk)
+            if replacement == chunk:
+                continue
+            if end < length:
+                longer = html.unescape(text[index : end + 1])
+                extra = text[end]
+                if not longer.startswith(replacement):
+                    continue
+                if longer != replacement + extra and longer != replacement + html.unescape(extra):
+                    continue
+            chosen = (end, replacement)
+            break
+        if chosen is None:
+            parts.append(text[index])
+            source.append(index)
+            index += 1
+            continue
+        end, replacement = chosen
+        parts.append(replacement)
+        source.extend([index] * len(replacement))
+        index = end
+    produced = "".join(parts)
+    if produced == unescaped:
+        return produced, source
+    return unescaped, None
+
+
+def _mapped_canonicalize(text: str) -> tuple[str, list[int] | None]:
+    """Same steps as one decode, recording a source index per output character."""
+    current = text
+    mapping: list[int] | None = None
+    for _ in range(_CANONICALIZATION_MAX_LAYERS):
+        before = current
+        if "&#" in current and _NULL_ENTITY_RE.search(current):
+            updated, step = _replacement_map(current, _NULL_ENTITY_RE, lambda _match: "")
+            current, mapping = _advance(current, mapping, updated, step)
+        if "\x00" in current:
+            updated, step = _replacement_map(current, re.compile("\x00"), lambda _match: "")
+            current, mapping = _advance(current, mapping, updated, step)
+        current, mapping = _advance(current, mapping, *_tag_block_with_map(current))
+        if _INVISIBLE_UNICODE_RE.search(current):
+            updated, step = _replacement_map(current, _INVISIBLE_UNICODE_RE, lambda _match: "")
+            current, mapping = _advance(current, mapping, updated, step)
+        current, mapping = _advance(current, mapping, *_combining_with_map(current))
+        if _CONFUSABLE_WHITESPACE_RE.search(current):
+            updated, step = _replacement_map(current, _CONFUSABLE_WHITESPACE_RE, lambda _match: " ")
+            current, mapping = _advance(current, mapping, updated, step)
+        current, mapping = _advance(current, mapping, *_nfkc_with_map(current))
+        if _REGIONAL_INDICATOR_RE.search(current):
+            updated, step = _replacement_map(current, _REGIONAL_INDICATOR_RE, lambda _match: "")
+            current, mapping = _advance(current, mapping, updated, step)
+        if "%" in current:
+            updated, step = _replacement_map(
+                current, _URL_BYTE_RE, lambda match: urllib.parse.unquote(match.group(0))
+            )
+            if updated == urllib.parse.unquote(current):
+                current, mapping = _advance(current, mapping, updated, step)
+            else:
+                current = urllib.parse.unquote(current)
+        if "&" in current:
+            updated, step = _unescape_with_map(current)
+            current, mapping = _advance(current, mapping, updated, step)
+        if current == before:
+            break
+    return current, mapping
+
+
+def _decode_source_map(original: str, decoded: str) -> list[int] | None:
+    """Map each decoded index back to the raw string. None when nothing moved."""
+    if decoded == original:
+        return None
+    current, mapping = _mapped_canonicalize(original)
+    if current == decoded:
+        return mapping
+    return mapping
+
+
+def _base64_append_with_map(text: str) -> tuple[str, list[int] | None]:
+    """Append short base64 snippets and point those characters at the token."""
+    current = text
+    mapping: list[int] | None = None
+    for _ in range(_B64_MAX_LAYERS):
+        extras: list[tuple[int, str]] = []
+        for match in _B64_CANDIDATE.finditer(current):
+            blob = match.group(0).rstrip("=")
+            if len(blob) > 120 or len(blob) < 8:
+                continue
+            try:
+                pad = blob + "=" * ((4 - len(blob) % 4) % 4)
+                decoded = base64.b64decode(pad, validate=False)
+            except ValueError:
+                continue
+            if len(decoded) > 200:
+                continue
+            try:
+                snippet = decoded.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            if snippet and all(char.isprintable() or char in "\n\r\t" for char in snippet):
+                anchor = match.start()
+                if mapping is not None and anchor < len(mapping):
+                    anchor = mapping[anchor]
+                extras.append((anchor, snippet))
+        if not extras:
+            break
+        step = list(range(len(current))) if mapping is None else list(mapping)
+        pieces = [current]
+        for anchor, snippet in extras:
+            pieces.append("\n")
+            pieces.append(snippet)
+            step.append(anchor)
+            step.extend([anchor] * len(snippet))
+        current = "".join(pieces)
+        mapping = step
+    if mapping is None:
+        return text, None
+    return current, mapping
+
+
+def _finish_source_map(before: str, after: str) -> list[int] | None:
+    """Map a finished index back through fragment, hex, JSON, and base64."""
+    if before == after:
+        return None
+    current = before
+    mapping: list[int] | None = None
+    for pattern, replace in (
+        (_SPACED_HEX_RUN, lambda match: re.sub(r"\s+", "", match.group(0))),
+        (
+            _FRAGMENTED_TOKEN,
+            lambda match: (
+                collapsed
+                if len(collapsed := re.sub(r"[\s_\-./\\]+", "", match.group(0))) >= 5
+                else match.group(0)
+            ),
+        ),
+        (
+            _JSON_LETTER_ARRAY,
+            lambda match: "".join(re.findall(r'"([A-Za-z])"', match.group(0))) or match.group(0),
+        ),
+    ):
+        updated, step = _replacement_map(current, pattern, replace)
+        current, mapping = _advance(current, mapping, updated, step)
+    updated, step = _base64_append_with_map(current)
+    current, mapping = _advance(current, mapping, updated, step)
+    if current == after:
+        return mapping
+    return mapping
+
+
+def _closest_offset(positions: list[int], target: int, limit: int) -> int:
+    if not positions:
+        return min(max(target, 0), limit)
+    slot = bisect.bisect_left(positions, target)
+    choices = []
+    if slot < len(positions):
+        choices.append(positions[slot])
+    if slot > 0:
+        choices.append(positions[slot - 1])
+    return min(choices, key=lambda item: abs(item - target))
+
+
+def _comment_batch_findings(
+    bodies: list[tuple[int, str, str, int | None]],
+    decode_map: list[int] | None = None,
+) -> tuple[list[tuple[str, int, str, int, str]], list[tuple[int, str, str, str, int, str]], bool]:
+    """Scan many comment bodies in one pass.
+
+    A private-use separator stops a phrase from forming across two comments.
+    Each returned offset is a raw index. ``decoded_start`` is the comment
+    opener in the decoded page; encoded openers are longer than ``<!--``, so
+    adding 4 to the raw marker lands inside the entity. The bool-like mode
+    string is ``literal``, ``decoded_closed``, or ``decoded_open``. The cap
+    flag is true when a nested walk stopped at the depth cap or the budget.
+    """
+    parts: list[str] = []
+    spans: list[tuple[int, int, int, str, int | None]] = []
+    cursor = 0
+    prepared_by_body: dict[str, tuple[str, bool, list[int]]] = {}
+    capped = False
+    scan_maps: list[list[int]] = []
+    for source_offset, body, mode, decoded_start in bodies:
+        scanned = prepared_by_body.get(body)
+        if scanned is None:
+            scanned = _comment_scan_text(body)
+            prepared_by_body[body] = scanned
+        text, body_capped, scan_map = scanned
+        if body_capped:
+            capped = True
+        scanned = text
+        if parts:
+            parts.append(_COMMENT_BATCH_SEP)
+            cursor += 1
+        start = cursor
+        parts.append(scanned)
+        cursor += len(scanned)
+        spans.append((start, cursor, source_offset, mode, decoded_start))
+        scan_maps.append(scan_map)
+    if not parts:
+        return [], [], capped
+    batch = "".join(parts)
+    starts = [span[0] for span in spans]
+
+    def raw_at(local: int, source_offset: int, slot: int) -> int:
+        scan_map = scan_maps[slot] if slot < len(scan_maps) else []
+        # The body begins just after the four-character <!-- opener.
+        if 0 <= local < len(scan_map) and scan_map[local] >= 0:
+            body_index = scan_map[local]
+        else:
+            body_index = local
+        decoded_start = spans[slot][4]
+        if decoded_start is None:
+            return source_offset + 4 + body_index
+        decoded_index = decoded_start + 4 + body_index
+        if decode_map is not None and 0 <= decoded_index < len(decode_map):
+            return decode_map[decoded_index]
+        return decoded_index
+
+    def locate(offset: int) -> tuple[int, int, str] | None:
+        slot = bisect.bisect_right(starts, offset) - 1
+        if slot < 0:
+            return None
+        start, end, source_offset, mode, _decoded_start = spans[slot]
+        if offset >= end:
+            return None
+        local = offset - start
+        return raw_at(local, source_offset, slot), source_offset, mode
+
+    legacy_hits: list[tuple[str, int, str, int, str]] = []
+    poison_hits: list[tuple[int, str, str, str, int, str]] = []
+    for source_offset, body, mode, _decoded_start in bodies:
+        # Finish strips these, so they are read on the raw body. Plain ASCII has none.
+        if "\x00" in body or not body.isascii():
+            for offset, phrase in scan_hidden_unicode(body):
+                legacy_hits.append(("hidden_unicode", offset, str(phrase), source_offset, mode))
+            for offset, phrase in scan_null_bytes(body):
+                legacy_hits.append(("null_byte", offset, str(phrase), source_offset, mode))
+    for key, hits in _scan_finding_groups(batch, batch).items():
+        if key in ("hidden_unicode", "null_byte"):
+            continue
+        for offset, phrase in hits:
+            located = locate(offset)
+            if located is None:
+                continue
+            local_offset, source_offset, conceal = located
+            legacy_hits.append((key, local_offset, str(phrase), source_offset, conceal))
+    for offset, match, phrase, base in scan_tool_poisoning(batch):
+        located = locate(offset)
+        if located is None:
+            continue
+        local_offset, source_offset, conceal = located
+        poison_hits.append((local_offset, match, phrase, base, source_offset, conceal))
+    return legacy_hits, poison_hits, capped
+
+
+def _keep_combined_hit(
+    kept: dict[tuple[str, str], dict[str, int]],
+    surface_seen: dict[tuple[str, str], dict[str, int]],
+    scope: str,
+    key: str,
+    match: str,
+) -> bool:
+    """Keep the larger set of matches across comment-removed and space-replaced text.
+
+    The first surface records every occurrence. A later surface adds a hit only
+    when it has more occurrences of that same normalized match than are already
+    kept, so a phrase that survives both readings is not stored twice.
+    """
+    norm = " ".join(match.split()).casefold()
+    slot = (scope, key)
+    local = surface_seen.setdefault(slot, {})
+    local[norm] = local.get(norm, 0) + 1
+    bucket = kept.setdefault(slot, {})
+    already = bucket.get(norm, 0)
+    if local[norm] <= already:
+        return False
+    bucket[norm] = local[norm]
+    return True
+
+
+def _scan_finding_groups(
+    raw: str, prepared: str, *, heavy: bool = True
+) -> dict[str, list[tuple[int, str]]]:
+    """Phrase scans always run. Rot, homoglyphs, and mythic scans are once per text.
+
+    Comment spacing does not change letters, so the extra reading skips those.
+    """
     return {
         "override_phrases": scan_override_phrases(prepared),
         "leetspeak_phrases": scan_leetspeak(prepared),
-        "hidden_unicode": scan_hidden_unicode(raw),
-        "null_byte": scan_null_bytes(raw),
+        "hidden_unicode": scan_hidden_unicode(raw) if heavy and not raw.isascii() else [],
+        "null_byte": scan_null_bytes(raw) if heavy and "\x00" in raw else [],
         "path_traversal": scan_path_traversal(prepared),
-        "encoding_evasion_rot": _check_rot_decode(prepared),
+        "encoding_evasion_rot": _check_rot_decode(prepared) if heavy else [],
         "reversal_phrases": scan_reversal_phrases(prepared),
         "power_words": scan_power_words(prepared),
-        "morse_like": scan_morse_like(prepared),
+        "morse_like": scan_morse_like(prepared) if heavy else [],
         "encoding_blocks": scan_encoding_blocks(prepared),
-        "homoglyphs": scan_homoglyphs(prepared),
-        "multilingual_override": scan_multilingual_override(prepared),
+        "homoglyphs": scan_homoglyphs(prepared) if heavy else [],
+        "multilingual_override": scan_multilingual_override(prepared) if heavy else [],
         "semantic_aliases": scan_semantic_aliases(prepared),
-        "jailbreak_mythic": scan_jailbreak_mythic(prepared),
-        "hostile_ux": scan_hostile_ux(prepared),
+        "jailbreak_mythic": scan_jailbreak_mythic(prepared) if heavy else [],
+        "hostile_ux": scan_hostile_ux(prepared) if heavy else [],
     }
 
 
@@ -1057,60 +2373,220 @@ def reconcile_severity(result: dict) -> None:
     result["severity"] = _max_severity(current, floor)
 
 
+def _collect_boundary_hits(
+    slices: list[tuple[str, list[int], str | None, list[int]]],
+) -> tuple[list[tuple[int, str]], list[tuple[int, str]], list[tuple[int, str, str, str]]]:
+    """Reuse one sliced form. Forms with no recorded boundaries add nothing."""
+    overrides: list[tuple[int, str]] = []
+    reversals: list[tuple[int, str]] = []
+    poisons: list[tuple[int, str, str, str]] = []
+    for spaced, spaced_bounds, gap, gap_bounds in slices:
+        if not spaced_bounds and not gap_bounds:
+            continue
+        extra_override, extra_reversal, extra_poison = _supplemental_visible_hits(
+            spaced, spaced_bounds, gap, gap_bounds
+        )
+        overrides.extend(extra_override)
+        reversals.extend(extra_reversal)
+        poisons.extend(extra_poison)
+    return overrides, reversals, poisons
+
+
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
-    visible, comments = extract_html_comments(text)
-    segments: list[tuple[str, int, str]] = [("text", 0, visible)]
-    for start, body in comments:
-        if body.strip():
-            segments.append(("html_comment", start, body))
+    # One decode of the page, then one comment split. Rot runs on that cleaned
+    # visible text. Boundary readings are skipped when the split recorded none.
+    decoded = _decode_layers(text)
+    raw_comments: list[tuple[int, str, bool]] = []
+    if decoded == text:
+        removed, spaced, gap, spaced_bounds, gap_bounds, comments = _comment_slice(text)
+        visible_raw = removed
+    else:
+        visible_raw, _raw_spaced, _raw_gap, _raw_sb, _raw_gb, raw_comments = _comment_slice(text)
+        removed, spaced, gap, spaced_bounds, gap_bounds, comments = _comment_slice(decoded)
+    finished = _finish_visible(removed)
 
     legacy: dict[str, list[tuple[int, str]]] = {key: [] for key in _FINDING_CATEGORY}
     poison_notes: list[dict[str, object]] = []
     concealed_notes: list[dict[str, object]] = []
     severities: list[str] = []
+    kept: dict[tuple[str, str], dict[str, int]] = {}
+    reported: set[tuple[str, str, int]] = set()
 
-    for segment, source_offset, raw in segments:
-        prepared = _prepare_text_for_scan(raw)
-        for key, hits in _scan_finding_groups(raw, prepared).items():
-            base = _base_severity_for_key(key)
-            severity = base if segment == "text" else _severity_for_concealment(base, key)
-            category = _FINDING_CATEGORY[key]
-            for offset, phrase in hits:
-                legacy[key].append((offset, str(phrase)))
-                severities.append(severity)
-                if segment == "html_comment":
-                    concealed_notes.append(
-                        _location_record(
-                            category=category,
-                            offset=offset,
-                            match=str(phrase),
-                            segment=segment,
-                            source_offset=source_offset,
-                            severity=severity,
-                            base_severity=base,
-                        )
-                    )
-        for offset, match, phrase, base in scan_tool_poisoning(prepared):
-            severity = base if segment == "text" else _severity_for_concealment(base, "tool_poisoning")
-            note = _location_record(
-                category="tool_poisoning",
-                offset=offset,
-                match=match,
-                segment=segment,
-                source_offset=source_offset,
-                severity=severity,
-                base_severity=base,
-                phrase=phrase,
+    def _first_report(category: str, phrase: str, source_offset: int) -> bool:
+        key = (category, " ".join(phrase.split()).casefold(), source_offset)
+        if key in reported:
+            return False
+        reported.add(key)
+        return True
+
+    pending_comments: list[tuple[int, str, str, int | None]] = []
+    scheduled_bodies: set[str] = set()
+    if decoded == text:
+        for start, body, _closed in comments:
+            if _comment_body_needs_scan(body):
+                scheduled_bodies.add(body)
+                pending_comments.append((start, body, "literal", None))
+    else:
+        for start, body, _closed in raw_comments:
+            if _comment_body_needs_scan(body):
+                scheduled_bodies.add(body)
+                pending_comments.append((start, body, "literal", None))
+        marker_positions = _encoded_comment_positions(text)
+        for start, body, closed in comments:
+            if not _comment_body_needs_scan(body) or body in scheduled_bodies:
+                continue
+            scheduled_bodies.add(body)
+            kind = "decoded_closed" if closed else "decoded_open"
+            pending_comments.append(
+                (
+                    _closest_offset(marker_positions, start, len(text)),
+                    body,
+                    kind,
+                    start,
+                )
             )
-            poison_notes.append(note)
-            severities.append(severity)
-            if segment == "html_comment":
-                concealed_notes.append(note)
 
+    extra_override, extra_reversal, extra_poison = _collect_boundary_hits(
+        [(spaced, spaced_bounds, gap, gap_bounds)]
+    )
+    scope = "text"
+    sliced = text if decoded == text else decoded
+    comment_runs = _comment_runs(sliced)
+    source_index = _RemovedOffsetIndex(comment_runs)
+    spaced_index = _SpacedOffsetIndex(comment_runs)
+    decode_map = _decode_source_map(text, decoded)
+    finish_map = _finish_source_map(removed, finished)
+
+    def _through_decode(index: int) -> int:
+        if decode_map is not None and 0 <= index < len(decode_map):
+            return decode_map[index]
+        return index
+
+    def _visible_source(offset: int) -> int:
+        removed_index = finish_map[offset] if finish_map is not None and offset < len(finish_map) else offset
+        decoded_index = source_index.map(removed_index) if source_index.breaks else removed_index
+        return _through_decode(decoded_index)
+
+    def _spaced_source(offset: int) -> int:
+        decoded_index = spaced_index.map(offset) if spaced_index.space_at else offset
+        return _through_decode(decoded_index)
+
+    surface_seen: dict[tuple[str, str], dict[str, int]] = {}
+    groups = _scan_finding_groups(visible_raw, finished, heavy=True)
+    # Hidden-character hits are offsets into the pre-finish text. Phrase hits
+    # are offsets into the finished text. Boundary hits are offsets into the
+    # spaced reading. All three are stored as raw offsets before dedup.
+    raw_groups: dict[str, list[tuple[int, str]]] = {key: [] for key in groups}
+    for key, hits in groups.items():
+        mapper = _visible_source if key not in {"hidden_unicode", "null_byte"} else _through_decode
+        if key in {"hidden_unicode", "null_byte"} and source_index.breaks and visible_raw == removed:
+            mapper = source_index.map
+        raw_groups[key] = [(mapper(offset), phrase) for offset, phrase in hits]
+    if extra_override or extra_reversal:
+        for key_name, extra in (
+            ("override_phrases", extra_override),
+            ("reversal_phrases", extra_reversal),
+        ):
+            already = {" ".join(item[1].split()).casefold() for item in raw_groups[key_name]}
+            for hit in extra:
+                key = " ".join(hit[1].split()).casefold()
+                if key in already:
+                    continue
+                already.add(key)
+                raw_groups[key_name].append((_spaced_source(hit[0]), hit[1]))
+    raw_groups["override_phrases"] = _drop_shorter_same_start(raw_groups["override_phrases"])
+    for key, hits in raw_groups.items():
+        base = _base_severity_for_key(key)
+        for offset, phrase in hits:
+            match = str(phrase)
+            if not _keep_combined_hit(kept, surface_seen, scope, key, match):
+                continue
+            if not _first_report(key, match, offset):
+                continue
+            legacy[key].append((offset, match))
+            severities.append(base)
+    poison_hits = [
+        (_visible_source(offset), match, phrase, base)
+        for offset, match, phrase, base in scan_tool_poisoning(finished)
+    ]
+    poison_hits.extend(
+        (_spaced_source(offset), match, phrase, base)
+        for offset, match, phrase, base in extra_poison
+    )
+    for offset, match, phrase, base in poison_hits:
+        if not _keep_combined_hit(kept, surface_seen, scope, "tool_poisoning", match):
+            continue
+        if not _first_report("tool_poisoning", phrase, offset):
+            continue
+        note = _location_record(
+            category="tool_poisoning",
+            offset=offset,
+            match=match,
+            segment="text",
+            source_offset=offset,
+            severity=base,
+            base_severity=base,
+            phrase=phrase,
+        )
+        poison_notes.append(note)
+        severities.append(base)
+
+    comment_legacy, comment_poison, comment_capped = _comment_batch_findings(
+        pending_comments, decode_map
+    )
+    comment_seen: dict[tuple[str, str], dict[str, int]] = {}
+    for key, offset, match, source_offset, mode in comment_legacy:
+        conceal = _conceal_comment_hit(mode, key, _base_severity_for_key(key))
+        scope = "html_comment" if conceal else "decoded_comment"
+        if not _keep_combined_hit(kept, comment_seen, scope, key, match):
+            continue
+        if not _first_report(key, match, source_offset):
+            continue
+        base = _base_severity_for_key(key)
+        severity = _severity_for_concealment(base, key) if conceal else base
+        legacy[key].append((offset, match))
+        severities.append(severity)
+        if conceal:
+            concealed_notes.append(
+                _location_record(
+                    category=_FINDING_CATEGORY[key],
+                    offset=offset,
+                    match=match,
+                    segment="html_comment",
+                    source_offset=source_offset,
+                    severity=severity,
+                    base_severity=base,
+                )
+            )
+    for offset, match, phrase, base, source_offset, mode in comment_poison:
+        conceal = _conceal_comment_hit(mode, "tool_poisoning", base)
+        scope = "html_comment" if conceal else "decoded_comment"
+        if not _keep_combined_hit(kept, comment_seen, scope, "tool_poisoning", match):
+            continue
+        if not _first_report("tool_poisoning", phrase, source_offset):
+            continue
+        severity = _severity_for_concealment(base, "tool_poisoning") if conceal else base
+        note = _location_record(
+            category="tool_poisoning",
+            offset=offset,
+            match=match,
+            segment="html_comment" if conceal else "text",
+            source_offset=source_offset,
+            severity=severity,
+            base_severity=base,
+            phrase=phrase,
+        )
+        poison_notes.append(note)
+        severities.append(severity)
+        if conceal:
+            concealed_notes.append(note)
+
+    if comment_capped:
+        severities.append("high")
     injection_any = any(legacy[key] for key in _INJECTION_FINDING_KEYS) or any(
         severity in ("high", "critical") for severity in severities
-    )
+    ) or comment_capped
     reversal_any = any(legacy[key] for key in _REVERSAL_FINDING_KEYS) or any(
         severity == "medium" for severity in severities
     )
@@ -1168,7 +2644,10 @@ def classify(text: str) -> dict:
         "hostile_ux": legacy["hostile_ux"],
         "tool_poisoning": poison_notes,
         "html_comment": concealed_notes,
+        "comment_scan_cap": [_CAP_FINDING] if comment_capped else [],
     }
+    if comment_capped:
+        categories.append("comment_scan_cap")
     result = {
         "tier": tier,
         "findings": findings,

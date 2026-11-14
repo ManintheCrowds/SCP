@@ -62,13 +62,27 @@ def _err(e: Exception) -> str:
     return json.dumps({"error": str(e)})
 
 
+def _scan_failed_closed(e: Exception) -> str:
+    """A scan that throws is still a result: injection, not safe, and a tier."""
+    return json.dumps(
+        {
+            "error": str(e),
+            "tier": "injection",
+            "safe": False,
+            "severity": "high",
+            "categories": ["injection"],
+            "findings": {},
+        }
+    )
+
+
 @mcp.tool()
 def scp_inspect(content: str, context: str | None = None) -> str:
     """Inspect content for injection, reversal, or hostile patterns. Returns {tier, findings, risk_score, categories}."""
     try:
         return json.dumps(scp_utils.inspect(content, context=context))
     except Exception as e:
-        return _err(e)
+        return _scan_failed_closed(e)
 
 
 @mcp.tool()
@@ -125,7 +139,8 @@ def scp_validate_output(content: str, tool_name: str | None = None) -> str:
         tier = result.get("tier", "clean")
         return json.dumps({"safe": tier != "injection", "findings": result})
     except Exception as e:
-        return _err(e)
+        failed = json.loads(_scan_failed_closed(e))
+        return json.dumps({"safe": False, "error": failed["error"], "findings": failed})
 
 
 @mcp.tool()
