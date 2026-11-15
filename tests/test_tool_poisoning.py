@@ -217,6 +217,35 @@ def test_many_unclosed_comments_stay_linear() -> None:
     assert visible.strip() == ""
 
 
+def test_excessive_html_comment_segments_fail_closed_without_scanning_each(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def empty_group_scan(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
+        nonlocal calls
+        calls += 1
+        return {key: [] for key in sanitize_input._FINDING_CATEGORY}
+
+    monkeypatch.setattr(sanitize_input, "_scan_finding_groups", empty_group_scan)
+    monkeypatch.setattr(sanitize_input, "scan_tool_poisoning", lambda _prepared: [])
+
+    payload = "<!--x-->" * 1025
+    result = sanitize_input.classify(payload)
+
+    assert result["tier"] == "injection"
+    assert result["severity"] == "high"
+    assert "html_comment" in result["categories"]
+    assert calls <= 1
+    limit_findings = [
+        item
+        for item in result["findings"]["html_comment"]
+        if item["category"] == "html_comment_segment_limit"
+    ]
+    assert limit_findings
+    assert limit_findings[0]["comment_count"] == 1025
+
+
 def test_packaged_registry_tool_poisoning_round_trip() -> None:
     registry = pr.load_packaged_threat_registry()
     records = [

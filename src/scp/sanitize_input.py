@@ -183,6 +183,7 @@ _TAG_CHAR_END = 0xE007F
 _B64_MAX_LAYERS = 3
 # Bounded decode depth for nested URL/HTML evasion (#12 curated).
 _CANONICALIZATION_MAX_LAYERS = 8
+_MAX_HTML_COMMENT_SEGMENTS = 1024
 
 
 def _strip_null_bytes(text: str) -> str:
@@ -1047,6 +1048,52 @@ def _location_record(
     return record
 
 
+def _empty_findings_payload() -> dict[str, list]:
+    return {
+        "override_phrases": [],
+        "leetspeak_phrases": [],
+        "hidden_unicode": [],
+        "null_byte": [],
+        "path_traversal": [],
+        "encoding_evasion_rot": [],
+        "reversal_phrases": [],
+        "power_words": [],
+        "morse_like": [],
+        "encoding_blocks": [],
+        "homoglyphs": [],
+        "multilingual_override": [],
+        "semantic_aliases": [],
+        "jailbreak_mythic": [],
+        "hostile_ux": [],
+        "tool_poisoning": [],
+        "html_comment": [],
+    }
+
+
+def _html_comment_segment_limit_result(comment_count: int) -> dict:
+    findings = _empty_findings_payload()
+    findings["html_comment"].append(
+        {
+            "category": "html_comment_segment_limit",
+            "offset": 0,
+            "match": "",
+            "segment": "html_comment",
+            "source_offset": 0,
+            "severity": "high",
+            "base_severity": "high",
+            "comment_count": comment_count,
+            "limit": _MAX_HTML_COMMENT_SEGMENTS,
+        }
+    )
+    return {
+        "tier": "injection",
+        "findings": findings,
+        "risk_score": 1.0,
+        "categories": ["injection", "html_comment"],
+        "severity": "high",
+    }
+
+
 def reconcile_severity(result: dict) -> None:
     """Keep the reported severity at least as high as the tier floor."""
     tier = result.get("tier", "clean")
@@ -1060,10 +1107,13 @@ def reconcile_severity(result: dict) -> None:
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
     visible, comments = extract_html_comments(text)
+    non_empty_comments = [(start, body) for start, body in comments if body.strip()]
+    if len(non_empty_comments) > _MAX_HTML_COMMENT_SEGMENTS:
+        return _html_comment_segment_limit_result(len(non_empty_comments))
+
     segments: list[tuple[str, int, str]] = [("text", 0, visible)]
-    for start, body in comments:
-        if body.strip():
-            segments.append(("html_comment", start, body))
+    for start, body in non_empty_comments:
+        segments.append(("html_comment", start, body))
 
     legacy: dict[str, list[tuple[int, str]]] = {key: [] for key in _FINDING_CATEGORY}
     poison_notes: list[dict[str, object]] = []
