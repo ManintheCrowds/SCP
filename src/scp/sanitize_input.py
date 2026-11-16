@@ -956,13 +956,38 @@ def _compile_poison_phrase(phrase: str) -> re.Pattern[str]:
     return re.compile(prefix + escaped + suffix, re.IGNORECASE)
 
 
+def _tool_poison_key(phrase: str) -> str:
+    return re.sub(r"\s+", " ", phrase.strip()).casefold()
+
+
+def _merge_tool_poison_entries(
+    defaults: list[tuple[str, str]],
+    registry_entries: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    merged: dict[str, tuple[str, str, int]] = {}
+    for phrase, severity in defaults + registry_entries:
+        key = _tool_poison_key(phrase)
+        if not key:
+            continue
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = (phrase, severity, len(merged))
+            continue
+        _, existing_severity, order = existing
+        if _SEVERITY_RANK[severity] > _SEVERITY_RANK[existing_severity]:
+            merged[key] = (phrase, severity, order)
+    return [
+        (phrase, severity)
+        for phrase, severity, _ in sorted(merged.values(), key=lambda item: item[2])
+    ]
+
+
 def _tool_poison_entries() -> list[tuple[str, str]]:
+    defaults = pattern_record.iter_tool_poison_phrases(TOOL_POISONING_DEFAULTS)
     reg = _load_threat_registry()
     raw = reg.get("tool_poisoning") if reg else None
     entries = pattern_record.iter_tool_poison_phrases(raw)
-    if entries:
-        return entries
-    return pattern_record.iter_tool_poison_phrases(TOOL_POISONING_DEFAULTS)
+    return _merge_tool_poison_entries(defaults, entries)
 
 
 def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
