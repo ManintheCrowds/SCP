@@ -1002,6 +1002,26 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
     return "".join(parts), comments
 
 
+def _strip_html_comment_markers(text: str) -> str:
+    """Remove HTML comment delimiters while preserving source-order content."""
+    parts: list[str] = []
+    cursor = 0
+    length = len(text)
+    while cursor < length:
+        start = text.find("<!--", cursor)
+        if start < 0:
+            parts.append(text[cursor:])
+            break
+        parts.append(text[cursor:start])
+        close = text.find("-->", start + 4)
+        if close < 0:
+            parts.append(text[start + 4 :])
+            break
+        parts.append(text[start + 4 : close])
+        cursor = close + 3
+    return "".join(parts)
+
+
 def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
     return {
         "override_phrases": scan_override_phrases(prepared),
@@ -1107,6 +1127,38 @@ def classify(text: str) -> dict:
             severities.append(severity)
             if segment == "html_comment":
                 concealed_notes.append(note)
+
+    if comments:
+        source_order = _strip_html_comment_markers(text)
+        prepared = _prepare_text_for_scan(source_order)
+        for key, hits in _scan_finding_groups(source_order, prepared).items():
+            base = _base_severity_for_key(key)
+            for offset, phrase in hits:
+                item = (offset, str(phrase))
+                if item not in legacy[key]:
+                    legacy[key].append(item)
+                    severities.append(base)
+        for offset, match, phrase, base in scan_tool_poisoning(prepared):
+            if any(
+                note.get("segment") == "html_comment_source"
+                and note.get("offset") == offset
+                and note.get("phrase") == phrase
+                for note in poison_notes
+            ):
+                continue
+            poison_notes.append(
+                _location_record(
+                    category="tool_poisoning",
+                    offset=offset,
+                    match=match,
+                    segment="html_comment_source",
+                    source_offset=0,
+                    severity=base,
+                    base_severity=base,
+                    phrase=phrase,
+                )
+            )
+            severities.append(base)
 
     injection_any = any(legacy[key] for key in _INJECTION_FINDING_KEYS) or any(
         severity in ("high", "critical") for severity in severities
