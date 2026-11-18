@@ -1129,6 +1129,25 @@ def _strip_html_comment_markers(text: str) -> str:
     return stripped
 
 
+def _decode_bound_should_fail_closed(decoded: str) -> bool:
+    probe = decoded
+    for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
+        if _strip_html_comment_markers(probe) != probe:
+            return True
+        prepared = _prepare_text_for_scan(probe)
+        if (
+            scan_override_phrases(prepared)
+            or scan_reversal_phrases(prepared)
+            or scan_tool_poisoning(prepared)
+        ):
+            return True
+        next_probe = _decode_html_entities(_decode_url_encoding(probe))
+        if next_probe == probe:
+            return False
+        probe = next_probe
+    return False
+
+
 def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int], list[int]]:
     """Return source-order text and whether bounded decoding found more markup."""
     current = text
@@ -1140,7 +1159,7 @@ def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int], lis
     else:
         decoded = _decode_html_entities(_decode_url_encoding(current))
         if decoded != current:
-            return text, True, set(), list(range(len(text)))
+            return text, _decode_bound_should_fail_closed(decoded), set(), list(range(len(text)))
 
     stripped_any = False
     boundaries: set[int] = set()
