@@ -240,28 +240,54 @@ def _tail_join_run(text: str) -> int:
     return count
 
 
+def _closed_quote_newlines(text: str) -> set[int]:
+    """Newlines inside a quote that has a closer.
+
+    An unmatched quote does not open a string. Dropping every later newline
+    would glue the next line onto the previous word and hide a token.
+    """
+    drop: set[int] = set()
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] != '"':
+            index += 1
+            continue
+        cursor = index + 1
+        escaped = False
+        newlines: list[int] = []
+        closed = False
+        while cursor < length:
+            char = text[cursor]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                closed = True
+                break
+            elif char == "\n":
+                newlines.append(cursor)
+            cursor += 1
+        if closed:
+            drop.update(newlines)
+            index = cursor + 1
+            continue
+        index += 1
+    return drop
+
+
 def join_split_tokens(text: str) -> str:
-    """Join a newline inside a JSON string, or a newline that splits a token.
+    """Join a newline inside a closed JSON string, or a newline that splits a token.
 
     The scan looks at a fixed-size tail, so a long run of short lines stays linear.
     """
     if "\n" not in text:
         return text
-    without_json_breaks: list[str] = []
-    in_string = False
-    escaped = False
-    for char in text:
-        if in_string and char == "\n" and not escaped:
-            escaped = False
-            continue
-        if in_string and escaped:
-            escaped = False
-        elif in_string and char == "\\":
-            escaped = True
-        elif char == '"':
-            in_string = not in_string
-        without_json_breaks.append(char)
-    lines = "".join(without_json_breaks).split("\n")
+    drop = _closed_quote_newlines(text)
+    if drop:
+        text = "".join(char for index, char in enumerate(text) if index not in drop)
+    lines = text.split("\n")
     groups: list[list[str]] = [[lines[0]]]
     tail = _tail_join_run(lines[0])
     backslash = lines[0].endswith("\\")
