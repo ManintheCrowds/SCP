@@ -29,3 +29,11 @@ jobs:
           GITLEAKS_ENABLE_COMMENTS: false
           GITLEAKS_ENABLE_SUMMARY: true
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+
+      # The action lists pull-request commits from the first API page (30).
+      # Scan the whole range from the base revision to the head.
+      - name: Scan every pull request commit
+        if: github.event_name == 'pull_request'
+        run: |
+          gitleaks detect --redact --exit-code=2 --config .gitleaks.toml \
+            --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
