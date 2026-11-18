@@ -1071,24 +1071,27 @@ def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int
             continue
         if text.startswith("<![CDATA[", start):
             add(text[cursor:start])
-            close_index = text.find("]]>", start + 9)
+            close_index = text.find(">", start + 9)
             if close_index < 0:
                 mark_boundary()
-                add(text[start + 9 :])
                 break
+            if close_index >= 2 and text[close_index - 2 : close_index] == "]]":
+                mark_boundary()
+                add(text[start + 9 : close_index - 2])
+                mark_boundary()
+                cursor = close_index + 1
+                continue
             mark_boundary()
-            add(text[start + 9 : close_index])
-            mark_boundary()
-            cursor = close_index + 3
+            cursor = close_index + 1
             continue
         if text.startswith("<?", start):
             add(text[cursor:start])
-            close_index = text.find("?>", start + 2)
+            close_index = text.find(">", start + 2)
             if close_index < 0:
                 mark_boundary()
                 break
             mark_boundary()
-            cursor = close_index + 2
+            cursor = close_index + 1
             continue
         if text.startswith("<!", start):
             add(text[cursor:start])
