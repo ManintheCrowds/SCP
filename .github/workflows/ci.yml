@@ -75,7 +75,7 @@ jobs:
         env:
           SCP_MASK_CHECK_ROOT: ${{ github.workspace }}/head
         run: |
-          if [ -d "${{ github.workspace }}/pinned-masker" ]; then
+          if [ -f "${{ github.workspace }}/pinned-masker/scripts/run_mask_check.py" ]; then
             export SCP_MASK_CHECK_CONFIG="${{ github.workspace }}/pinned-masker/.pre-commit-config.yaml"
             python "${{ github.workspace }}/pinned-masker/scripts/run_mask_check.py"
           else
