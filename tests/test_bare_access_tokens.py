@@ -43,6 +43,17 @@ def test_zero_scans_fail_when_targets_exist() -> None:
     assert module.guard_scan_count(2, 2) == 0
 
 
+def test_mask_check_job_is_pinned_and_read_only() -> None:
+    workflow = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    section = workflow.split("mask-check:", 1)[1].split("\n  CI:", 1)[0]
+    assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in section
+    assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in section
+    assert "persist-credentials: false" in section
+    assert "contents: read" in section
+    leaks = (_REPO / ".github" / "workflows" / "security-gitleaks.yml").read_text(encoding="utf-8")
+    assert 'GITLEAKS_VERSION: "8.30.1"' in leaks
+
+
 def test_ci_uses_base_mask_check_runner() -> None:
     workflow = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "pinned-masker/scripts/run_mask_check.py" in workflow
