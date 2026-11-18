@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -70,6 +71,45 @@ def load_masker():
     return mod
 
 
+def staged_bytes(repo: Path, rel: str) -> bytes:
+    """Read the git index blob, not the worktree file."""
+    proc = subprocess.run(
+        ["git", "show", f":{rel}"],
+        cwd=repo,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise FileNotFoundError(rel)
+    return proc.stdout
+
+
+def _relative(repo: Path, raw: str) -> str:
+    path = Path(raw)
+    if path.is_absolute():
+        return path.resolve().relative_to(repo.resolve()).as_posix()
+    return path.as_posix()
+
+
+def check_staged_paths(repo: Path, paths: list[str], mod) -> int:
+    failed = False
+    for raw in paths:
+        rel = _relative(repo, raw)
+        try:
+            text = mod.decode_strict(staged_bytes(repo, rel))
+        except Exception:
+            print("mask fail-closed: error", file=sys.stderr)
+            failed = True
+            continue
+        if mod.has_secrets(text):
+            print(f"SECRETS DETECTED: {rel}", file=sys.stderr)
+            failed = True
+    if failed:
+        return 1
+    print("OK: No secrets detected")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     mod = load_masker()
     if mod is None:
@@ -82,15 +122,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     args = list(sys.argv[1:] if argv is None else argv)
-    config_text = _CONFIG.read_text(encoding="utf-8")
     if args:
-        targets = [str(Path(arg)) for arg in args]
-    else:
-        targets = [str(path) for path in selected_files(_REPO, config_text)]
+        return check_staged_paths(_REPO, args, mod)
+    config_text = _CONFIG.read_text(encoding="utf-8")
+    targets = [str(path) for path in selected_files(_REPO, config_text)]
     if not targets:
         print("OK: no handoff/state files")
         return 0
-    return mod.main(["--check", *targets])
+    return check_staged_paths(_REPO, targets, mod)
 
 
 if __name__ == "__main__":
