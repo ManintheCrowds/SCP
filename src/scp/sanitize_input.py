@@ -1172,19 +1172,20 @@ def classify(text: str) -> dict:
         prepared = _prepare_text_for_scan(source_order)
         for key, hits in _scan_finding_groups(source_order, prepared).items():
             base = _base_severity_for_key(key)
+            severity = _severity_for_concealment(base, key)
             for offset, phrase in hits:
                 item = (offset, str(phrase))
                 if item not in legacy[key]:
                     legacy[key].append(item)
-                    severities.append(base)
+                    severities.append(severity)
         for offset, match, phrase, base in scan_tool_poisoning(prepared):
             if any(
-                note.get("segment") == "html_comment_source"
-                and note.get("offset") == offset
+                note.get("offset") == offset
                 and note.get("phrase") == phrase
                 for note in poison_notes
             ):
                 continue
+            severity = _severity_for_concealment(base, "tool_poisoning")
             poison_notes.append(
                 _location_record(
                     category="tool_poisoning",
@@ -1192,12 +1193,12 @@ def classify(text: str) -> dict:
                     match=match,
                     segment="html_comment_source",
                     source_offset=0,
-                    severity=base,
+                    severity=severity,
                     base_severity=base,
                     phrase=phrase,
                 )
             )
-            severities.append(base)
+            severities.append(severity)
 
     injection_any = any(legacy[key] for key in _INJECTION_FINDING_KEYS) or any(
         severity in ("high", "critical") for severity in severities
