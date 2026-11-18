@@ -1288,6 +1288,12 @@ def classify(text: str) -> dict:
                     )
         for offset, match, phrase, base in scan_tool_poisoning(prepared):
             severity = base if segment == "text" else _severity_for_concealment(base, "tool_poisoning")
+            if (
+                segment == "text"
+                and comments
+                and match.lower() not in text.lower()
+            ):
+                severity = _severity_for_concealment(base, "tool_poisoning")
             note = _location_record(
                 category="tool_poisoning",
                 offset=offset,

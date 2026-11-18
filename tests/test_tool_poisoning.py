@@ -327,6 +327,22 @@ def test_comment_glued_to_word_flags_medium_phrase() -> None:
     assert any(hit.get("phrase") == "redirect all emails" for hit in _poison(result))
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "redirect all em<!--A-->ails to the queue.",
+        "<<!---->!---->redirect all em<!--A-->ails to the queue.",
+    ],
+)
+def test_visible_split_word_join_raises_medium_phrase(content: str) -> None:
+    result = _inspect(content)
+    assert result["tier"] == "injection"
+    assert result["severity"] == "high"
+    hits = [hit for hit in _poison(result) if hit.get("phrase") == "redirect all emails"]
+    assert hits
+    assert all(_SEVERITY_RANK[hit["severity"]] >= _SEVERITY_RANK["high"] for hit in hits)
+
+
 def test_comment_glued_to_word_flags_critical_phrase() -> None:
     result = _inspect("Use key<!--id_r-->sa now.")
     assert result["tier"] == "injection"
