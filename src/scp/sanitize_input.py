@@ -1123,7 +1123,8 @@ def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int]]:
         current = decoded
     else:
         decoded = _decode_html_entities(_decode_url_encoding(current))
-        return text, decoded != current, set()
+        if decoded != current:
+            return text, True, set()
 
     stripped_any = False
     boundaries: set[int] = set()
