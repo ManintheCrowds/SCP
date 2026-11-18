@@ -1113,22 +1113,24 @@ def _strip_html_comment_markers(text: str) -> str:
 def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int]]:
     """Return source-order text and whether bounded decoding found more markup."""
     current = text
+    for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
+        decoded = _decode_html_entities(_decode_url_encoding(current))
+        if decoded == current:
+            break
+        current = decoded
+    else:
+        decoded = _decode_html_entities(_decode_url_encoding(current))
+        return text, decoded != current, set()
+
     stripped_any = False
     boundaries: set[int] = set()
     for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
-        decoded = _decode_html_entities(_decode_url_encoding(current))
-        stripped, stripped_boundaries = _strip_html_comment_markers_with_boundaries(decoded)
-        if stripped != decoded:
-            stripped_any = True
-            boundaries = stripped_boundaries
+        stripped, stripped_boundaries = _strip_html_comment_markers_with_boundaries(current)
         if stripped == current:
             break
+        stripped_any = True
+        boundaries = stripped_boundaries
         current = stripped
-    else:
-        decoded = _decode_html_entities(_decode_url_encoding(current))
-        stripped = _strip_html_comment_markers(decoded)
-        bound_hit = stripped != decoded
-        return (current if stripped_any else text), bound_hit, boundaries
     return (current if stripped_any else text), False, boundaries
 
 
@@ -1262,13 +1264,7 @@ def classify(text: str) -> dict:
                     else:
                         severity = base
                     severities.append(severity)
-        for offset, match, phrase, base in scan_tool_poisoning(prepared):
-            if any(
-                note.get("offset") == offset
-                and note.get("phrase") == phrase
-                for note in poison_notes
-            ):
-                continue
+        for offset, match, phrase, base in scan_tool_poisoning(source_order):
             end = offset + len(match)
             if any(offset < boundary < end for boundary in source_order_boundaries):
                 severity = _severity_for_concealment(base, "tool_poisoning")
