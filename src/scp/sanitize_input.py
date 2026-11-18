@@ -1191,7 +1191,7 @@ def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int], lis
     else:
         decoded, _ = _decode_url_html_with_map(current, source_map)
         if decoded != current:
-            return text, _decode_bound_should_fail_closed(decoded), set(), list(range(len(text)))
+            return text, True, set(), list(range(len(text)))
 
     stripped_any = False
     boundaries: set[int] = set()
@@ -1350,6 +1350,9 @@ def classify(text: str) -> dict:
         legacy["encoding_blocks"].append((0, "html_comment_decode_bound"))
         severities.append("high")
     if source_order != text:
+        if (0, "html_comment_source_order") not in legacy["encoding_blocks"]:
+            legacy["encoding_blocks"].append((0, "html_comment_source_order"))
+        severities.append("high")
         prepared = _prepare_text_for_scan(source_order)
         for key, hits in _scan_finding_groups(source_order, prepared).items():
             base = _base_severity_for_key(key)
