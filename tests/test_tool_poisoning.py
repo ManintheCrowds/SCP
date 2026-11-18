@@ -461,6 +461,23 @@ def test_many_closed_and_empty_comments_stay_linear() -> None:
     assert time.perf_counter() - t0 < 8.0
 
 
+def test_comment_marker_scan_time_scales_roughly_linearly() -> None:
+    unit = "<!---->b<!--aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-->"
+
+    def payload(size: int) -> str:
+        return unit * (size // len(unit))
+
+    def elapsed(text: str) -> float:
+        t0 = time.perf_counter()
+        sanitize_input.extract_html_comments(text)
+        sanitize_input._html_comment_source_order_text(text)
+        return time.perf_counter() - t0
+
+    small = elapsed(payload(50 * 1024))
+    large = elapsed(payload(200 * 1024))
+    assert large / max(small, 0.001) < 8.0
+
+
 def test_packaged_registry_tool_poisoning_round_trip() -> None:
     registry = pr.load_packaged_threat_registry()
     records = [
