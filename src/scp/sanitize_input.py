@@ -1144,6 +1144,22 @@ def _html_comment_source_order_text(text: str) -> str:
     return source_order
 
 
+def _normalize_source_order_for_tool_scan(text: str) -> tuple[str, list[int]]:
+    """Normalize source-order text and map each normalized char to source text."""
+    chars: list[str] = []
+    source_indexes: list[int] = []
+    for index, char in enumerate(text):
+        normalized = unicodedata.normalize("NFKC", char)
+        normalized = _strip_invisible_unicode(normalized)
+        normalized = _normalize_confusable_whitespace(normalized)
+        for out_char in normalized:
+            if out_char == "\x00":
+                continue
+            chars.append(out_char)
+            source_indexes.append(index)
+    return "".join(chars), source_indexes
+
+
 def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
     return {
         "override_phrases": scan_override_phrases(prepared),
@@ -1268,9 +1284,16 @@ def classify(text: str) -> dict:
                     else:
                         severity = base
                     severities.append(severity)
-        for offset, match, phrase, base in scan_tool_poisoning(source_order):
-            end = offset + len(match)
-            if any(offset < boundary < end for boundary in source_order_boundaries):
+        tool_text, tool_source_indexes = _normalize_source_order_for_tool_scan(source_order)
+        for offset, match, phrase, base in scan_tool_poisoning(tool_text):
+            match_indexes = tool_source_indexes[offset : offset + len(match)]
+            if match_indexes:
+                source_start = min(match_indexes)
+                source_end = max(match_indexes) + 1
+            else:
+                source_start = offset
+                source_end = offset + len(match)
+            if any(source_start < boundary < source_end for boundary in source_order_boundaries):
                 severity = _severity_for_concealment(base, "tool_poisoning")
             else:
                 severity = base
@@ -1280,7 +1303,7 @@ def classify(text: str) -> dict:
                     offset=offset,
                     match=match,
                     segment="html_comment_source",
-                    source_offset=0,
+                    source_offset=source_start,
                     severity=severity,
                     base_severity=base,
                     phrase=phrase,
