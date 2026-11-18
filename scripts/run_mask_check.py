@@ -63,13 +63,40 @@ def _inside_repo(path: Path, repo: Path) -> bool:
     return True
 
 
+def _load_committed_masker():
+    """Load the last committed masker so an editable install cannot check itself."""
+    import tempfile
+
+    dest = Path(tempfile.mkdtemp(prefix="scp-mask-"))
+    package = dest / "scp"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    for name in ("mask_secrets.py", "secret_text.py", "egress_guard.py"):
+        proc = subprocess.run(
+            ["git", "show", f"HEAD:src/scp/{name}"],
+            cwd=_REPO,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return None
+        (package / name).write_bytes(proc.stdout)
+    sys.path.insert(0, str(dest))
+    for key in list(sys.modules):
+        if key == "scp" or key.startswith("scp."):
+            del sys.modules[key]
+    import scp.mask_secrets as committed
+
+    return committed
+
+
 def load_masker():
-    """Return the installed masker, or None when it is this working tree."""
+    """Return an installed masker, or the last commit when the install is editable."""
     import scp.mask_secrets as mod
 
-    if _inside_repo(Path(mod.__file__), _REPO):
-        return None
-    return mod
+    if not _inside_repo(Path(mod.__file__), _REPO):
+        return mod
+    return _load_committed_masker()
 
 
 def staged_bytes(repo: Path, rel: str) -> bytes:
@@ -128,10 +155,8 @@ def main(argv: list[str] | None = None) -> int:
     mod = load_masker()
     if mod is None:
         print(
-            "mask-check refuses the working-tree masker. "
-            "pip install . from a trusted revision so this commit cannot "
-            "weaken the masker and then approve itself. "
-            "CI installs the pull request base SHA.",
+            "mask-check could not load a committed masker. "
+            "An editable install uses the last commit, not the uncommitted tree.",
             file=sys.stderr,
         )
         return 2

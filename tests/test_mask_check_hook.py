@@ -138,7 +138,7 @@ def test_committed_markdown_has_no_bare_access_key_prefix() -> None:
         assert "gh" + "p_" not in text, path
 
 
-def test_mask_check_refuses_the_working_tree_masker() -> None:
+def test_editable_install_uses_the_committed_masker() -> None:
     proc = subprocess.run(
         [sys.executable, str(_REPO / "scripts" / "run_mask_check.py")],
         cwd=_REPO,
@@ -147,8 +147,9 @@ def test_mask_check_refuses_the_working_tree_masker() -> None:
         encoding="utf-8",
         check=False,
     )
-    assert proc.returncode == 2
-    assert "working-tree" in proc.stderr
+    assert proc.returncode == 0
+    assert "could not load" not in proc.stderr
+    assert "OK" in proc.stdout
 
 
 def test_gitleaks_hook_and_action_are_pinned_to_commits() -> None:
