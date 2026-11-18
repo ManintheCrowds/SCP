@@ -1130,25 +1130,6 @@ def _strip_html_comment_markers(text: str) -> str:
     return stripped
 
 
-def _decode_bound_should_fail_closed(decoded: str) -> bool:
-    probe = decoded
-    for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
-        if _strip_html_comment_markers(probe) != probe:
-            return True
-        prepared = _prepare_text_for_scan(probe)
-        if (
-            scan_override_phrases(prepared)
-            or scan_reversal_phrases(prepared)
-            or scan_tool_poisoning(prepared)
-        ):
-            return True
-        next_probe = _decode_html_entities(_decode_url_encoding(probe))
-        if next_probe == probe:
-            return False
-        probe = next_probe
-    return False
-
-
 def _decode_url_html_with_map(text: str, source_map: list[int]) -> tuple[str, list[int]]:
     chars: list[str] = []
     mapped: list[int] = []
