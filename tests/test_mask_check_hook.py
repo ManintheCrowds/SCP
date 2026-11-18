@@ -105,6 +105,8 @@ def test_hook_files_match_handoff_names_regardless_of_case() -> None:
     assert files_re.search(".cursor/state/config.yml")
     assert files_re.search("handoffs/today.md")
     assert files_re.search(".cursor/state/next_prompt")
+    assert files_re.search(".cursor/state/blob")
+    assert files_re.search(".cursor/state/notes.bin")
     assert files_re.search(".cursor/state/drafts/next_prompt.txt")
     assert files_re.search("README.md") is None
     assert files_re.search("src/scp/mask_secrets.py") is None

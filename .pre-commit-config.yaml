@@ -19,7 +19,7 @@ repos:
         name: Mask secrets check (handoff/state)
         entry: python scripts/run_mask_check.py
         language: system
-        files: '(?i)(?:(^|/)\.cursor/state/.+\.(?:md|txt|json|jsonl|ya?ml)$|(^|/)handoffs/.+\.(?:md|txt|json|jsonl|ya?ml)$|(^|/)[^/]*handoff[^/]*\.(?:md|txt|json|jsonl|ya?ml)$|(^|/)\.cursor/state/(?:.+/)?[^/]*next_prompt[^/]*$)'
+        files: '(?i)(?:(^|/)\.cursor/state/.+$|(^|/)handoffs/.+\.(?:md|txt|json|jsonl|ya?ml)$|(^|/)[^/]*handoff[^/]*\.(?:md|txt|json|jsonl|ya?ml)$|(^|/)\.cursor/state/(?:.+/)?[^/]*next_prompt[^/]*$)'
         exclude: ^tests/
         pass_filenames: true
         stages: [pre-commit]
