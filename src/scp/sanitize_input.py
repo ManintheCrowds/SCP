@@ -974,6 +974,20 @@ def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
     return findings
 
 
+def _find_html_comment_close(text: str, body_start: int) -> tuple[int, int] | None:
+    """Return (close_index, close_width) for supported HTML comment closers."""
+    standard = text.find("-->", body_start)
+    abrupt = text.find("--!>", body_start)
+    candidates = [
+        (idx, width)
+        for idx, width in ((standard, 3), (abrupt, 4))
+        if idx >= 0
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])
+
+
 def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
     """Split ``<!-- ... -->`` comments out of text.
 
@@ -993,12 +1007,13 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
             parts.append(text[cursor:])
             break
         parts.append(text[cursor:start])
-        close = text.find("-->", start + 4)
-        if close < 0:
+        close = _find_html_comment_close(text, start + 4)
+        if close is None:
             comments.append((start, text[start + 4 :]))
             break
-        comments.append((start, text[start + 4 : close]))
-        cursor = close + 3
+        close_index, close_width = close
+        comments.append((start, text[start + 4 : close_index]))
+        cursor = close_index + close_width
     return "".join(parts), comments
 
 
@@ -1013,12 +1028,13 @@ def _strip_html_comment_markers(text: str) -> str:
             parts.append(text[cursor:])
             break
         parts.append(text[cursor:start])
-        close = text.find("-->", start + 4)
-        if close < 0:
+        close = _find_html_comment_close(text, start + 4)
+        if close is None:
             parts.append(text[start + 4 :])
             break
-        parts.append(text[start + 4 : close])
-        cursor = close + 3
+        close_index, close_width = close
+        parts.append(text[start + 4 : close_index])
+        cursor = close_index + close_width
     return "".join(parts)
 
 
