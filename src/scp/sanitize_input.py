@@ -1026,69 +1026,101 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
     return "".join(parts), comments
 
 
-def _strip_html_comment_markers(text: str) -> str:
-    """Remove markup delimiters while preserving source-order content."""
+def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int]]:
+    """Remove markup delimiters and record output offsets where markup was removed."""
     parts: list[str] = []
+    boundaries: set[int] = set()
     cursor = 0
+    out_len = 0
     length = len(text)
+
+    def add(segment: str) -> None:
+        nonlocal out_len
+        if segment:
+            parts.append(segment)
+            out_len += len(segment)
+
+    def mark_boundary() -> None:
+        boundaries.add(out_len)
+
     while cursor < length:
         start = text.find("<", cursor)
         if start < 0:
-            parts.append(text[cursor:])
+            add(text[cursor:])
             break
         if text.startswith("<!--", start):
-            parts.append(text[cursor:start])
+            add(text[cursor:start])
             if text.startswith("<!-->", start):
+                mark_boundary()
                 cursor = start + 5
                 continue
             if text.startswith("<!--->", start):
+                mark_boundary()
                 cursor = start + 6
                 continue
             close = _find_html_comment_close(text, start + 4)
             if close is None:
-                parts.append(text[start + 4 :])
+                mark_boundary()
+                add(text[start + 4 :])
                 break
             close_index, close_width = close
-            parts.append(text[start + 4 : close_index])
+            mark_boundary()
+            add(text[start + 4 : close_index])
+            mark_boundary()
             cursor = close_index + close_width
             continue
         if text.startswith("<![CDATA[", start):
-            parts.append(text[cursor:start])
+            add(text[cursor:start])
             close_index = text.find("]]>", start + 9)
             if close_index < 0:
-                parts.append(text[start + 9 :])
+                mark_boundary()
+                add(text[start + 9 :])
                 break
-            parts.append(text[start + 9 : close_index])
+            mark_boundary()
+            add(text[start + 9 : close_index])
+            mark_boundary()
             cursor = close_index + 3
             continue
         if text.startswith("<?", start):
-            parts.append(text[cursor:start])
+            add(text[cursor:start])
             close_index = text.find("?>", start + 2)
             if close_index < 0:
+                mark_boundary()
                 break
+            mark_boundary()
             cursor = close_index + 2
             continue
         if text.startswith("<!", start):
-            parts.append(text[cursor:start])
+            add(text[cursor:start])
             close_index = text.find(">", start + 2)
             if close_index < 0:
+                mark_boundary()
                 break
+            mark_boundary()
             cursor = close_index + 1
             continue
-        parts.append(text[cursor : start + 1])
+        add(text[cursor : start + 1])
         cursor = start + 1
-    return "".join(parts)
+    return "".join(parts), boundaries
 
 
-def _html_comment_source_order_scan(text: str) -> tuple[str, bool]:
+def _strip_html_comment_markers(text: str) -> str:
+    """Remove markup delimiters while preserving source-order content."""
+    stripped, _ = _strip_html_comment_markers_with_boundaries(text)
+    return stripped
+
+
+def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int]]:
     """Return source-order text and whether bounded decoding found more markup."""
     current = text
     stripped_any = False
+    boundaries: set[int] = set()
     for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
         decoded = _decode_html_entities(_decode_url_encoding(current))
-        stripped = _strip_html_comment_markers(decoded)
+        stripped, stripped_boundaries = _strip_html_comment_markers_with_boundaries(decoded)
         if stripped != decoded:
             stripped_any = True
+            boundaries = stripped_boundaries
         if stripped == current:
             break
         current = stripped
@@ -1096,13 +1128,13 @@ def _html_comment_source_order_scan(text: str) -> tuple[str, bool]:
         decoded = _decode_html_entities(_decode_url_encoding(current))
         stripped = _strip_html_comment_markers(decoded)
         bound_hit = stripped != decoded
-        return (current if stripped_any else text), bound_hit
-    return (current if stripped_any else text), False
+        return (current if stripped_any else text), bound_hit, boundaries
+    return (current if stripped_any else text), False, boundaries
 
 
 def _html_comment_source_order_text(text: str) -> str:
     """Decode comment delimiters and strip them until source-order text settles."""
-    source_order, _ = _html_comment_source_order_scan(text)
+    source_order, _, _ = _html_comment_source_order_scan(text)
     return source_order
 
 
@@ -1212,7 +1244,7 @@ def classify(text: str) -> dict:
             if segment == "html_comment":
                 concealed_notes.append(note)
 
-    source_order, source_order_bound_hit = _html_comment_source_order_scan(text)
+    source_order, source_order_bound_hit, source_order_boundaries = _html_comment_source_order_scan(text)
     if source_order_bound_hit:
         legacy["encoding_blocks"].append((0, "html_comment_decode_bound"))
         severities.append("high")
@@ -1220,11 +1252,15 @@ def classify(text: str) -> dict:
         prepared = _prepare_text_for_scan(source_order)
         for key, hits in _scan_finding_groups(source_order, prepared).items():
             base = _base_severity_for_key(key)
-            severity = _severity_for_concealment(base, key)
             for offset, phrase in hits:
                 item = (offset, str(phrase))
                 if item not in legacy[key]:
                     legacy[key].append(item)
+                    end = offset + len(str(phrase))
+                    if any(offset < boundary < end for boundary in source_order_boundaries):
+                        severity = _severity_for_concealment(base, key)
+                    else:
+                        severity = base
                     severities.append(severity)
         for offset, match, phrase, base in scan_tool_poisoning(prepared):
             if any(
@@ -1233,7 +1269,11 @@ def classify(text: str) -> dict:
                 for note in poison_notes
             ):
                 continue
-            severity = _severity_for_concealment(base, "tool_poisoning")
+            end = offset + len(match)
+            if any(offset < boundary < end for boundary in source_order_boundaries):
+                severity = _severity_for_concealment(base, "tool_poisoning")
+            else:
+                severity = base
             poison_notes.append(
                 _location_record(
                     category="tool_poisoning",
