@@ -183,6 +183,7 @@ _TAG_CHAR_END = 0xE007F
 _B64_MAX_LAYERS = 3
 # Bounded decode depth for nested URL/HTML evasion (#12 curated).
 _CANONICALIZATION_MAX_LAYERS = 8
+_HTML_COMMENT_SOURCE_MAX_LAYERS = 8
 
 
 def _strip_null_bytes(text: str) -> str:
@@ -1045,6 +1046,21 @@ def _strip_html_comment_markers(text: str) -> str:
     return "".join(parts)
 
 
+def _html_comment_source_order_text(text: str) -> str:
+    """Decode comment delimiters and strip them until source-order text settles."""
+    current = text
+    stripped_any = False
+    for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
+        decoded = _decode_html_entities(_decode_url_encoding(current))
+        stripped = _strip_html_comment_markers(decoded)
+        if stripped != decoded:
+            stripped_any = True
+        if stripped == current:
+            break
+        current = stripped
+    return current if stripped_any else text
+
+
 def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
     return {
         "override_phrases": scan_override_phrases(prepared),
@@ -1151,8 +1167,8 @@ def classify(text: str) -> dict:
             if segment == "html_comment":
                 concealed_notes.append(note)
 
-    if comments:
-        source_order = _strip_html_comment_markers(text)
+    source_order = _html_comment_source_order_text(text)
+    if source_order != text:
         prepared = _prepare_text_for_scan(source_order)
         for key, hits in _scan_finding_groups(source_order, prepared).items():
             base = _base_severity_for_key(key)
