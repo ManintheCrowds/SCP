@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 # RFC-ish bounds (avoid catastrophic backtracking on long almost-email strings).
@@ -142,28 +143,39 @@ _PEM_PATTERN = re.compile(_PEM_BEGIN + r"[\s\S]*?" + _PEM_END)
 
 # Labeled SSN stays ahead of the bare SSN pattern so "SSN: 123-45-6789"
 # still produces [REDACTED] for the existing corpus.
-REDACT_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
+def _keep_assignment(match: re.Match[str]) -> str:
+    """Keep the label and separator. Do not rewrite ':' to '='."""
+    return f"{match.group(1)}{match.group(2)}[REDACTED]"
+
+
+def _keep_dob_label(match: re.Match[str]) -> str:
+    """Keep 'Date of Birth' instead of rewriting it to 'DOB'."""
+    return f"{match.group(1)}{match.group(2)}[DATE_REDACTED]"
+
+
+_Replacement = str | Callable[[re.Match[str]], str]
+REDACT_PATTERNS: list[tuple[str, re.Pattern[str], _Replacement]] = [
     (
         "password",
         re.compile(
-            r"(?i)(password|passwd|pwd)\s*[:=]\s*[\"']?" + _NOT_REDACTED + r"[^\s\"']+[\"']?"
+            r"(?i)(password|passwd|pwd)(\s*[:=]\s*)[\"']?" + _NOT_REDACTED + r"[^\s\"']+[\"']?"
         ),
-        r"\1=[REDACTED]",
+        _keep_assignment,
     ),
     (
         "api-key",
         re.compile(
-            r"(?i)\b(api_key|apikey|secret)\b\s*[:=]\s*[\"']?"
+            r"(?i)\b(api_key|apikey|secret)\b(\s*[:=]\s*)[\"']?"
             + _NOT_REDACTED
             + r"[^\s\"']+[\"']?"
         ),
-        r"\1=[REDACTED]",
+        _keep_assignment,
     ),
     ("bearer", re.compile(r"(?i)bearer\s+[a-zA-Z0-9._-]{20,}"), "Bearer [REDACTED]"),
     (
         "token",
-        re.compile(r"(?i)(token|key)\s*[:=]\s*[\"']?[a-zA-Z0-9._-]{16,}[\"']?"),
-        r"\1=[REDACTED]",
+        re.compile(r"(?i)(token|key)(\s*[:=]\s*)[\"']?[a-zA-Z0-9._-]{16,}[\"']?"),
+        _keep_assignment,
     ),
     (
         "aws-access-key-id",
@@ -196,8 +208,8 @@ REDACT_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ),
     (
         "dob",
-        re.compile(r"(?i)\b(?:DOB|Date of Birth)\s*:\s*\d{1,2}/\d{1,2}/\d{2,4}"),
-        "DOB: [DATE_REDACTED]",
+        re.compile(r"(?i)\b(DOB|Date of Birth)(\s*:\s*)\d{1,2}/\d{1,2}/\d{2,4}"),
+        _keep_dob_label,
     ),
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[SSN_REDACTED]"),
     (

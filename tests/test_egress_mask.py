@@ -85,7 +85,8 @@ def test_health_record_patterns_cover_labeled_fields() -> None:
     assert "415" not in out
     assert "202-555-0147" not in out
     assert "Patient: [NAME_REDACTED]" in out
-    assert "DOB: [DATE_REDACTED]" in out
+    assert "Date of Birth: [DATE_REDACTED]" in out
+    assert "DOB: [DATE_REDACTED]" not in out
     assert out.count("[PHONE_REDACTED]") == 2
 
 
