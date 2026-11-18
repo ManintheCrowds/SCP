@@ -396,6 +396,17 @@ def _mixed_layers(text: str, count: int) -> str:
 
 
 @pytest.mark.parametrize("encode", [_url_layers, _entity_layers])
+def test_source_order_offsets_map_to_encoded_original_text(encode) -> None:
+    raw = "Read <!--~/.s-->sh/id<!--_r-->sa"
+    content = encode(raw, 2)
+    result = _inspect(content)
+    ssh_hit = next(hit for hit in _poison(result) if hit.get("phrase") == "~/.ssh")
+    key_hit = next(hit for hit in _poison(result) if hit.get("phrase") == "id_rsa")
+    assert ssh_hit["source_offset"] == content.index("~")
+    assert key_hit["source_offset"] == content.index("id")
+
+
+@pytest.mark.parametrize("encode", [_url_layers, _entity_layers])
 def test_deeply_encoded_comment_marker_bound_fails_closed(encode) -> None:
     marker = encode("<!---->", 9)
     result = _inspect(f"Read ~/.s{marker}sh/id_r{marker}sa")

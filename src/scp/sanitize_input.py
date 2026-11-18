@@ -184,6 +184,7 @@ _B64_MAX_LAYERS = 3
 # Bounded decode depth for nested URL/HTML evasion (#12 curated).
 _CANONICALIZATION_MAX_LAYERS = 8
 _HTML_COMMENT_SOURCE_MAX_LAYERS = 8
+_HTML_ENTITY_CANDIDATE_RE = re.compile(r"&[#A-Za-z0-9]+;")
 
 
 def _strip_null_bytes(text: str) -> str:
@@ -1148,22 +1149,52 @@ def _decode_bound_should_fail_closed(decoded: str) -> bool:
     return False
 
 
+def _decode_url_html_with_map(text: str, source_map: list[int]) -> tuple[str, list[int]]:
+    chars: list[str] = []
+    mapped: list[int] = []
+    i = 0
+    while i < len(text):
+        if (
+            text[i] == "%"
+            and i + 2 < len(text)
+            and all(c in "0123456789abcdefABCDEF" for c in text[i + 1 : i + 3])
+        ):
+            chars.append(chr(int(text[i + 1 : i + 3], 16)))
+            mapped.append(source_map[i])
+            i += 3
+            continue
+        match = _HTML_ENTITY_CANDIDATE_RE.match(text, i)
+        if match:
+            decoded = html.unescape(match.group(0))
+            if decoded != match.group(0):
+                for char in decoded:
+                    chars.append(char)
+                    mapped.append(source_map[i])
+                i = match.end()
+                continue
+        chars.append(text[i])
+        mapped.append(source_map[i])
+        i += 1
+    return "".join(chars), mapped
+
+
 def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int], list[int]]:
     """Return source-order text and whether bounded decoding found more markup."""
     current = text
+    source_map = list(range(len(text)))
     for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
-        decoded = _decode_html_entities(_decode_url_encoding(current))
+        decoded, decoded_map = _decode_url_html_with_map(current, source_map)
         if decoded == current:
             break
         current = decoded
+        source_map = decoded_map
     else:
-        decoded = _decode_html_entities(_decode_url_encoding(current))
+        decoded, _ = _decode_url_html_with_map(current, source_map)
         if decoded != current:
             return text, _decode_bound_should_fail_closed(decoded), set(), list(range(len(text)))
 
     stripped_any = False
     boundaries: set[int] = set()
-    source_map = list(range(len(current)))
     for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
         stripped, stripped_boundaries, stripped_map = _strip_html_comment_markers_with_boundaries(current)
         if stripped == current:
