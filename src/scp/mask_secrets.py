@@ -19,10 +19,16 @@ exits non-zero and writes nothing to stdout.
 
 from __future__ import annotations
 
+import importlib
 import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
+
+try:
+    from . import secret_text
+except ImportError:  # python src/scp/mask_secrets.py
+    secret_text = importlib.import_module("secret_text")
 
 # RFC-ish bounds (avoid catastrophic backtracking on long almost-email strings).
 _EMAIL_LOCAL_MAX = 64
@@ -296,13 +302,36 @@ REDACT_PATTERNS: list[tuple[str, re.Pattern[str], _Replacement]] = [
     ),
     (
         "dob",
-        re.compile(r"(?i)\b(DOB|Date of Birth)(\s*:\s*)\d{1,2}/\d{1,2}/\d{2,4}"),
+        re.compile(r"(?i)\b(DOB|Date of Birth)(\s*:\s*)\d{1,2}[/-]\d{1,2}[/-]\d{2,4}"),
+        _keep_dob_label,
+    ),
+    (
+        "dob-iso",
+        re.compile(r"(?i)\b(DOB|Date of Birth)(\s*:\s*)\d{4}-\d{2}-\d{2}"),
+        _keep_dob_label,
+    ),
+    (
+        "dob-written",
+        re.compile(
+            r"(?i)\b(DOB|Date of Birth)(\s*:\s*)"
+            r"(?:(?:January|February|March|April|May|June|July|August|September|"
+            r"October|November|December)\s+\d{1,2},\s+\d{4}|"
+            r"\d{1,2}\s+(?:January|February|March|April|May|June|July|August|"
+            r"September|October|November|December)\s+\d{4})"
+        ),
         _keep_dob_label,
     ),
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[SSN_REDACTED]"),
+    ("ssn-separated", re.compile(r"\b\d{3}([-. ])\d{2}\1\d{4}\b"), "[SSN_REDACTED]"),
+    ("ssn-digits", re.compile(r"(?<!\d)\d{9}(?!\d)"), "[SSN_REDACTED]"),
     (
         "phone",
         re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
+        "[PHONE_REDACTED]",
+    ),
+    (
+        "phone-intl",
+        re.compile(r"\+\d{1,3}(?:[\s.\-]\d{2,4}){2,5}\b"),
         "[PHONE_REDACTED]",
     ),
 ]
@@ -330,7 +359,7 @@ class EgressMaskError(ValueError):
         super().__init__("egress mask fail-closed")
 
 
-def mask(text: str) -> str:
+def _mask_surface(text: str) -> str:
     result = text
     for _name, pattern, replacement in REDACT_PATTERNS:
         result = pattern.sub(replacement, result)
@@ -338,6 +367,30 @@ def mask(text: str) -> str:
     if _BARE_FIXTURE_NAME in result:
         result = result.replace(_BARE_FIXTURE_NAME, "[NAME_REDACTED]")
     return result
+
+
+def _collect_hits(text: str) -> list[str]:
+    found: list[str] = []
+    for name, pattern, _replacement in REDACT_PATTERNS:
+        if name.endswith("private-key"):
+            continue
+        if pattern.search(text):
+            found.append(name)
+    if _private_key_residual(text):
+        found.append("private-key")
+    if _has_email(text):
+        found.append("email")
+    found.extend(remaining_fixture_sentinels(text))
+    return found
+
+
+def _contains_secret(text: str) -> bool:
+    return bool(_collect_hits(text))
+
+
+def mask(text: str) -> str:
+    surface = secret_text.surface_for_matching(text, _contains_secret)
+    return _mask_surface(surface)
 
 
 def _has_email(text: str) -> bool:
@@ -380,18 +433,8 @@ def _private_key_residual(text: str) -> bool:
 
 def residual_secrets(text: str) -> list[str]:
     """Detectors that still match. This does not mask the text a second time."""
-    found: list[str] = []
-    for name, pattern, _replacement in REDACT_PATTERNS:
-        if name.endswith("private-key"):
-            continue
-        if pattern.search(text):
-            found.append(name)
-    if _private_key_residual(text):
-        found.append("private-key")
-    if _has_email(text):
-        found.append("email")
-    found.extend(remaining_fixture_sentinels(text))
-    return found
+    surface = secret_text.surface_for_matching(text, _contains_secret)
+    return _collect_hits(surface)
 
 
 def redacted_count(masked: str) -> int:

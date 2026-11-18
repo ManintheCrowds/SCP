@@ -118,6 +118,19 @@ def _cases() -> list[tuple[str, str, str]]:
             "db pass phrase",
         ),
         ("password-quoted", 'password: "hello world"', "hello world"),
+        ("ssn-dots", "id 123.45.6789", "123.45.6789"),
+        ("ssn-spaces", "id 123 45 6789", "123 45 6789"),
+        ("ssn-digits", "SSN 123456789", "123456789"),
+        ("phone-intl", "call +44 20 7946 0958", "7946"),
+        ("dob-iso", "DOB: 1985-03-15", "1985-03-15"),
+        ("dob-written", "Date of Birth: March 15, 1985", "March 15, 1985"),
+        ("fullwidth-email", "user" + "\uff20" + "example.com", "example.com"),
+        ("zero-width-email", "user" + "\u200b" + "@example.com", "example.com"),
+        ("url-email", "user" + "%40" + "example.com", "example.com"),
+        ("entity-email", "user" + "&#64;" + "example.com", "example.com"),
+        ("unicode-email", "user" + "\\u0040" + "example.com", "example.com"),
+        ("quoted-printable-email", "user" + "=40" + "example.com", "example.com"),
+        ("split-access-key", _access_key()[:8] + "\n" + _access_key()[8:], _access_key()[8:]),
     ]
 
 
