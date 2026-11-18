@@ -169,7 +169,7 @@ def _mask_emails_linear(text: str) -> str:
 _NOT_REDACTED = r"(?!\[[A-Z_]*REDACTED\])"
 _PEM_BEGIN = "-----BEGIN PRIVATE KEY-----"
 _PEM_END = "-----END PRIVATE KEY-----"
-_PEM_PATTERN = re.compile(_PEM_BEGIN + r"[\s\S]*?" + _PEM_END)
+MAX_CLI_BYTES = 1_000_000
 
 # Labeled SSN stays ahead of the bare SSN pattern so "SSN: 123-45-6789"
 # still produces [REDACTED] for the existing corpus.
@@ -261,28 +261,6 @@ REDACT_PATTERNS: list[tuple[str, re.Pattern[str], _Replacement]] = [
         re.compile(r"postgres://" + _NOT_REDACTED + r"[^\s\"']+"),
         "postgres://[REDACTED]",
     ),
-    (
-        "private-key",
-        _PEM_PATTERN,
-        _PEM_BEGIN + "\n[REDACTED]\n" + _PEM_END,
-    ),
-    (
-        "rsa-private-key",
-        re.compile(r"-----BEGIN RSA PRIVATE KEY-----[\s\S]*?-----END RSA PRIVATE KEY-----"),
-        "-----BEGIN RSA PRIVATE KEY-----\n[REDACTED]\n-----END RSA PRIVATE KEY-----",
-    ),
-    (
-        "ec-private-key",
-        re.compile(r"-----BEGIN EC PRIVATE KEY-----[\s\S]*?-----END EC PRIVATE KEY-----"),
-        "-----BEGIN EC PRIVATE KEY-----\n[REDACTED]\n-----END EC PRIVATE KEY-----",
-    ),
-    (
-        "openssh-private-key",
-        re.compile(
-            r"-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]*?-----END OPENSSH PRIVATE KEY-----"
-        ),
-        "-----BEGIN OPENSSH PRIVATE KEY-----\n[REDACTED]\n-----END OPENSSH PRIVATE KEY-----",
-    ),
     ("openai-project", _OPENAI_PROJECT, "[REDACTED]"),
     ("anthropic-key", _ANTHROPIC_KEY, "[REDACTED]"),
     ("github-fine-grained", _GITHUB_FINE_GRAINED, "[REDACTED]"),
@@ -341,14 +319,25 @@ class InputDecodeError(ValueError):
     """Raised when CLI input is not strict UTF-8 or contains a NUL."""
 
 
+class InputTooLarge(ValueError):
+    """Raised when CLI input exceeds MAX_CLI_BYTES."""
+
+
 def decode_strict(data: bytes) -> str:
     """Decode CLI bytes. Invalid UTF-8 and NUL bytes fail closed."""
+    if len(data) > MAX_CLI_BYTES:
+        raise InputTooLarge("input cap")
     if b"\x00" in data:
         raise InputDecodeError("NUL byte")
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise InputDecodeError("invalid utf-8") from exc
+
+
+def _read_capped(handle) -> str:
+    data = handle.read(MAX_CLI_BYTES + 1)
+    return decode_strict(data)
 
 
 class EgressMaskError(ValueError):
@@ -359,8 +348,31 @@ class EgressMaskError(ValueError):
         super().__init__("egress mask fail-closed")
 
 
+def _mask_private_keys(text: str) -> str:
+    """Redact private-key blocks in linear time, including a missing END line."""
+    for kind in _PEM_KINDS:
+        begin, end = _pem_pair(kind)
+        pieces: list[str] = []
+        cursor = 0
+        while cursor <= len(text):
+            found = text.find(begin, cursor)
+            if found < 0:
+                pieces.append(text[cursor:])
+                break
+            pieces.append(text[cursor:found])
+            end_at = text.find(end, found + len(begin))
+            if end_at < 0:
+                pieces.append(begin + "\n[REDACTED]\n")
+                cursor = len(text)
+                break
+            pieces.append(begin + "\n[REDACTED]\n" + end)
+            cursor = end_at + len(end)
+        text = "".join(pieces)
+    return text
+
+
 def _mask_surface(text: str) -> str:
-    result = text
+    result = _mask_private_keys(text)
     for _name, pattern, replacement in REDACT_PATTERNS:
         result = pattern.sub(replacement, result)
     result = _mask_emails_linear(result)
@@ -484,11 +496,12 @@ def has_secrets(text: str) -> bool:
 
 
 def _read_path(path: Path) -> str:
-    return decode_strict(path.read_bytes())
+    with path.open("rb") as handle:
+        return _read_capped(handle)
 
 
 def _read_stdin() -> str:
-    return decode_strict(sys.stdin.buffer.read())
+    return _read_capped(sys.stdin.buffer)
 
 
 def _cmd_check(args: list[str]) -> int:
@@ -504,7 +517,7 @@ def _cmd_check(args: list[str]) -> int:
             continue
         try:
             text = _read_path(path)
-        except InputDecodeError:
+        except (InputDecodeError, InputTooLarge):
             print("mask fail-closed: decode error", file=sys.stderr)
             failed = True
             continue
@@ -563,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
     if command == "-":
         try:
             text = _read_stdin()
-        except InputDecodeError:
+        except (InputDecodeError, InputTooLarge):
             print("mask fail-closed: decode error", file=sys.stderr)
             return 1
         return _cmd_mask_text(text)
@@ -576,7 +589,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         text = _read_path(path)
-    except InputDecodeError:
+    except (InputDecodeError, InputTooLarge):
         print("mask fail-closed: decode error", file=sys.stderr)
         return 1
     except OSError:
