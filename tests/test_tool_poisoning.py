@@ -284,6 +284,21 @@ def test_many_unclosed_comments_stay_linear() -> None:
     assert visible.strip() == ""
 
 
+def test_many_closed_and_empty_comments_stay_linear() -> None:
+    empty_unit = "<!---->b"
+    closed_unit = "<!--aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-->"
+    payloads = [
+        empty_unit * ((1024 * 1024) // len(empty_unit)),
+        closed_unit * ((1024 * 1024) // len(closed_unit)),
+    ]
+
+    t0 = time.perf_counter()
+    for payload in payloads:
+        sanitize_input.extract_html_comments(payload)
+        sanitize_input._html_comment_source_order_text(payload)
+    assert time.perf_counter() - t0 < 8.0
+
+
 def test_packaged_registry_tool_poisoning_round_trip() -> None:
     registry = pr.load_packaged_threat_registry()
     records = [

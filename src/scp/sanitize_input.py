@@ -977,16 +977,16 @@ def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
 
 def _find_html_comment_close(text: str, body_start: int) -> tuple[int, int] | None:
     """Return (close_index, close_width) for supported HTML comment closers."""
-    standard = text.find("-->", body_start)
-    abrupt = text.find("--!>", body_start)
-    candidates = [
-        (idx, width)
-        for idx, width in ((standard, 3), (abrupt, 4))
-        if idx >= 0
-    ]
-    if not candidates:
-        return None
-    return min(candidates, key=lambda item: item[0])
+    i = body_start
+    length = len(text)
+    while i + 2 < length:
+        if text[i] == "-" and text[i + 1] == "-":
+            if text[i + 2] == ">":
+                return i, 3
+            if i + 3 < length and text[i + 2] == "!" and text[i + 3] == ">":
+                return i, 4
+        i += 1
+    return None
 
 
 def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
