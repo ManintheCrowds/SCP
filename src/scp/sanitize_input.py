@@ -1330,10 +1330,12 @@ def classify(text: str) -> dict:
                 note.get("segment") == "text" and note.get("phrase") == phrase
                 for note in poison_notes
             )
-            if (
-                any(source_start < boundary < source_end for boundary in source_order_boundaries)
-                or not visible_same_phrase
-            ):
+            crosses_markup = any(
+                source_start < boundary < source_end for boundary in source_order_boundaries
+            )
+            if visible_same_phrase and not crosses_markup:
+                continue
+            if crosses_markup or not visible_same_phrase:
                 severity = _severity_for_concealment(base, "tool_poisoning")
             else:
                 severity = base
