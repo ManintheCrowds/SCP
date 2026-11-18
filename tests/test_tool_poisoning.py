@@ -300,12 +300,12 @@ def test_source_order_credential_offsets_map_to_original_text() -> None:
 
 
 def test_html5lib_treats_pi_and_cdata_as_first_gt_markup() -> None:
-    html5lib = pytest.importorskip("html5lib")
+    import html5lib
+
     parser = html5lib.HTMLParser(tree=html5lib.treebuilders.getTreeBuilder("etree"))
     parsed = parser.parseFragment("a<?x>b<![CDATA[x>c")
     rendered = "".join(parsed.itertext())
-    assert "b" in rendered
-    assert "c" in rendered
+    assert rendered == "a?xb[CDATA[xc"
 
 
 def _url_layers(text: str, count: int) -> str:
