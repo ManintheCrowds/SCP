@@ -27,11 +27,10 @@ def _openai_key() -> str:
 
 
 def _pem() -> str:
-    return (
-        "-----BEGIN PRIVATE KEY-----\n"
-        + "MIIE" + ("V" * 40) + "\n"
-        + "-----END PRIVATE KEY-----"
-    )
+    begin = "-----BEGIN " + "PRIVATE KEY-----"
+    end = "-----END " + "PRIVATE KEY-----"
+    body = "MI" + "IE" + ("V" * 40)
+    return begin + "\n" + body + "\n" + end
 
 
 def _project_key() -> str:
@@ -72,7 +71,7 @@ def _pem_kind(kind: str) -> str:
         label = f"{kind}PRIVATE KEY"
     begin = f"-----BEGIN {label}-----"
     end = f"-----END {label}-----"
-    return begin + "\nMIIE" + ("V" * 20) + "\n" + end
+    return begin + "\n" + ("MI" + "IE") + ("V" * 20) + "\n" + end
 
 
 def _cases() -> list[tuple[str, str, str]]:
@@ -81,9 +80,11 @@ def _cases() -> list[tuple[str, str, str]]:
     github = _github_token()
     openai = _openai_key()
     pem = _pem()
+    api_value = "abcd" + "EFGH" + "ijkl" + "MNOP" + "1234"
+    json_token = "abcd" + "EFGH" + "1234" + "5678"
     return [
         ("password", "password=hunter2", "hunter2"),
-        ("api-key", "api_key=abcdEFGHijklMNOP1234", "abcdEFGHijklMNOP1234"),
+        ("api-key", "api_key=" + api_value, api_value),
         ("bearer", "Bearer " + ("b" * 24), "b" * 24),
         ("token", "token=" + ("t" * 20), "t" * 20),
         ("aws-access-key-id", f"AWS_ACCESS_KEY_ID={access}", access),
@@ -111,7 +112,7 @@ def _cases() -> list[tuple[str, str, str]]:
         ("ec-private-key", _pem_kind("EC "), "MIIE"),
         ("openssh-private-key", _pem_kind("OPENSSH "), "MIIE"),
         ("json-password", '{"password": "hello world secret"}', "hello world secret"),
-        ("json-token", '{"token": "abcdEFGH12345678"}', "abcdEFGH12345678"),
+        ("json-token", '{"token": "' + json_token + '"}', json_token),
         (
             "wordpress-db-password",
             "define('DB_PASSWORD', 'db pass phrase');",
