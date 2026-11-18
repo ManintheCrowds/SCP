@@ -627,6 +627,7 @@ def _cmd_check(args: list[str]) -> int:
         print("Usage: mask_secrets.py --check <file> [file...]", file=sys.stderr)
         return 2
     failed = False
+    error = False
     for path_arg in args[1:]:
         path = Path(path_arg)
         if not path.is_file():
@@ -635,9 +636,13 @@ def _cmd_check(args: list[str]) -> int:
             continue
         try:
             text = _read_path(path)
-        except (InputDecodeError, InputTooLarge):
+        except InputTooLarge:
+            print("input too large", file=sys.stderr)
+            error = True
+            continue
+        except InputDecodeError:
             print("mask fail-closed: decode error", file=sys.stderr)
-            failed = True
+            error = True
             continue
         except OSError:
             print(f"Not found: {path}", file=sys.stderr)
@@ -646,15 +651,25 @@ def _cmd_check(args: list[str]) -> int:
         if has_secrets(text):
             print(f"SECRETS DETECTED: {path} - redact before committing.", file=sys.stderr)
             failed = True
+    if error:
+        return _EXIT_ERROR
     if failed:
-        return 1
+        return _EXIT_RESIDUAL
     print("OK: No secrets detected")
     return 0
 
 
-def _egress_fail(message: str) -> int:
+_EXIT_RESIDUAL = 1
+_EXIT_ERROR = 2
+
+
+def _disallowed_control(text: str) -> bool:
+    return any(ord(char) < 32 and char not in "\t\n\r" for char in text)
+
+
+def _egress_fail(message: str, code: int = _EXIT_ERROR) -> int:
     print(message, file=sys.stderr)
-    return 1
+    return code
 
 
 def _cmd_egress_prepare(args: list[str]) -> int:
@@ -667,11 +682,17 @@ def _cmd_egress_prepare(args: list[str]) -> int:
             text = _read_path(path)
         else:
             text = _read_stdin()
+        if _disallowed_control(text):
+            return _egress_fail("egress-prepare fail-closed: control character", _EXIT_ERROR)
         prepared = prepare_outbound(text)
     except EgressMaskError:
-        return _egress_fail(_EGRESS_FAIL_RESIDUAL)
+        return _egress_fail(_EGRESS_FAIL_RESIDUAL, _EXIT_RESIDUAL)
+    except InputTooLarge:
+        return _egress_fail("input too large", _EXIT_ERROR)
+    except InputDecodeError:
+        return _egress_fail("mask fail-closed: decode error", _EXIT_ERROR)
     except Exception:
-        return _egress_fail(_EGRESS_FAIL_ERROR)
+        return _egress_fail(_EGRESS_FAIL_ERROR, _EXIT_ERROR)
     sys.stdout.write(prepared)
     return 0
 
@@ -694,9 +715,12 @@ def main(argv: list[str] | None = None) -> int:
     if command == "-":
         try:
             text = _read_stdin()
-        except (InputDecodeError, InputTooLarge):
+        except InputTooLarge:
+            print("input too large", file=sys.stderr)
+            return _EXIT_ERROR
+        except InputDecodeError:
             print("mask fail-closed: decode error", file=sys.stderr)
-            return 1
+            return _EXIT_ERROR
         return _cmd_mask_text(text)
     if command.startswith("-"):
         print(f"Unknown option: {command}", file=sys.stderr)
@@ -707,9 +731,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         text = _read_path(path)
-    except (InputDecodeError, InputTooLarge):
+    except InputTooLarge:
+        print("input too large", file=sys.stderr)
+        return _EXIT_ERROR
+    except InputDecodeError:
         print("mask fail-closed: decode error", file=sys.stderr)
-        return 1
+        return _EXIT_ERROR
     except OSError:
         print(f"Not found: {path}", file=sys.stderr)
         return 2

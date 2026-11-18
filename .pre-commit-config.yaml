@@ -4,8 +4,8 @@
 #
 # gitleaks CLI is pinned to commit 83d9cd684c87d95d656c1458ef04895a7f1cbd8e
 # (the v8.30.1 tag). The hook reads .gitleaks.toml.
-# mask-check runs the installed scp package, not src/scp/mask_secrets.py.
-# Use `pip install .` from a trusted revision. An editable install is refused.
+# mask-check runs an installed package when that package lives outside the repo.
+# An editable install uses the last committed masker, not uncommitted edits.
 
 repos:
   - repo: https://github.com/gitleaks/gitleaks
