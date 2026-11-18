@@ -18,7 +18,9 @@ def test_one_megabyte_mask_finishes_quickly() -> None:
     started = time.perf_counter()
     masked = mask_secrets.mask(text)
     elapsed = time.perf_counter() - started
-    assert elapsed < 2.0
+    # A few seconds: quadratic masking of 1 MB takes minutes, and shared CI
+    # runners are slower than a laptop. 2.0s flaked at 2.17s on the mask-check job.
+    assert elapsed < 8.0
     assert masked == text
 
 
@@ -27,7 +29,7 @@ def test_private_key_without_end_line_is_linear() -> None:
     started = time.perf_counter()
     masked = mask_secrets.mask(body)
     elapsed = time.perf_counter() - started
-    assert elapsed < 2.0
+    assert elapsed < 8.0
     assert "A" * 64 not in masked
     assert "[REDACTED]" in masked
 
