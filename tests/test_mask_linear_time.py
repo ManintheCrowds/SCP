@@ -15,10 +15,11 @@ def _line_wrapped(size: int) -> str:
 def _doubling_ratio(fn, size: int) -> float:
     def once(n: int) -> float:
         text = _line_wrapped(n)
-        started = time.perf_counter()
+        started = time.process_time()
         fn(text)
-        return time.perf_counter() - started
+        return time.process_time() - started
 
+    # CPU time, so a busy runner does not turn a linear join into a failing ratio.
     small = once(size)
     large = once(size * 2)
     if small <= 0:
