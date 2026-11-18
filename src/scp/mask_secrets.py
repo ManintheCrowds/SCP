@@ -589,6 +589,10 @@ def prepare_outbound(text: str) -> str:
     """
     masked = mask(text)
     left = residual_secrets(masked)
+    for view in egress_guard.views_for_rescan(masked):
+        for name in _collect_hits(view):
+            if name not in left:
+                left.append(name)
     left.extend(label for label in egress_guard.find_suspicious(masked) if label not in left)
     if left:
         raise EgressMaskError(left)

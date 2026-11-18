@@ -28,8 +28,80 @@ def _cat(*parts: str) -> str:
     return "".join(parts)
 
 
+_TOKEN_EDGE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+
+
 def _strip_invisible(text: str) -> str:
-    return text.translate(_INVISIBLE)
+    """Drop format characters and the explicit invisible set.
+
+    Soft hyphen, ZWSP, and ZWJ are format characters. Stripping the class
+    covers those without a per-character exception list.
+    """
+    kept = []
+    for char in text:
+        if unicodedata.category(char) == "Cf":
+            continue
+        kept.append(char)
+    return "".join(kept).translate(_INVISIBLE)
+
+
+def _unwrap_lines(text: str) -> str:
+    """Join a line wrap that continues a token fragment of at least 6 characters."""
+    lines = text.split("\n")
+    if len(lines) < 2:
+        return text
+    merged = [lines[0]]
+    for line in lines[1:]:
+        previous = merged[-1]
+        continued = line.lstrip(" ")
+        if (
+            previous
+            and continued
+            and " " not in previous
+            and len(previous) >= 6
+            and previous[-1] in _TOKEN_EDGE
+            and continued[0] in _TOKEN_EDGE
+        ):
+            merged[-1] = previous + continued
+            continue
+        merged.append(line)
+    return "\n".join(merged)
+
+
+def _decoded_payloads(text: str) -> list[str]:
+    """Hex and URL-safe base64 candidates, decoded for a second detector pass."""
+    found: list[str] = []
+    for match in re.finditer(r"\b(?:[0-9a-fA-F]{2}){8,}\b", text):
+        try:
+            decoded = bytes.fromhex(match.group(0)).decode("utf-8")
+        except (UnicodeDecodeError, ValueError):
+            continue
+        if decoded:
+            found.append(decoded)
+    for match in re.finditer(r"[A-Za-z0-9_-]{16,}={0,2}", text):
+        chunk = match.group(0)
+        pad = "=" * ((4 - len(chunk) % 4) % 4)
+        try:
+            raw = base64.urlsafe_b64decode(chunk + pad)
+            decoded = raw.decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError, ValueError):
+            continue
+        if decoded and decoded != chunk:
+            found.append(decoded)
+    return found
+
+
+def views_for_rescan(text: str) -> list[str]:
+    """Normalize, undo wraps, and decode. The caller runs the full detector set."""
+    stripped = unicodedata.normalize("NFKC", _strip_invisible(text))
+    unwrapped = _unwrap_lines(stripped)
+    views = [stripped]
+    if unwrapped != stripped:
+        views.append(unwrapped)
+    views.extend(_decoded_payloads(stripped))
+    if unwrapped != stripped:
+        views.extend(_decoded_payloads(unwrapped))
+    return views
 
 
 def _double_url(text: str) -> str:
