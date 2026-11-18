@@ -98,11 +98,12 @@ jobs:
         working-directory: head
         run: |
           pip install -e ".[dev]"
-          # Glob, not a hand-written list. The only ignores are pre-existing
-          # failures outside the masker: optional coincurve, and the contract
-          # hash drift. tests/test_ci_collects_every_test.py fails if another
-          # tests/test_*.py file is left out.
-          pytest tests/test_*.py \
+          # Directory collect, not a hand-written list. Quoting a glob would
+          # not expand, and an unquoted glob is passed as explicit paths, which
+          # makes --ignore a no-op. The only ignores are pre-existing failures
+          # outside the masker. tests/test_ci_collects_every_test.py fails if
+          # another tests/test_*.py file is left out.
+          pytest tests \
             --ignore=tests/test_setup_mycelium_nostr_key.py \
             --ignore=tests/test_contract_document_hash.py \
             -q --tb=line

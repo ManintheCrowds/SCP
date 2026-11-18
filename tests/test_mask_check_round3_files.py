@@ -17,7 +17,7 @@ _ROUND3 = (
 
 def test_mask_check_job_runs_round3_files_and_collection_floor() -> None:
     section = _WORKFLOW.read_text(encoding="utf-8").split("mask-check:", 1)[1].split("\n  CI:", 1)[0]
-    assert "pytest tests/test_*.py" in section
+    assert "pytest tests " in section or "pytest tests\n" in section
     ignored = set(re.findall(r"--ignore=(\S+)", section))
     for name in _ROUND3:
         assert name not in ignored

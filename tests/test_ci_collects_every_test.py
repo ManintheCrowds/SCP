@@ -39,7 +39,7 @@ def _ignored(section: str) -> set[str]:
 
 def _collected(section: str, on_disk: set[str]) -> set[str]:
     ignored = _ignored(section)
-    if "pytest tests/test_*.py" in section:
+    if "pytest tests " in section or "pytest tests\n" in section:
         return {name for name in on_disk if name not in ignored}
     return {name for name in on_disk if name in section}
 
