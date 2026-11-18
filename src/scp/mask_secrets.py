@@ -1,17 +1,59 @@
 # PURPOSE: OWASP LLM06 mitigation - redact credentials and PII.
-# Extracted from portfolio-harness for standalone SCP package.
+# Single source of truth for SCP secret/PII masking. Health-record patterns and
+# the fail-closed --egress-prepare path are ported from the MiscRepos masker.
+# Email redaction stays on the linear scanner (bounded, no nested-quantifier ReDoS).
+
+"""
+Redact credentials and PII from text before handoff, state, or logs.
+
+Usage:
+  python src/scp/mask_secrets.py <file>
+  python src/scp/mask_secrets.py -
+  python src/scp/mask_secrets.py --check <file> [file...]
+  python src/scp/mask_secrets.py --egress-prepare <file>
+  python src/scp/mask_secrets.py --egress-prepare -
+
+--egress-prepare masks stdin or one file. On any error or residual match it
+exits non-zero and writes nothing to stdout.
+"""
 
 from __future__ import annotations
 
 import re
+import sys
+from pathlib import Path
 
 # RFC-ish bounds (avoid catastrophic backtracking on long almost-email strings).
 _EMAIL_LOCAL_MAX = 64
 _EMAIL_DOMAIN_MAX = 253
 
+# Synthetic egress fixture name. Not a general person detector.
+_BARE_FIXTURE_NAME = "Casey Example"
+
+# Exact substrings from the synthetic egress handoff. Fail closed if any survive.
+FIXTURE_SENTINELS: tuple[str, ...] = (
+    _BARE_FIXTURE_NAME,
+    "03/15/1985",
+    "987-65-4321",
+    "casey.example@syn.invalid",
+    "212-555-0198",
+)
+
+# Longer tokens are listed first so a count never treats them as [REDACTED].
+REDACTION_TOKENS: tuple[str, ...] = (
+    "[EMAIL_REDACTED]",
+    "[NAME_REDACTED]",
+    "[DATE_REDACTED]",
+    "[SSN_REDACTED]",
+    "[PHONE_REDACTED]",
+    "[REDACTED]",
+)
+
+_EGRESS_FAIL_RESIDUAL = "egress-prepare fail-closed: residual match"
+_EGRESS_FAIL_ERROR = "egress-prepare fail-closed: error"
+
 
 def _is_email_local_char(c: str) -> bool:
-    o = ord(c)
     if c.isalnum():
         return True
     return c in "._%+-"
@@ -81,6 +123,8 @@ def _mask_emails_linear(text: str) -> str:
     return "".join(out)
 
 
+# Labeled SSN stays ahead of the bare SSN pattern so "SSN: 123-45-6789"
+# still produces [REDACTED] for the existing corpus.
 REDACT_PATTERNS = [
     (re.compile(r'(?i)(password|passwd|pwd)\s*[:=]\s*["\']?[^\s"\']+["\']?', re.IGNORECASE), r"\1=[REDACTED]"),
     (re.compile(r'(?i)\b(api_key|apikey|secret)\b\s*[:=]\s*["\']?[^\s"\']+["\']?', re.IGNORECASE), r"\1=[REDACTED]"),
@@ -95,11 +139,158 @@ REDACT_PATTERNS = [
     ),
     (re.compile(r"\bsk-[a-zA-Z0-9]{20,}\b"), "sk-[REDACTED]"),
     (re.compile(r"\bSSN:\s*\d{3}-\d{2}-\d{4}\b"), "SSN: [REDACTED]"),
+    (
+        re.compile(r"(?i)\bPatient:\s*[A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)+"),
+        "Patient: [NAME_REDACTED]",
+    ),
+    (re.compile(r"(?i)\b(?:DOB|Date of Birth)\s*:\s*\d{1,2}/\d{1,2}/\d{2,4}"), "DOB: [DATE_REDACTED]"),
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[SSN_REDACTED]"),
+    (re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"), "[PHONE_REDACTED]"),
 ]
+
+
+class EgressMaskError(ValueError):
+    """Raised when fixture sentinels or pattern matches remain after masking."""
+
+    def __init__(self, remaining: list[str]) -> None:
+        self.remaining = remaining
+        super().__init__("egress mask fail-closed")
 
 
 def mask(text: str) -> str:
     result = text
     for pattern, replacement in REDACT_PATTERNS:
         result = pattern.sub(replacement, result)
-    return _mask_emails_linear(result)
+    result = _mask_emails_linear(result)
+    if _BARE_FIXTURE_NAME in result:
+        result = result.replace(_BARE_FIXTURE_NAME, "[NAME_REDACTED]")
+    return result
+
+
+def redacted_count(masked: str) -> int:
+    """Count redaction tokens without counting a longer token as [REDACTED]."""
+    total = 0
+    remaining = masked
+    for token in REDACTION_TOKENS:
+        total += remaining.count(token)
+        remaining = remaining.replace(token, "")
+    return total
+
+
+def remaining_fixture_sentinels(text: str) -> list[str]:
+    """Return fixture sentinel substrings still present in text."""
+    return [s for s in FIXTURE_SENTINELS if s in text]
+
+
+def prepare_outbound(text: str) -> str:
+    """Mask text. Raise EgressMaskError if a sentinel or pattern match remains."""
+    masked = mask(text)
+    left = remaining_fixture_sentinels(masked)
+    if left or mask(masked) != masked:
+        if not left:
+            left = ["residual pattern"]
+        raise EgressMaskError(left)
+    return masked
+
+
+def has_secrets(text: str) -> bool:
+    """Return True if text appears to contain unredacted secrets."""
+
+    def _redact_backtick_email(match: re.Match[str]) -> str:
+        content = match.group(1)
+        if "@" in content and re.search(r"\.[a-zA-Z]{2,}$", content.split("@")[-1]):
+            return "`[EMAIL]`"
+        return match.group(0)
+
+    text_check = re.sub(r"`([^`]+)`", _redact_backtick_email, text)
+    return mask(text_check) != text_check
+
+
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _cmd_check(args: list[str]) -> int:
+    if len(args) < 2:
+        print("Usage: mask_secrets.py --check <file> [file...]", file=sys.stderr)
+        return 2
+    failed = False
+    for path_arg in args[1:]:
+        path = Path(path_arg)
+        if not path.is_file():
+            print(f"Not found: {path}", file=sys.stderr)
+            failed = True
+            continue
+        try:
+            text = _read_text(path)
+        except OSError:
+            print(f"Not found: {path}", file=sys.stderr)
+            failed = True
+            continue
+        if has_secrets(text):
+            print(f"SECRETS DETECTED: {path} - redact before committing.", file=sys.stderr)
+            failed = True
+    if failed:
+        return 1
+    print("OK: No secrets detected")
+    return 0
+
+
+def _egress_fail(message: str) -> int:
+    print(message, file=sys.stderr)
+    return 1
+
+
+def _cmd_egress_prepare(args: list[str]) -> int:
+    """Mask one input. Any error or residual match: non-zero, empty stdout."""
+    if len(args) > 2:
+        return _egress_fail(_EGRESS_FAIL_ERROR)
+    try:
+        if len(args) == 2 and args[1] != "-":
+            path = Path(args[1])
+            text = _read_text(path)
+        else:
+            text = sys.stdin.read()
+        prepared = prepare_outbound(text)
+    except EgressMaskError:
+        return _egress_fail(_EGRESS_FAIL_RESIDUAL)
+    except Exception:
+        return _egress_fail(_EGRESS_FAIL_ERROR)
+    sys.stdout.write(prepared)
+    return 0
+
+
+def _cmd_mask_text(text: str) -> int:
+    sys.stdout.write(mask(text))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        print(__doc__ or "", file=sys.stderr)
+        return 2
+    command = args[0]
+    if command == "--check":
+        return _cmd_check(args)
+    if command == "--egress-prepare":
+        return _cmd_egress_prepare(args)
+    if command == "-":
+        return _cmd_mask_text(sys.stdin.read())
+    if command.startswith("-"):
+        print(f"Unknown option: {command}", file=sys.stderr)
+        return 2
+    path = Path(command)
+    if not path.is_file():
+        print(f"Not found: {path}", file=sys.stderr)
+        return 2
+    try:
+        text = _read_text(path)
+    except OSError:
+        print(f"Not found: {path}", file=sys.stderr)
+        return 2
+    return _cmd_mask_text(text)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

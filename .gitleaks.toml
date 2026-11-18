@@ -1,7 +1,11 @@
 title = "Gitleaks configuration"
 
+# Allowlist-only files do not load built-in rules. Extend so the pinned CLI scans.
+[extend]
+useDefault = true
+
 [allowlist]
-description = "Docs, binaries, SCP redaction source, and intentional test hazard corpus."
+description = "Docs, binaries, SCP redaction source, intentional test hazard corpus, and the encounter mask regression that plants a synthetic cloud secret."
 paths = [
   '''.*\.md$''',
   '''.*\.lock$''',
@@ -15,6 +19,7 @@ paths = [
   '''.*\.map$''',
   '''src/scp/mask_secrets\.py''',
   '''tests/fixtures/''',
+  '''tests/test_appsec_antigen_mcp_gates\.py''',
   '''__pycache__/''',
   '''.*\.pyc$'''
 ]
