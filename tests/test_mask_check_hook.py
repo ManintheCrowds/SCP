@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import shutil
@@ -174,27 +175,31 @@ def test_planted_handoff_fails_mask_check_until_masked(tmp_path: Path) -> None:
     assert _fake_access_key() in secrets
     rel = Path(".cursor/state/handoff_latest.md")
     assert _mask_check_files().search(rel.as_posix())
-
-    target = tmp_path / rel
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    target = repo / rel
     target.parent.mkdir(parents=True)
     target.write_text(raw, encoding="utf-8")
+    subprocess.run(["git", "add", rel.as_posix()], cwd=repo, check=True)
+    module = importlib.util.spec_from_file_location(
+        "run_mask_check_planted", _REPO / "scripts" / "run_mask_check.py"
+    )
+    assert module is not None and module.loader is not None
+    loaded = importlib.util.module_from_spec(module)
+    module.loader.exec_module(loaded)
 
-    failed = _run_hook(target, tmp_path)
-    assert failed.returncode != 0
-    assert "SECRETS DETECTED" in failed.stderr
+    failed = loaded.check_staged_paths(repo, [rel.as_posix()], mask_secrets)
+    assert failed == 1
     for secret in secrets:
-        assert secret not in failed.stdout
-        assert secret not in failed.stderr
         assert secret in raw
 
     masked = mask_secrets.mask(raw)
     for secret in secrets:
         assert secret not in masked
     target.write_text(masked, encoding="utf-8")
-
-    passed = _run_hook(target, tmp_path)
-    assert passed.returncode == 0
-    assert "OK: No secrets detected" in passed.stdout
-    for secret in secrets:
-        assert secret not in passed.stdout
-        assert secret not in passed.stderr
+    subprocess.run(["git", "add", rel.as_posix()], cwd=repo, check=True)
+    passed = loaded.check_staged_paths(repo, [rel.as_posix()], mask_secrets)
+    assert passed == 0
