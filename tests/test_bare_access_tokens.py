@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 from scp import mask_secrets
@@ -42,10 +43,24 @@ def test_ci_runs_mask_check() -> None:
     assert "needs: [contract, promptfoo-eval, mask-check]" in workflow
 
 
-def test_mask_check_skips_test_fixtures() -> None:
-    from scripts.run_mask_check import selected_files
+def _mask_check_module():
+    path = _REPO / "scripts" / "run_mask_check.py"
+    spec = importlib.util.spec_from_file_location("run_mask_check_under_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
+
+def test_mask_check_skips_test_fixtures(tmp_path: Path) -> None:
+    module = _mask_check_module()
     config = (_REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8")
-    selected = [path.relative_to(_REPO).as_posix() for path in selected_files(_REPO, config)]
+    fixture = tmp_path / "tests" / "fixtures"
+    fixture.mkdir(parents=True)
+    (fixture / "egress_mask_synthetic_handoff.md").write_text("fixture\n", encoding="utf-8")
+    state = tmp_path / ".cursor" / "state"
+    state.mkdir(parents=True)
+    (state / "handoff.md").write_text("state\n", encoding="utf-8")
+    selected = [path.relative_to(tmp_path).as_posix() for path in module.selected_files(tmp_path, config)]
+    assert selected == [".cursor/state/handoff.md"]
     assert all(not name.startswith("tests/") for name in selected)
-    assert "tests/fixtures/egress_mask_synthetic_handoff.md" not in selected
