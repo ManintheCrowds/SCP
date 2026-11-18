@@ -975,6 +975,20 @@ def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
     return findings
 
 
+def scan_embedded_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
+    """Source-order fallback for phrases glued to surrounding text by markup."""
+    findings: list[tuple[int, str, str, str]] = []
+    for phrase, severity in _tool_poison_entries():
+        stripped = phrase.strip()
+        if len(stripped) >= 3 and stripped[0] == "<" and stripped[-1] == ">":
+            pattern = re.compile(re.escape(stripped), re.IGNORECASE)
+        else:
+            pattern = re.compile(re.escape(stripped).replace(r"\ ", r"\s+"), re.IGNORECASE)
+        for match in pattern.finditer(text):
+            findings.append((match.start(), match.group(0), phrase, severity))
+    return findings
+
+
 def _find_html_comment_close(text: str, body_start: int) -> tuple[int, int] | None:
     """Return (close_index, close_width) for supported HTML comment closers."""
     i = body_start
@@ -1294,7 +1308,13 @@ def classify(text: str) -> dict:
                         severity = base
                     severities.append(severity)
         tool_text, tool_source_indexes = _normalize_source_order_for_tool_scan(source_order)
-        for offset, match, phrase, base in scan_tool_poisoning(tool_text):
+        source_order_hits = scan_tool_poisoning(tool_text)
+        seen_source_order_hits = {(offset, phrase) for offset, _, phrase, _ in source_order_hits}
+        for hit in scan_embedded_tool_poisoning(tool_text):
+            if (hit[0], hit[2]) not in seen_source_order_hits:
+                source_order_hits.append(hit)
+                seen_source_order_hits.add((hit[0], hit[2]))
+        for offset, match, phrase, base in source_order_hits:
             match_indexes = tool_source_indexes[offset : offset + len(match)]
             if match_indexes:
                 source_start = min(match_indexes)

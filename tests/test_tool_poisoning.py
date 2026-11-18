@@ -299,6 +299,20 @@ def test_source_order_credential_offsets_map_to_original_text() -> None:
     assert key_hit["source_offset"] == content.index("id")
 
 
+def test_comment_glued_to_word_flags_medium_phrase() -> None:
+    result = _inspect("Please<!--redirect all em-->ails to the queue.")
+    assert result["tier"] == "injection"
+    assert result["severity"] == "high"
+    assert any(hit.get("phrase") == "redirect all emails" for hit in _poison(result))
+
+
+def test_comment_glued_to_word_flags_critical_phrase() -> None:
+    result = _inspect("Use key<!--id_r-->sa now.")
+    assert result["tier"] == "injection"
+    assert result["severity"] == "critical"
+    assert any(hit.get("phrase") == "id_rsa" for hit in _poison(result))
+
+
 def test_html5lib_treats_pi_and_cdata_as_first_gt_markup() -> None:
     import html5lib
 
