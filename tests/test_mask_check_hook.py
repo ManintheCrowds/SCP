@@ -1,5 +1,7 @@
 # PURPOSE: The mask-check pre-commit hook fails on a planted fake secret
 # and passes after SCP's masker redacts that handoff.
+# The fake access-key prefix is assembled at runtime so no committed markdown
+# file contains a bare AKIA or ghp_ token.
 
 from __future__ import annotations
 
@@ -12,7 +14,6 @@ from scp import mask_secrets
 
 _REPO = Path(__file__).resolve().parents[1]
 _CONFIG = _REPO / ".pre-commit-config.yaml"
-_PLANTED = Path(__file__).resolve().parent / "fixtures" / "handoff_planted_secret.md"
 _GITLEAKS_REV = "v8.30.1"
 
 
@@ -42,6 +43,20 @@ def _mask_check_files() -> re.Pattern[str]:
     match = re.search(r"^\s*files:\s*'([^']+)'", _mask_check_section(), re.MULTILINE)
     assert match is not None
     return re.compile(match.group(1))
+
+
+def _fake_access_key() -> str:
+    return "AK" + "IA" + "FAKEFAKEFAKEFAKE"
+
+
+def _planted_handoff() -> str:
+    return (
+        "# Synthetic handoff fixture\n\n"
+        "Not a real secret. The values below are obvious fakes for the mask-check hook proof.\n\n"
+        f"AWS_ACCESS_KEY_ID={_fake_access_key()}\n"
+        "email: test@example.com\n"
+        "SSN: 000-00-0000\n"
+    )
 
 
 def _planted_secret_values(raw: str) -> list[str]:
@@ -86,9 +101,20 @@ def test_precommit_pins_gitleaks_and_mask_check() -> None:
     assert files_re.search("README.md") is None
 
 
+def test_committed_markdown_has_no_bare_access_key_prefix() -> None:
+    prefix = "AK" + "IA"
+    for path in _REPO.rglob("*.md"):
+        if ".git" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        assert prefix not in text, path
+        assert "ghp_" not in text, path
+
+
 def test_planted_handoff_fails_mask_check_until_masked(tmp_path: Path) -> None:
-    raw = _PLANTED.read_text(encoding="utf-8")
+    raw = _planted_handoff()
     secrets = _planted_secret_values(raw)
+    assert _fake_access_key() in secrets
     rel = Path(".cursor/state/handoff_latest.md")
     assert _mask_check_files().search(rel.as_posix())
 
