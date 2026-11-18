@@ -65,14 +65,11 @@ def test_prepare_outbound_fail_closed_when_sentinel_unmaskable(monkeypatch: pyte
 
 
 def test_existing_credential_mask_still_works() -> None:
-    text = (
-        Path(__file__).resolve().parent / "fixtures" / "credential_mask_sample.txt"
-    ).read_text(encoding="utf-8").strip()
+    live = "sk" + "_live_" + "abcdefghijklmnop"
+    text = f"password=hunter2 api_key={live} user@example.com"
     out = mask_secrets.mask(text)
-    for piece in text.replace("=", " ").split():
-        if piece in {"password", "api_key"}:
-            continue
-        assert piece not in out
+    assert "hunter2" not in out
+    assert live not in out
     assert "[EMAIL_REDACTED]" in out
 
 

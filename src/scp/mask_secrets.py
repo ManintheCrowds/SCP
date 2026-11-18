@@ -73,6 +73,30 @@ def _cat(*parts: str) -> str:
 # the source file does not contain a real-format token.
 _BARE_ACCESS_KEY = re.compile(r"\b" + re.escape(_cat("AK", "IA")) + r"[A-Z2-7]{16}\b")
 _BARE_GITHUB_TOKEN = re.compile(r"\b" + re.escape(_cat("gh", "p_")) + r"[A-Za-z0-9]{36}\b")
+_OPENAI_PROJECT = re.compile(
+    r"(?<![A-Za-z0-9])" + re.escape(_cat("sk-", "proj-")) + r"[A-Za-z0-9_-]{16,120}"
+)
+_ANTHROPIC_KEY = re.compile(
+    r"(?<![A-Za-z0-9])" + re.escape(_cat("sk-", "ant-")) + r"[A-Za-z0-9_-]{16,120}"
+)
+_GITHUB_FINE_GRAINED = re.compile(
+    r"(?<![A-Za-z0-9])" + re.escape(_cat("github", "_pat_")) + r"[A-Za-z0-9_]{20,220}"
+)
+_GITLAB_PAT = re.compile(
+    r"(?<![A-Za-z0-9])" + re.escape(_cat("gl", "pat-")) + r"[A-Za-z0-9_-]{16,120}"
+)
+_STRIPE_LIVE = re.compile(
+    r"(?<![A-Za-z0-9])" + re.escape(_cat("sk", "_live_")) + r"[A-Za-z0-9]{10,120}"
+)
+_AGE_SECRET = re.compile(
+    r"(?<![A-Za-z0-9])" + re.escape(_cat("AGE-", "SECRET-", "KEY-1")) + r"[A-Z2-7]{20,120}"
+)
+_JWT = re.compile(
+    r"\b"
+    + re.escape(_cat("ey", "J"))
+    + r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
+)
+_TELEGRAM_BOT = re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{30,40}\b")
 
 
 def _try_email_span_at(text: str, at: int) -> tuple[int, int] | None:
@@ -153,8 +177,47 @@ def _keep_dob_label(match: re.Match[str]) -> str:
     return f"{match.group(1)}{match.group(2)}[DATE_REDACTED]"
 
 
+def _keep_quoted_secret(match: re.Match[str]) -> str:
+    """Redact the whole quoted value, including spaces, and keep the quotes."""
+    return f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]{match.group(3)}"
+
+
+def _keep_json_secret(match: re.Match[str]) -> str:
+    return f"{match.group(1)}\"[REDACTED]\""
+
+
+def _keep_wordpress_secret(match: re.Match[str]) -> str:
+    return f"{match.group(1)}{match.group(3)}[REDACTED]{match.group(3)}"
+
+
 _Replacement = str | Callable[[re.Match[str]], str]
 REDACT_PATTERNS: list[tuple[str, re.Pattern[str], _Replacement]] = [
+    (
+        "password-quoted",
+        re.compile(
+            r"(?i)(password|passwd|pwd)(\s*[:=]\s*)([\"'])(?!\[[A-Z_]*REDACTED\])"
+            r"((?:\\.|(?!\3).){0,200})\3"
+        ),
+        _keep_quoted_secret,
+    ),
+    (
+        "json-secret",
+        re.compile(
+            r"(\"(?:password|token)\"\s*:\s*)\"(?!\[[A-Z_]*REDACTED\])"
+            r"((?:[^\"\\]|\\.){1,200})\"",
+            re.IGNORECASE,
+        ),
+        _keep_json_secret,
+    ),
+    (
+        "wordpress-db-password",
+        re.compile(
+            r"(define\s*\(\s*(['\"])DB_PASSWORD\2\s*,\s*)"
+            r"([\'\"])(?!\[[A-Z_]*REDACTED\])([^'\"]{1,200})\3",
+            re.IGNORECASE,
+        ),
+        _keep_wordpress_secret,
+    ),
     (
         "password",
         re.compile(
@@ -197,6 +260,31 @@ REDACT_PATTERNS: list[tuple[str, re.Pattern[str], _Replacement]] = [
         _PEM_PATTERN,
         _PEM_BEGIN + "\n[REDACTED]\n" + _PEM_END,
     ),
+    (
+        "rsa-private-key",
+        re.compile(r"-----BEGIN RSA PRIVATE KEY-----[\s\S]*?-----END RSA PRIVATE KEY-----"),
+        "-----BEGIN RSA PRIVATE KEY-----\n[REDACTED]\n-----END RSA PRIVATE KEY-----",
+    ),
+    (
+        "ec-private-key",
+        re.compile(r"-----BEGIN EC PRIVATE KEY-----[\s\S]*?-----END EC PRIVATE KEY-----"),
+        "-----BEGIN EC PRIVATE KEY-----\n[REDACTED]\n-----END EC PRIVATE KEY-----",
+    ),
+    (
+        "openssh-private-key",
+        re.compile(
+            r"-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]*?-----END OPENSSH PRIVATE KEY-----"
+        ),
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n[REDACTED]\n-----END OPENSSH PRIVATE KEY-----",
+    ),
+    ("openai-project", _OPENAI_PROJECT, "[REDACTED]"),
+    ("anthropic-key", _ANTHROPIC_KEY, "[REDACTED]"),
+    ("github-fine-grained", _GITHUB_FINE_GRAINED, "[REDACTED]"),
+    ("gitlab-pat", _GITLAB_PAT, "[REDACTED]"),
+    ("stripe-live", _STRIPE_LIVE, "[REDACTED]"),
+    ("telegram-bot", _TELEGRAM_BOT, "[REDACTED]"),
+    ("age-secret", _AGE_SECRET, "[REDACTED]"),
+    ("jwt", _JWT, "[REDACTED]"),
     ("openai-key", re.compile(r"\bsk-[a-zA-Z0-9]{20,}\b"), "sk-[REDACTED]"),
     ("access-key", _BARE_ACCESS_KEY, "[REDACTED]"),
     ("github-token", _BARE_GITHUB_TOKEN, "[REDACTED]"),
@@ -265,31 +353,41 @@ def _has_email(text: str) -> bool:
         start = at + 1
 
 
+_PEM_KINDS = ("", "RSA ", "EC ", "OPENSSH ")
+
+
+def _pem_pair(kind: str) -> tuple[str, str]:
+    return (f"-----BEGIN {kind}PRIVATE KEY-----", f"-----END {kind}PRIVATE KEY-----")
+
+
 def _private_key_residual(text: str) -> bool:
     """True when a private-key header still has a body other than the redaction token."""
-    start = 0
-    while True:
-        found = text.find(_PEM_BEGIN, start)
-        if found < 0:
-            return False
-        rest = text[found + len(_PEM_BEGIN) :]
-        end = rest.find(_PEM_END)
-        body = rest if end < 0 else rest[:end]
-        if "".join(body.split()) != "[REDACTED]":
-            return True
-        start = found + len(_PEM_BEGIN)
+    for kind in _PEM_KINDS:
+        begin, end = _pem_pair(kind)
+        start = 0
+        while True:
+            found = text.find(begin, start)
+            if found < 0:
+                break
+            rest = text[found + len(begin) :]
+            end_at = rest.find(end)
+            body = rest if end_at < 0 else rest[:end_at]
+            if "".join(body.split()) != "[REDACTED]":
+                return True
+            start = found + len(begin)
+    return False
 
 
 def residual_secrets(text: str) -> list[str]:
     """Detectors that still match. This does not mask the text a second time."""
     found: list[str] = []
     for name, pattern, _replacement in REDACT_PATTERNS:
-        if pattern is _PEM_PATTERN:
-            if _private_key_residual(text):
-                found.append(name)
+        if name.endswith("private-key"):
             continue
         if pattern.search(text):
             found.append(name)
+    if _private_key_residual(text):
+        found.append("private-key")
     if _has_email(text):
         found.append("email")
     found.extend(remaining_fixture_sentinels(text))

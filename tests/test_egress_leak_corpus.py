@@ -34,6 +34,47 @@ def _pem() -> str:
     )
 
 
+def _project_key() -> str:
+    return "sk-" + "proj-" + ("p" * 24)
+
+
+def _anthropic_key() -> str:
+    return "sk-" + "ant-" + ("a" * 24)
+
+
+def _fine_grained() -> str:
+    return "github" + "_pat_" + ("g" * 40)
+
+
+def _gitlab() -> str:
+    return "gl" + "pat-" + ("L" * 24)
+
+
+def _stripe() -> str:
+    return "sk" + "_live_" + ("s" * 24)
+
+
+def _telegram() -> str:
+    return "123456789:" + ("T" * 35)
+
+
+def _age() -> str:
+    return "AGE-" + "SECRET-" + "KEY-1" + ("A" * 40)
+
+
+def _jwt() -> str:
+    return "ey" + "J" + ("a" * 12) + "." + ("b" * 12) + "." + ("c" * 12)
+
+
+def _pem_kind(kind: str) -> str:
+    label = f"{kind} PRIVATE KEY".strip()
+    if kind:
+        label = f"{kind}PRIVATE KEY"
+    begin = f"-----BEGIN {label}-----"
+    end = f"-----END {label}-----"
+    return begin + "\nMIIE" + ("V" * 20) + "\n" + end
+
+
 def _cases() -> list[tuple[str, str, str]]:
     """Return (name, text, secret substring that must not be emitted)."""
     access = _access_key()
@@ -58,6 +99,25 @@ def _cases() -> list[tuple[str, str, str]]:
         ("email", "write test@example.com", "test@example.com"),
         ("patient", "Patient: Alex Sample", "Alex Sample"),
         ("dob", "DOB: 03/15/1985", "03/15/1985"),
+        ("openai-project", _project_key(), "proj-"),
+        ("anthropic-key", _anthropic_key(), "ant-"),
+        ("github-fine-grained", _fine_grained(), "_pat_"),
+        ("gitlab-pat", _gitlab(), "pat-"),
+        ("stripe-live", _stripe(), "_live_"),
+        ("telegram-bot", "bot " + _telegram(), _telegram()),
+        ("age-secret", _age(), "SECRET-"),
+        ("jwt", "auth " + _jwt(), _jwt()),
+        ("rsa-private-key", _pem_kind("RSA "), "MIIE"),
+        ("ec-private-key", _pem_kind("EC "), "MIIE"),
+        ("openssh-private-key", _pem_kind("OPENSSH "), "MIIE"),
+        ("json-password", '{"password": "hello world secret"}', "hello world secret"),
+        ("json-token", '{"token": "abcdEFGH12345678"}', "abcdEFGH12345678"),
+        (
+            "wordpress-db-password",
+            "define('DB_PASSWORD', 'db pass phrase');",
+            "db pass phrase",
+        ),
+        ("password-quoted", 'password: "hello world"', "hello world"),
     ]
 
 
