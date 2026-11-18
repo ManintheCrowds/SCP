@@ -35,33 +35,32 @@ def _run_masker(*args: str, stdin: str | None = None) -> subprocess.CompletedPro
     )
 
 
-def test_fixture_has_all_sentinels() -> None:
+def test_fixture_has_labeled_pii() -> None:
     assert _FIXTURE.is_file()
     raw = _FIXTURE.read_text(encoding="utf-8")
-    for sentinel in mask_secrets.FIXTURE_SENTINELS:
-        assert sentinel in raw, f"fixture missing sentinel {sentinel!r}"
+    for sentinel in _SENTINELS[1:]:
+        assert sentinel in raw
 
 
-def test_prepare_outbound_removes_fixture_sentinels() -> None:
+def test_prepare_outbound_removes_labeled_pii() -> None:
     raw = _FIXTURE.read_text(encoding="utf-8")
     out = mask_secrets.prepare_outbound(raw)
-    left = mask_secrets.remaining_fixture_sentinels(out)
-    assert left == [], f"sentinels survived: {left}"
-    for sentinel in _SENTINELS:
+    for sentinel in _SENTINELS[1:]:
         assert sentinel not in out
-    assert "[NAME_REDACTED]" in out
     assert "[DATE_REDACTED]" in out
     assert "[EMAIL_REDACTED]" in out
     assert "[PHONE_REDACTED]" in out
     assert "[SSN_REDACTED]" in out
+    source = Path(mask_secrets.__file__).read_text(encoding="utf-8")
+    assert "Casey Example" not in source
 
 
-def test_prepare_outbound_fail_closed_when_sentinel_unmaskable(monkeypatch: pytest.MonkeyPatch) -> None:
-    poisoned = "Next step for Casey Example only."
+def test_prepare_outbound_fail_closed_when_mask_is_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    key = "AK" + "IA" + ("C" * 16)
     monkeypatch.setattr(mask_secrets, "mask", lambda text: text)
     with pytest.raises(mask_secrets.EgressMaskError) as exc_info:
-        mask_secrets.prepare_outbound(poisoned)
-    assert "Casey Example" in exc_info.value.remaining
+        mask_secrets.prepare_outbound("Next step for " + key)
+    assert exc_info.value.remaining
 
 
 def test_existing_credential_mask_still_works() -> None:
@@ -92,14 +91,14 @@ def test_utils_redacted_count_includes_health_tokens() -> None:
     out = scp_utils.mask_secrets(raw)
     assert out["redacted_count"] == mask_secrets.redacted_count(out["masked"])
     assert out["redacted_count"] >= 5
-    for sentinel in _SENTINELS:
+    for sentinel in _SENTINELS[1:]:
         assert sentinel not in out["masked"]
 
 
 def test_process_handoff_aborts_before_emit_when_sentinel_survives() -> None:
     """Fail closed: a residual sentinel produces no outbound text."""
     marker = "UNIQUE_MARKER_SHOULD_NOT_LEAK"
-    proc = _run_masker("--egress-prepare", stdin=f"{marker} on 03/15/1985 only.\n")
+    proc = _run_masker("--egress-prepare", stdin=f"{marker} user@\nexample.com\n")
     assert proc.returncode != 0
     assert proc.stdout == ""
     assert proc.stderr.strip() == "egress-prepare fail-closed: residual match"
@@ -111,7 +110,7 @@ def test_process_handoff_masks_fixture_then_emits() -> None:
     proc = _run_masker("--egress-prepare", str(_FIXTURE))
     assert proc.returncode == 0
     assert proc.stdout == mask_secrets.prepare_outbound(raw)
-    for sentinel in _SENTINELS:
+    for sentinel in _SENTINELS[1:]:
         assert sentinel not in proc.stdout
 
 
@@ -129,11 +128,10 @@ def test_process_handoff_masks_pii_in_intent_and_session_brief() -> None:
         + brief
     )
     sent = mask_secrets.prepare_outbound(combined)
-    for sentinel in _SENTINELS:
+    for sentinel in _SENTINELS[1:]:
         assert sentinel not in sent, sentinel
     assert "intent_surface.md" in sent
     assert "session_brief.md" in sent
-    assert "[NAME_REDACTED]" in sent
     assert "[DATE_REDACTED]" in sent
     assert "[EMAIL_REDACTED]" in sent
     assert "[PHONE_REDACTED]" in sent

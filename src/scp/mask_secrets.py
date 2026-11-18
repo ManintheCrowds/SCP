@@ -26,25 +26,16 @@ from collections.abc import Callable
 from pathlib import Path
 
 try:
+    from . import egress_guard
     from . import secret_text
 except ImportError:  # python src/scp/mask_secrets.py
+    egress_guard = importlib.import_module("egress_guard")
     secret_text = importlib.import_module("secret_text")
 
 # RFC-ish bounds (avoid catastrophic backtracking on long almost-email strings).
 _EMAIL_LOCAL_MAX = 64
 _EMAIL_DOMAIN_MAX = 253
 
-# Synthetic egress fixture name. Not a general person detector.
-_BARE_FIXTURE_NAME = "Casey Example"
-
-# Exact substrings from the synthetic egress handoff. Fail closed if any survive.
-FIXTURE_SENTINELS: tuple[str, ...] = (
-    _BARE_FIXTURE_NAME,
-    "03/15/1985",
-    "987-65-4321",
-    "casey.example@syn.invalid",
-    "212-555-0198",
-)
 
 # Longer tokens are listed first so a count never treats them as [REDACTED].
 REDACTION_TOKENS: tuple[str, ...] = (
@@ -376,8 +367,6 @@ def _mask_surface(text: str) -> str:
     for _name, pattern, replacement in REDACT_PATTERNS:
         result = pattern.sub(replacement, result)
     result = _mask_emails_linear(result)
-    if _BARE_FIXTURE_NAME in result:
-        result = result.replace(_BARE_FIXTURE_NAME, "[NAME_REDACTED]")
     return result
 
 
@@ -392,7 +381,6 @@ def _collect_hits(text: str) -> list[str]:
         found.append("private-key")
     if _has_email(text):
         found.append("email")
-    found.extend(remaining_fixture_sentinels(text))
     return found
 
 
@@ -459,19 +447,15 @@ def redacted_count(masked: str) -> int:
     return total
 
 
-def remaining_fixture_sentinels(text: str) -> list[str]:
-    """Return fixture sentinel substrings still present in text."""
-    return [s for s in FIXTURE_SENTINELS if s in text]
-
-
 def prepare_outbound(text: str) -> str:
-    """Mask text once, then rescan with every detector.
+    """Mask text once, then rescan with the masker and an independent guard.
 
     A second mask pass is not the check. Any remaining hit raises, and the
     CLI writes nothing.
     """
     masked = mask(text)
     left = residual_secrets(masked)
+    left.extend(label for label in egress_guard.find_suspicious(masked) if label not in left)
     if left:
         raise EgressMaskError(left)
     return masked
