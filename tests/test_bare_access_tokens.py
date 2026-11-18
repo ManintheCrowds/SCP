@@ -36,6 +36,12 @@ def test_gitleaks_allowlist_is_not_all_markdown() -> None:
     assert "tests/fixtures/" in text
 
 
+def test_ci_gate_requires_mask_check() -> None:
+    workflow = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "needs.mask-check.result" in workflow
+    assert '[ "${{ needs.mask-check.result }}" != "success" ]' in workflow
+
+
 def test_ci_runs_mask_check() -> None:
     workflow = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "mask-check:" in workflow

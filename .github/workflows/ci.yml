@@ -78,7 +78,7 @@ jobs:
     steps:
       - name: Gate on upstream jobs
         run: |
-          echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }}"
-          if [ "${{ needs.contract.result }}" != "success" ] || [ "${{ needs.promptfoo-eval.result }}" != "success" ]; then
+          echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }} mask-check=${{ needs.mask-check.result }}"
+          if [ "${{ needs.contract.result }}" != "success" ] || [ "${{ needs.promptfoo-eval.result }}" != "success" ] || [ "${{ needs.mask-check.result }}" != "success" ]; then
             exit 1
           fi
