@@ -72,7 +72,7 @@ def test_ci_runs_mask_check() -> None:
     assert "python scripts/run_mask_check.py" in workflow
     assert "needs: [contract, promptfoo-eval, mask-check]" in workflow
     assert "Run masker tests" in workflow
-    assert "pytest tests/test_bare_access_tokens.py" in workflow
+    assert "pytest tests/test_*.py" in workflow
 
 
 def _mask_check_module():
