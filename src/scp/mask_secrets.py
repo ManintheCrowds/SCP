@@ -218,16 +218,16 @@ REDACT_PATTERNS: list[tuple[str, re.Pattern[str], _Replacement]] = [
     (
         "password",
         re.compile(
-            r"(?i)(password|passwd|pwd)(\s*[:=]\s*)[\"']?" + _NOT_REDACTED + r"[^\s\"']+[\"']?"
+            r"(?i)(password|passwd|pwd)(\s*[:=]\s*)" + _NOT_REDACTED + r"[^\s\"']+"
         ),
         _keep_assignment,
     ),
     (
         "api-key",
         re.compile(
-            r"(?i)\b(api_key|apikey|secret)\b(\s*[:=]\s*)[\"']?"
+            r"(?i)\b(api_key|apikey|secret)\b(\s*[:=]\s*)"
             + _NOT_REDACTED
-            + r"[^\s\"']+[\"']?"
+            + r"[^\s\"']+"
         ),
         _keep_assignment,
     ),
@@ -388,9 +388,143 @@ def _contains_secret(text: str) -> bool:
     return bool(_collect_hits(text))
 
 
+def _value_bounds(name: str, match: re.Match[str]) -> tuple[int, int]:
+    if name in {"password", "api-key", "token", "dob", "dob-iso", "dob-written"}:
+        return match.end(2), match.end()
+    if name == "password-quoted":
+        return match.start(4), match.end(4)
+    if name == "json-secret":
+        return match.start(2), match.end(2)
+    if name == "wordpress-db-password":
+        return match.start(4), match.end(4)
+    if name == "patient":
+        label = match.group(0)
+        colon = label.find(":")
+        rest = label[colon + 1 :]
+        spaces = len(rest) - len(rest.lstrip(" "))
+        return match.start() + colon + 1 + spaces, match.end()
+    return match.start(), match.end()
+
+
+def _replacement_token(name: str) -> str:
+    if name in {"phone", "phone-intl"}:
+        return "[PHONE_REDACTED]"
+    if name == "ssn-labeled":
+        return "[REDACTED]"
+    if name.startswith("ssn"):
+        return "[SSN_REDACTED]"
+    if name == "patient":
+        return "[NAME_REDACTED]"
+    if name.startswith("dob"):
+        return "[DATE_REDACTED]"
+    if name == "email":
+        return "[EMAIL_REDACTED]"
+    return "[REDACTED]"
+
+
+def _normalized_spans(text: str) -> list[tuple[int, int, str]]:
+    spans: list[tuple[int, int, str]] = []
+    for name, pattern, _replacement in REDACT_PATTERNS:
+        if name.endswith("private-key"):
+            continue
+        for match in pattern.finditer(text):
+            start, end = _value_bounds(name, match)
+            if end > start:
+                spans.append((start, end, _replacement_token(name)))
+    if "@" in text:
+        index = 0
+        while True:
+            at = text.find("@", index)
+            if at < 0:
+                break
+            found = _try_email_span_at(text, at)
+            if found is not None:
+                spans.append((found[0], found[1], "[EMAIL_REDACTED]"))
+                index = found[1]
+            else:
+                index = at + 1
+    for kind in _PEM_KINDS:
+        begin, end_mark = _pem_pair(kind)
+        cursor = 0
+        while True:
+            found = text.find(begin, cursor)
+            if found < 0:
+                break
+            body_start = found + len(begin)
+            end_at = text.find(end_mark, body_start)
+            body_end = len(text) if end_at < 0 else end_at
+            if "".join(text[body_start:body_end].split()) != "[REDACTED]":
+                spans.append((body_start, body_end, "[REDACTED]"))
+            cursor = body_end + (0 if end_at < 0 else len(end_mark))
+    return spans
+
+
+def _original_spans(
+    spans: list[tuple[int, int, str]], cover: list[tuple[int, int]]
+) -> list[tuple[int, int, str]]:
+    mapped: list[tuple[int, int, str]] = []
+    for start, end, token in spans:
+        if start >= len(cover) or end <= start:
+            continue
+        end = min(end, len(cover))
+        mapped.append((cover[start][0], cover[end - 1][1], token))
+    mapped.sort()
+    merged: list[tuple[int, int, str]] = []
+    for start, end, token in mapped:
+        if merged and start < merged[-1][1]:
+            prev_start, prev_end, prev_token = merged[-1]
+            merged[-1] = (prev_start, max(prev_end, end), prev_token if prev_token == token else "[REDACTED]")
+            continue
+        merged.append((start, end, token))
+    return merged
+
+
+def _replace_original(text: str, spans: list[tuple[int, int, str]]) -> str:
+    if not spans:
+        return text
+    pieces: list[str] = []
+    cursor = 0
+    for start, end, token in spans:
+        start = max(start, cursor)
+        if end <= start:
+            continue
+        pieces.append(text[cursor:start])
+        pieces.append(token)
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+def _encoded_spans(text: str) -> list[tuple[int, int, str]]:
+    spans: list[tuple[int, int, str]] = []
+    index = 0
+    while index < len(text):
+        if secret_text._encoding_at(text, index) is None:
+            index += 1
+            continue
+        start, end = secret_text._expand(text, index)
+        decoded = secret_text._decode_span(text[start:end])
+        if decoded != text[start:end] and _contains_secret(decoded):
+            spans.append((start, end, "[REDACTED]"))
+            index = end
+            continue
+        index = end if end > index else index + 1
+    return spans
+
+
 def mask(text: str) -> str:
-    surface = secret_text.surface_for_matching(text, _contains_secret)
-    return _mask_surface(surface)
+    """Detect on a normalized copy and replace only those spans in the original."""
+    normalized, cover = secret_text.normalize_tracked(text)
+    mapped = _original_spans(_normalized_spans(normalized), cover)
+    mapped.extend(_encoded_spans(text))
+    mapped.extend(
+        (start, end, "[REDACTED]")
+        for start, end in secret_text.base64_secret_spans(text, _contains_secret)
+    )
+    if not mapped:
+        return text
+    identity = [(index, index + 1) for index in range(len(text) + 1)]
+    return _replace_original(text, _original_spans(mapped, identity))
 
 
 def _has_email(text: str) -> bool:

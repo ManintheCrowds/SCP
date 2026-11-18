@@ -148,7 +148,7 @@ def redact_encoded_secrets(text: str, contains_secret) -> str:
             spans.append((start, end))
             index = end
             continue
-        index += 1
+        index = end if end > index else index + 1
     if not spans:
         return text
     out: list[str] = []
@@ -231,8 +231,20 @@ def _join_run(line: str, *, reverse: bool) -> int:
     return count
 
 
+def _tail_join_run(text: str) -> int:
+    count = 0
+    for char in reversed(text[-8:]):
+        if char not in _JOIN:
+            break
+        count += 1
+    return count
+
+
 def join_split_tokens(text: str) -> str:
-    """Join a newline inside a JSON string, or a newline that splits a token."""
+    """Join a newline inside a JSON string, or a newline that splits a token.
+
+    The scan looks at a fixed-size tail, so a long run of short lines stays linear.
+    """
     if "\n" not in text:
         return text
     without_json_breaks: list[str] = []
@@ -250,22 +262,47 @@ def join_split_tokens(text: str) -> str:
             in_string = not in_string
         without_json_breaks.append(char)
     lines = "".join(without_json_breaks).split("\n")
-    joined: list[str] = [lines[0]]
+    groups: list[list[str]] = [[lines[0]]]
+    tail = _tail_join_run(lines[0])
+    backslash = lines[0].endswith("\\")
     for line in lines[1:]:
-        previous = joined[-1]
-        if previous.endswith("\\"):
-            joined[-1] = previous[:-1] + line
+        if backslash:
+            groups[-1][-1] = groups[-1][-1][:-1]
+            groups[-1].append(line)
+        elif _starts_new_secret(line):
+            groups.append([line])
+        elif tail >= 8 and _join_run(line, reverse=False) >= 4:
+            groups[-1].append(line)
+        else:
+            groups.append([line])
+        current = groups[-1]
+        tail = _tail_join_run(line)
+        backslash = line.endswith("\\")
+        if current[-1] is not line and not backslash:
+            tail = _tail_join_run("".join(current)[-8:])
+    return "\n".join("".join(group) for group in groups)
+
+
+def base64_secret_spans(text: str, contains_secret) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] not in _B64:
+            index += 1
             continue
-        # Do not glue a following secret onto the previous run. That removes
-        # the boundary the detectors use and the raw token would be emitted.
-        if _starts_new_secret(line):
-            joined.append(line)
+        end = index
+        cap = min(length, index + _MAX_B64 + 1)
+        while end < cap and text[end] in _B64:
+            end += 1
+        if end < length and text[end] in _B64:
+            index = end
             continue
-        if _join_run(previous, reverse=True) >= 8 and _join_run(line, reverse=False) >= 4:
-            joined[-1] = previous + line
-            continue
-        joined.append(line)
-    return "\n".join(joined)
+        chunk = text[index:end]
+        if _b64_has_secret(chunk, contains_secret):
+            spans.append((index, end))
+        index = end
+    return spans
 
 
 def surface_for_matching(text: str, contains_secret) -> str:
@@ -274,3 +311,50 @@ def surface_for_matching(text: str, contains_secret) -> str:
     joined = join_split_tokens(folded)
     encoded = redact_encoded_secrets(joined, contains_secret)
     return redact_base64_secrets(encoded, contains_secret)
+
+
+def _fold_tracked(text: str) -> tuple[str, list[tuple[int, int]]]:
+    chars: list[str] = []
+    cover: list[tuple[int, int]] = []
+    for index, char in enumerate(text):
+        folded = unicodedata.normalize("NFKC", char).translate(_ZERO_WIDTH).translate(_DASHES)
+        for out_char in folded:
+            chars.append(out_char)
+            cover.append((index, index + 1))
+    return "".join(chars), cover
+
+
+def _drop_tracked(
+    text: str, cover: list[tuple[int, int]], drop: set[int]
+) -> tuple[str, list[tuple[int, int]]]:
+    chars: list[str] = []
+    new_cover: list[tuple[int, int]] = []
+    for index, char in enumerate(text):
+        if index in drop:
+            continue
+        chars.append(char)
+        new_cover.append(cover[index])
+    return "".join(chars), new_cover
+
+
+def normalize_tracked(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """Normalized text plus the original span covered by each normalized character."""
+    folded, cover = _fold_tracked(text)
+    if "\n" not in folded:
+        return folded, cover
+    joined = join_split_tokens(folded)
+    if joined == folded:
+        return folded, cover
+    # Rebuild by walking the original folded text and the joined result together
+    # is unnecessary: join only deletes some newlines. Find those positions.
+    drop: set[int] = set()
+    folded_i = 0
+    for char in joined:
+        while folded_i < len(folded) and folded[folded_i] != char:
+            drop.add(folded_i)
+            folded_i += 1
+        folded_i += 1
+    while folded_i < len(folded):
+        drop.add(folded_i)
+        folded_i += 1
+    return _drop_tracked(folded, cover, drop)
