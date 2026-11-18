@@ -11,6 +11,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import mask_secrets
+
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MAX_CONTENT_LENGTH = 10_000
 _MAX_SOURCE_LENGTH = 256
@@ -62,14 +64,15 @@ _LOG_MASK_CAP = 4000
 
 
 def _sanitize_for_log(content: str, tier: str) -> str:
-    """Cap, redact, then truncate so a huge payload cannot reach the masker."""
-    from . import mask_secrets
+    """Mask the note, then apply the log cap.
 
-    redacted = mask_secrets.mask(content[:_LOG_MASK_CAP])
+    Cutting first can leave a token prefix that is too short to match.
+    """
+    redacted = mask_secrets.mask(content)[:_LOG_MASK_CAP]
     if tier == "injection":
         preview = redacted[:500]
         return f"[auto] SCP injection-tier detection (preview truncated)\n{preview}"
-    return f"[auto] SCP reversal-tier detection\n{redacted[:2000]}"
+    return f"[auto] SCP reversal-tier detection\n{redacted}"
 
 
 def maybe_log_encounter(
