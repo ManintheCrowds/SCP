@@ -1002,6 +1002,38 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
     return "".join(parts), comments
 
 
+def _comment_scan_text(comments: list[tuple[int, str]]) -> tuple[str, list[tuple[int, int, int]]]:
+    """Join non-empty comment bodies so hidden-content scanning stays linear.
+
+    The returned spans map aggregate offsets back to the raw ``<!--`` offset for
+    the source comment, preserving the existing origin metadata for findings.
+    """
+    parts: list[str] = []
+    spans: list[tuple[int, int, int]] = []
+    cursor = 0
+    for source_offset, body in comments:
+        if not body.strip():
+            continue
+        if parts:
+            parts.append("\n")
+            cursor += 1
+        start = cursor
+        parts.append(body)
+        cursor += len(body)
+        spans.append((start, cursor, source_offset))
+    return "".join(parts), spans
+
+
+def _comment_source_offset(offset: int, spans: list[tuple[int, int, int]]) -> int:
+    if not spans:
+        return 0
+    starts = [start for start, _, _ in spans]
+    index = bisect.bisect_right(starts, offset) - 1
+    if index < 0:
+        return spans[0][2]
+    return spans[index][2]
+
+
 def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
     return {
         "override_phrases": scan_override_phrases(prepared),
@@ -1060,17 +1092,17 @@ def reconcile_severity(result: dict) -> None:
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
     visible, comments = extract_html_comments(text)
-    segments: list[tuple[str, int, str]] = [("text", 0, visible)]
-    for start, body in comments:
-        if body.strip():
-            segments.append(("html_comment", start, body))
+    comment_text, comment_spans = _comment_scan_text(comments)
+    segments: list[tuple[str, str, list[tuple[int, int, int]] | None]] = [("text", visible, None)]
+    if comment_text:
+        segments.append(("html_comment", comment_text, comment_spans))
 
     legacy: dict[str, list[tuple[int, str]]] = {key: [] for key in _FINDING_CATEGORY}
     poison_notes: list[dict[str, object]] = []
     concealed_notes: list[dict[str, object]] = []
     severities: list[str] = []
 
-    for segment, source_offset, raw in segments:
+    for segment, raw, source_spans in segments:
         prepared = _prepare_text_for_scan(raw)
         for key, hits in _scan_finding_groups(raw, prepared).items():
             base = _base_severity_for_key(key)
@@ -1080,6 +1112,7 @@ def classify(text: str) -> dict:
                 legacy[key].append((offset, str(phrase)))
                 severities.append(severity)
                 if segment == "html_comment":
+                    source_offset = _comment_source_offset(offset, source_spans or [])
                     concealed_notes.append(
                         _location_record(
                             category=category,
@@ -1093,6 +1126,11 @@ def classify(text: str) -> dict:
                     )
         for offset, match, phrase, base in scan_tool_poisoning(prepared):
             severity = base if segment == "text" else _severity_for_concealment(base, "tool_poisoning")
+            source_offset = (
+                _comment_source_offset(offset, source_spans or [])
+                if segment == "html_comment"
+                else 0
+            )
             note = _location_record(
                 category="tool_poisoning",
                 offset=offset,

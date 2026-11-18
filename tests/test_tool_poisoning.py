@@ -217,6 +217,14 @@ def test_many_unclosed_comments_stay_linear() -> None:
     assert visible.strip() == ""
 
 
+def test_classify_many_tiny_comments_stays_linear() -> None:
+    payload = "<!--x-->" * 20_000
+    t0 = time.perf_counter()
+    result = sanitize_input.classify(payload)
+    assert time.perf_counter() - t0 < 2.0
+    assert result["tier"] == "clean"
+
+
 def test_packaged_registry_tool_poisoning_round_trip() -> None:
     registry = pr.load_packaged_threat_registry()
     records = [
