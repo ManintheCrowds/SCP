@@ -58,11 +58,14 @@ def _encounter_dir() -> Path | None:
     return resolved
 
 
+_LOG_MASK_CAP = 4000
+
+
 def _sanitize_for_log(content: str, tier: str) -> str:
-    """Redact secrets then truncate for durable encounter logs."""
+    """Cap, redact, then truncate so a huge payload cannot reach the masker."""
     from . import mask_secrets
 
-    redacted = mask_secrets.mask(content)
+    redacted = mask_secrets.mask(content[:_LOG_MASK_CAP])
     if tier == "injection":
         preview = redacted[:500]
         return f"[auto] SCP injection-tier detection (preview truncated)\n{preview}"
