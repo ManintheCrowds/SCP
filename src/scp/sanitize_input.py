@@ -1026,18 +1026,20 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
     return "".join(parts), comments
 
 
-def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int]]:
+def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int], list[int]]:
     """Remove markup delimiters and record output offsets where markup was removed."""
     parts: list[str] = []
     boundaries: set[int] = set()
+    source_map: list[int] = []
     cursor = 0
     out_len = 0
     length = len(text)
 
-    def add(segment: str) -> None:
+    def add(segment: str, source_start: int) -> None:
         nonlocal out_len
         if segment:
             parts.append(segment)
+            source_map.extend(range(source_start, source_start + len(segment)))
             out_len += len(segment)
 
     def mark_boundary() -> None:
@@ -1046,10 +1048,10 @@ def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int
     while cursor < length:
         start = text.find("<", cursor)
         if start < 0:
-            add(text[cursor:])
+            add(text[cursor:], cursor)
             break
         if text.startswith("<!--", start):
-            add(text[cursor:start])
+            add(text[cursor:start], cursor)
             if text.startswith("<!-->", start):
                 mark_boundary()
                 cursor = start + 5
@@ -1061,23 +1063,23 @@ def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int
             close = _find_html_comment_close(text, start + 4)
             if close is None:
                 mark_boundary()
-                add(text[start + 4 :])
+                add(text[start + 4 :], start + 4)
                 break
             close_index, close_width = close
             mark_boundary()
-            add(text[start + 4 : close_index])
+            add(text[start + 4 : close_index], start + 4)
             mark_boundary()
             cursor = close_index + close_width
             continue
         if text.startswith("<![CDATA[", start):
-            add(text[cursor:start])
+            add(text[cursor:start], cursor)
             close_index = text.find(">", start + 9)
             if close_index < 0:
                 mark_boundary()
                 break
             if close_index >= 2 and text[close_index - 2 : close_index] == "]]":
                 mark_boundary()
-                add(text[start + 9 : close_index - 2])
+                add(text[start + 9 : close_index - 2], start + 9)
                 mark_boundary()
                 cursor = close_index + 1
                 continue
@@ -1085,7 +1087,7 @@ def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int
             cursor = close_index + 1
             continue
         if text.startswith("<?", start):
-            add(text[cursor:start])
+            add(text[cursor:start], cursor)
             close_index = text.find(">", start + 2)
             if close_index < 0:
                 mark_boundary()
@@ -1094,7 +1096,7 @@ def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int
             cursor = close_index + 1
             continue
         if text.startswith("<!", start):
-            add(text[cursor:start])
+            add(text[cursor:start], cursor)
             close_index = text.find(">", start + 2)
             if close_index < 0:
                 mark_boundary()
@@ -1102,18 +1104,18 @@ def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int
             mark_boundary()
             cursor = close_index + 1
             continue
-        add(text[cursor : start + 1])
+        add(text[cursor : start + 1], cursor)
         cursor = start + 1
-    return "".join(parts), boundaries
+    return "".join(parts), boundaries, source_map
 
 
 def _strip_html_comment_markers(text: str) -> str:
     """Remove markup delimiters while preserving source-order content."""
-    stripped, _ = _strip_html_comment_markers_with_boundaries(text)
+    stripped, _, _ = _strip_html_comment_markers_with_boundaries(text)
     return stripped
 
 
-def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int]]:
+def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int], list[int]]:
     """Return source-order text and whether bounded decoding found more markup."""
     current = text
     for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
@@ -1124,23 +1126,25 @@ def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int]]:
     else:
         decoded = _decode_html_entities(_decode_url_encoding(current))
         if decoded != current:
-            return text, True, set()
+            return text, True, set(), list(range(len(text)))
 
     stripped_any = False
     boundaries: set[int] = set()
+    source_map = list(range(len(current)))
     for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
-        stripped, stripped_boundaries = _strip_html_comment_markers_with_boundaries(current)
+        stripped, stripped_boundaries, stripped_map = _strip_html_comment_markers_with_boundaries(current)
         if stripped == current:
             break
         stripped_any = True
         boundaries = stripped_boundaries
+        source_map = [source_map[index] for index in stripped_map]
         current = stripped
-    return (current if stripped_any else text), False, boundaries
+    return (current if stripped_any else text), False, boundaries, (source_map if stripped_any else list(range(len(text))))
 
 
 def _html_comment_source_order_text(text: str) -> str:
     """Decode comment delimiters and strip them until source-order text settles."""
-    source_order, _, _ = _html_comment_source_order_scan(text)
+    source_order, _, _, _ = _html_comment_source_order_scan(text)
     return source_order
 
 
@@ -1266,7 +1270,12 @@ def classify(text: str) -> dict:
             if segment == "html_comment":
                 concealed_notes.append(note)
 
-    source_order, source_order_bound_hit, source_order_boundaries = _html_comment_source_order_scan(text)
+    (
+        source_order,
+        source_order_bound_hit,
+        source_order_boundaries,
+        source_order_source_map,
+    ) = _html_comment_source_order_scan(text)
     if source_order_bound_hit:
         legacy["encoding_blocks"].append((0, "html_comment_decode_bound"))
         severities.append("high")
@@ -1293,6 +1302,10 @@ def classify(text: str) -> dict:
             else:
                 source_start = offset
                 source_end = offset + len(match)
+            if source_start < len(source_order_source_map):
+                original_start = source_order_source_map[source_start]
+            else:
+                original_start = source_start
             visible_same_phrase = any(
                 note.get("segment") == "text" and note.get("phrase") == phrase
                 for note in poison_notes
@@ -1310,7 +1323,7 @@ def classify(text: str) -> dict:
                     offset=offset,
                     match=match,
                     segment="html_comment_source",
-                    source_offset=source_start,
+                    source_offset=original_start,
                     severity=severity,
                     base_severity=base,
                     phrase=phrase,
