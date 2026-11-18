@@ -25,14 +25,14 @@ jobs:
         run: pytest tests/test_mcp_contract_v1.py -v
       - name: Tool-poisoning regressions (pytest)
         run: |
-          collect_output="$(python -m pytest --collect-only -q tests/test_tool_poisoning.py)"
+          collect_output="$(python -m pytest --collect-only -q tests/test_tool_poisoning.py tests/test_tool_poisoning_acceptance_corpus.py)"
           printf '%s\n' "$collect_output"
           collected="$(printf '%s\n' "$collect_output" | awk '/tests collected/ {print $1}')"
           if [ -z "$collected" ] || [ "$collected" -eq 0 ]; then
             echo "No tool-poisoning tests were collected"
             exit 1
           fi
-          python -m pytest tests/test_tool_poisoning.py -q
+          python -m pytest tests/test_tool_poisoning.py tests/test_tool_poisoning_acceptance_corpus.py -q
 
   promptfoo-eval:
     runs-on: ubuntu-latest
