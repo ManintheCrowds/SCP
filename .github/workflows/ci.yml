@@ -45,9 +45,21 @@ jobs:
         working-directory: examples/promptfoo
         run: npx promptfoo eval -c promptfooconfig.yaml
 
+  mask-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: pip install .
+      - name: Mask-check handoff and state files
+        run: python scripts/run_mask_check.py
+
   # Required status context for main branch protection. Must keep this job id as CI.
   CI:
-    needs: [contract, promptfoo-eval]
+    needs: [contract, promptfoo-eval, mask-check]
     if: always()
     runs-on: ubuntu-latest
     steps:

@@ -18,5 +18,6 @@ repos:
         entry: python src/scp/mask_secrets.py --check
         language: system
         files: '(^|/)\.cursor/state/.+\.(md|json|jsonl)$|(^|/)[^/]*handoff[^/]*\.(md|json|jsonl)$'
+        exclude: ^tests/
         pass_filenames: true
         stages: [pre-commit]

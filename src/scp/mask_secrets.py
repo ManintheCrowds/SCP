@@ -63,6 +63,17 @@ def _is_domain_label_char(c: str) -> bool:
     return c.isalnum() or c == "-"
 
 
+def _cat(*parts: str) -> str:
+    """Build a token prefix without storing the joined form in source."""
+    return "".join(parts)
+
+
+# Bare cloud access-key and GitHub token shapes. Prefixes are concatenated so
+# the source file does not contain a real-format token.
+_BARE_ACCESS_KEY = re.compile(r"\b" + re.escape(_cat("AK", "IA")) + r"[A-Z2-7]{16}\b")
+_BARE_GITHUB_TOKEN = re.compile(r"\b" + re.escape(_cat("gh", "p_")) + r"[A-Za-z0-9]{36}\b")
+
+
 def _try_email_span_at(text: str, at: int) -> tuple[int, int] | None:
     """If text[at] is '@', return (start, end_exclusive) for a bounded email-like span, else None."""
     if at < 0 or at >= len(text) or text[at] != "@":
@@ -138,6 +149,8 @@ REDACT_PATTERNS = [
         "-----BEGIN PRIVATE KEY-----\n[REDACTED]\n-----END PRIVATE KEY-----",
     ),
     (re.compile(r"\bsk-[a-zA-Z0-9]{20,}\b"), "sk-[REDACTED]"),
+    (_BARE_ACCESS_KEY, "[REDACTED]"),
+    (_BARE_GITHUB_TOKEN, "[REDACTED]"),
     (re.compile(r"\bSSN:\s*\d{3}-\d{2}-\d{4}\b"), "SSN: [REDACTED]"),
     (
         re.compile(r"(?i)\bPatient:\s*[A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)+"),

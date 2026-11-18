@@ -7,7 +7,6 @@ useDefault = true
 [allowlist]
 description = "Docs, binaries, SCP redaction source, intentional test hazard corpus, and the encounter mask regression that plants a synthetic cloud secret."
 paths = [
-  '''.*\.md$''',
   '''.*\.lock$''',
   '''.*\.svg$''',
   '''.*\.png$''',

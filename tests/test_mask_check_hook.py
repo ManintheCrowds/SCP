@@ -1,7 +1,7 @@
 # PURPOSE: The mask-check pre-commit hook fails on a planted fake secret
 # and passes after SCP's masker redacts that handoff.
 # The fake access-key prefix is assembled at runtime so no committed markdown
-# file contains a bare AKIA or ghp_ token.
+# file contains a bare cloud-key or GitHub token prefix.
 
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ def test_committed_markdown_has_no_bare_access_key_prefix() -> None:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         assert prefix not in text, path
-        assert "ghp_" not in text, path
+        assert "gh" + "p_" not in text, path
 
 
 def test_planted_handoff_fails_mask_check_until_masked(tmp_path: Path) -> None:
