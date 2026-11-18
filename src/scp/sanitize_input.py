@@ -1012,6 +1012,10 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
             comments.append((start, ""))
             cursor = start + 5
             continue
+        if text.startswith("<!--->", start):
+            comments.append((start, ""))
+            cursor = start + 6
+            continue
         close = _find_html_comment_close(text, start + 4)
         if close is None:
             comments.append((start, text[start + 4 :]))
@@ -1035,6 +1039,9 @@ def _strip_html_comment_markers(text: str) -> str:
         parts.append(text[cursor:start])
         if text.startswith("<!-->", start):
             cursor = start + 5
+            continue
+        if text.startswith("<!--->", start):
+            cursor = start + 6
             continue
         close = _find_html_comment_close(text, start + 4)
         if close is None:
