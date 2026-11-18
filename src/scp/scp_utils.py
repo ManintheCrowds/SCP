@@ -300,8 +300,7 @@ def purge_quarantine(quarantine_id: str | None = None, older_than_days: int | No
 def mask_secrets(content: str) -> dict:
     scp_limits.assert_within_limit(content, what="mask_secrets content")
     masked = mask_secrets_mod.mask(content)
-    count = masked.count("[REDACTED]") + masked.count("[EMAIL_REDACTED]")
-    return {"masked": masked, "redacted_count": count}
+    return {"masked": masked, "redacted_count": mask_secrets_mod.redacted_count(masked)}
 
 
 def get_policy_provenance(registry_path: Path | None = None) -> dict:

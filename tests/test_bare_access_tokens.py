@@ -1,0 +1,98 @@
+# PURPOSE: Bare access-key shapes are masked, and gitleaks no longer skips every markdown file.
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+from scp import mask_secrets
+
+_REPO = Path(__file__).resolve().parents[1]
+
+
+def _akia() -> str:
+    return "AK" + "IA" + "FAKEFAKEFAKEFAKE"
+
+
+def _ghp() -> str:
+    return "gh" + "p_" + ("A" * 36)
+
+
+def test_mask_bare_access_key_and_github_token() -> None:
+    akia = _akia()
+    ghp = _ghp()
+    text = f"cloud {akia} gh {ghp}"
+    assert mask_secrets.has_secrets(text)
+    masked = mask_secrets.mask(text)
+    assert akia not in masked
+    assert ghp not in masked
+    assert "[REDACTED]" in masked
+    assert not mask_secrets.has_secrets(masked)
+
+
+def test_gitleaks_allowlist_is_not_all_markdown() -> None:
+    text = (_REPO / ".gitleaks.toml").read_text(encoding="utf-8")
+    assert ".*\\.md$" not in text
+    assert "tests/fixtures/" in text
+
+
+def test_zero_scans_fail_when_targets_exist() -> None:
+    module = _mask_check_module()
+    assert module.guard_scan_count(2, 0) == 1
+    assert module.guard_scan_count(0, 0) == 0
+    assert module.guard_scan_count(2, 2) == 0
+
+
+def test_mask_check_job_is_pinned_and_read_only() -> None:
+    workflow = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    section = workflow.split("mask-check:", 1)[1].split("\n  CI:", 1)[0]
+    assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in section
+    assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in section
+    assert "persist-credentials: false" in section
+    assert "contents: read" in section
+    leaks = (_REPO / ".github" / "workflows" / "security-gitleaks.yml").read_text(encoding="utf-8")
+    assert 'GITLEAKS_VERSION: "8.30.1"' in leaks
+
+
+def test_ci_uses_base_mask_check_runner() -> None:
+    workflow = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "pinned-masker/scripts/run_mask_check.py" in workflow
+    assert "SCP_MASK_CHECK_CONFIG" in workflow
+
+
+def test_ci_gate_requires_mask_check() -> None:
+    workflow = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "needs.mask-check.result" in workflow
+    assert '[ "${{ needs.mask-check.result }}" != "success" ]' in workflow
+
+
+def test_ci_runs_mask_check() -> None:
+    workflow = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "mask-check:" in workflow
+    assert "python scripts/run_mask_check.py" in workflow
+    assert "needs: [contract, promptfoo-eval, mask-check]" in workflow
+    assert "Run masker tests" in workflow
+    assert "pytest tests " in workflow or "pytest tests\n" in workflow
+
+
+def _mask_check_module():
+    path = _REPO / "scripts" / "run_mask_check.py"
+    spec = importlib.util.spec_from_file_location("run_mask_check_under_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_mask_check_skips_test_fixtures(tmp_path: Path) -> None:
+    module = _mask_check_module()
+    config = (_REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    fixture = tmp_path / "tests" / "fixtures"
+    fixture.mkdir(parents=True)
+    (fixture / "egress_mask_synthetic_handoff.md").write_text("fixture\n", encoding="utf-8")
+    state = tmp_path / ".cursor" / "state"
+    state.mkdir(parents=True)
+    (state / "handoff.md").write_text("state\n", encoding="utf-8")
+    selected = [path.relative_to(tmp_path).as_posix() for path in module.selected_files(tmp_path, config)]
+    assert selected == [".cursor/state/handoff.md"]
+    assert all(not name.startswith("tests/") for name in selected)

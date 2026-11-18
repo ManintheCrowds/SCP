@@ -1,0 +1,25 @@
+# SCP secret scanning and handoff/state mask check.
+# Install: pre-commit install
+# Run manually: pre-commit run --all-files
+#
+# gitleaks CLI is pinned to commit 83d9cd684c87d95d656c1458ef04895a7f1cbd8e
+# (the v8.30.1 tag). The hook reads .gitleaks.toml.
+# mask-check runs an installed package when that package lives outside the repo.
+# An editable install uses the last committed masker, not uncommitted edits.
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: mask-check
+        name: Mask secrets check (handoff/state)
+        entry: python scripts/run_mask_check.py
+        language: system
+        files: '(?i)(?:(^|/)\.cursor/state/.+$|(^|/)handoffs/.+\.(?:md|txt|json|jsonl|ya?ml)$|(^|/)[^/]*handoff[^/]*\.(?:md|txt|json|jsonl|ya?ml)$|(^|/)\.cursor/state/(?:.+/)?[^/]*next_prompt[^/]*$)'
+        exclude: ^tests/
+        pass_filenames: true
+        stages: [pre-commit]

@@ -45,15 +45,78 @@ jobs:
         working-directory: examples/promptfoo
         run: npx promptfoo eval -c promptfooconfig.yaml
 
+  mask-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: pinned-masker
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Install masker from a revision this commit cannot edit
+        run: |
+          if [ -d pinned-masker ]; then
+            pip install ./pinned-masker
+          else
+            pip install ./head
+          fi
+      - name: Mask-check head tree with the base scan list
+        working-directory: head
+        env:
+          SCP_MASK_CHECK_ROOT: ${{ github.workspace }}/head
+        run: |
+          # The head checkout's resolver is not consulted. The base tree is the
+          # only input: run its checker whenever that file exists.
+          base="${{ github.workspace }}/pinned-masker"
+          event="${{ github.event_name }}"
+          if [ "$event" = "pull_request" ]; then
+            if [ ! -d "$base" ]; then
+              echo "base revision checkout missing; refusing to fall back" >&2
+              exit 1
+            fi
+            if [ -f "${{ github.workspace }}/pinned-masker/scripts/run_mask_check.py" ]; then
+              export SCP_MASK_CHECK_CONFIG="${{ github.workspace }}/pinned-masker/.pre-commit-config.yaml"
+              python "${{ github.workspace }}/pinned-masker/scripts/run_mask_check.py"
+              exit $?
+            fi
+          elif [ ! -f scripts/run_mask_check.py ]; then
+            echo "mask-check script missing; refusing to fall back" >&2
+            exit 1
+          fi
+          python scripts/run_mask_check.py
+      - name: Run masker tests
+        working-directory: head
+        run: |
+          pip install -e ".[dev]"
+          # Directory collect, not a hand-written list. Quoting a glob would
+          # not expand, and an unquoted glob is passed as explicit paths, which
+          # makes --ignore a no-op. The only ignores are pre-existing failures
+          # outside the masker. tests/test_ci_collects_every_test.py fails if
+          # another tests/test_*.py file is left out.
+          pytest tests \
+            --ignore=tests/test_setup_mycelium_nostr_key.py \
+            --ignore=tests/test_contract_document_hash.py \
+            -q --tb=line
+
   # Required status context for main branch protection. Must keep this job id as CI.
   CI:
-    needs: [contract, promptfoo-eval]
+    needs: [contract, promptfoo-eval, mask-check]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Gate on upstream jobs
         run: |
-          echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }}"
-          if [ "${{ needs.contract.result }}" != "success" ] || [ "${{ needs.promptfoo-eval.result }}" != "success" ]; then
+          echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }} mask-check=${{ needs.mask-check.result }}"
+          if [ "${{ needs.contract.result }}" != "success" ] || [ "${{ needs.promptfoo-eval.result }}" != "success" ] || [ "${{ needs.mask-check.result }}" != "success" ]; then
             exit 1
           fi
