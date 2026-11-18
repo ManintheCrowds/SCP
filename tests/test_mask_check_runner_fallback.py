@@ -46,8 +46,9 @@ def test_push_refuses_the_pull_request_fallback(tmp_path: Path) -> None:
     assert chosen == present
 
 
-def test_workflow_uses_the_resolver() -> None:
+def test_workflow_runs_the_base_checker_without_the_head_resolver() -> None:
     workflow = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     section = workflow.split("mask-check:", 1)[1].split("\n  CI:", 1)[0]
-    assert "--resolve-runner" in section
-    assert "refusing to fall back" in (_REPO / "scripts" / "run_mask_check.py").read_text(encoding="utf-8")
+    assert "pinned-masker/scripts/run_mask_check.py" in section
+    assert "--resolve-runner" not in section
+    assert "refusing to fall back" in section

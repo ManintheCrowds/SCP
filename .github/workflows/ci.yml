@@ -75,17 +75,25 @@ jobs:
         env:
           SCP_MASK_CHECK_ROOT: ${{ github.workspace }}/head
         run: |
-          resolved="$(python scripts/run_mask_check.py --resolve-runner --event "${{ github.event_name }}" --base-dir "${{ github.workspace }}/pinned-masker" --local-script scripts/run_mask_check.py)"
-          kind="${resolved%%$'\t'*}"
-          script="${resolved#*$'\t'}"
-          if [ "$kind" = "base" ]; then
-            export SCP_MASK_CHECK_CONFIG="${{ github.workspace }}/pinned-masker/.pre-commit-config.yaml"
-            case "$script" in
-              */pinned-masker/scripts/run_mask_check.py) ;;
-              *) echo "resolver did not select the base checker" >&2; exit 1 ;;
-            esac
+          # The head checkout's resolver is not consulted. The base tree is the
+          # only input: run its checker whenever that file exists.
+          base="${{ github.workspace }}/pinned-masker"
+          event="${{ github.event_name }}"
+          if [ "$event" = "pull_request" ]; then
+            if [ ! -d "$base" ]; then
+              echo "base revision checkout missing; refusing to fall back" >&2
+              exit 1
+            fi
+            if [ -f "${{ github.workspace }}/pinned-masker/scripts/run_mask_check.py" ]; then
+              export SCP_MASK_CHECK_CONFIG="${{ github.workspace }}/pinned-masker/.pre-commit-config.yaml"
+              python "${{ github.workspace }}/pinned-masker/scripts/run_mask_check.py"
+              exit $?
+            fi
+          elif [ ! -f scripts/run_mask_check.py ]; then
+            echo "mask-check script missing; refusing to fall back" >&2
+            exit 1
           fi
-          python "$script"
+          python scripts/run_mask_check.py
       - name: Run masker tests
         working-directory: head
         env:
