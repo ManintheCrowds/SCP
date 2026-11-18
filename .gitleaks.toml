@@ -7,20 +7,20 @@ useDefault = true
 [allowlist]
 description = "Docs, binaries, SCP redaction source, intentional test hazard corpus, and the encounter mask regression that plants a synthetic cloud secret."
 paths = [
-  '''.*\.lock$''',
-  '''.*\.svg$''',
-  '''.*\.png$''',
-  '''.*\.jpg$''',
-  '''.*\.jpeg$''',
-  '''.*\.gif$''',
-  '''.*\.pdf$''',
-  '''.*\.min\.js$''',
-  '''.*\.map$''',
-  '''src/scp/mask_secrets\.py''',
-  '''tests/fixtures/''',
-  '''tests/test_appsec_antigen_mcp_gates\.py''',
-  # Synthetic leak samples. The pull-request range still contains them, and history is not rewritten.
-  '''tests/test_egress_leak_corpus\.py''',
-  '''__pycache__/''',
-  '''.*\.pyc$'''
+  '''(^|/)[^/]+\.lock$''',
+  '''(^|/)[^/]+\.svg$''',
+  '''(^|/)[^/]+\.png$''',
+  '''(^|/)[^/]+\.jpg$''',
+  '''(^|/)[^/]+\.jpeg$''',
+  '''(^|/)[^/]+\.gif$''',
+  '''(^|/)[^/]+\.pdf$''',
+  '''(^|/)[^/]+\.min\.js$''',
+  '''(^|/)[^/]+\.map$''',
+  '''^src/scp/mask_secrets\.py$''',
+  '''^tests/fixtures/[^/]+$''',
+  '''^tests/test_appsec_antigen_mcp_gates\.py$''',
+  # Synthetic samples already in this pull request's history. Not a prefix match.
+  '''^tests/test_egress_leak_corpus\.py$''',
+  '''(^|/)__pycache__(/|$)''',
+  '''(^|/)[^/]+\.pyc$'''
 ]
