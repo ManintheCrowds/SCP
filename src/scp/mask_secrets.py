@@ -208,6 +208,20 @@ REDACT_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
 ]
 
 
+class InputDecodeError(ValueError):
+    """Raised when CLI input is not strict UTF-8 or contains a NUL."""
+
+
+def decode_strict(data: bytes) -> str:
+    """Decode CLI bytes. Invalid UTF-8 and NUL bytes fail closed."""
+    if b"\x00" in data:
+        raise InputDecodeError("NUL byte")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InputDecodeError("invalid utf-8") from exc
+
+
 class EgressMaskError(ValueError):
     """Raised when fixture sentinels or pattern matches remain after masking."""
 
@@ -311,8 +325,12 @@ def has_secrets(text: str) -> bool:
     return mask(text_check) != text_check
 
 
-def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
+def _read_path(path: Path) -> str:
+    return decode_strict(path.read_bytes())
+
+
+def _read_stdin() -> str:
+    return decode_strict(sys.stdin.buffer.read())
 
 
 def _cmd_check(args: list[str]) -> int:
@@ -327,7 +345,11 @@ def _cmd_check(args: list[str]) -> int:
             failed = True
             continue
         try:
-            text = _read_text(path)
+            text = _read_path(path)
+        except InputDecodeError:
+            print("mask fail-closed: decode error", file=sys.stderr)
+            failed = True
+            continue
         except OSError:
             print(f"Not found: {path}", file=sys.stderr)
             failed = True
@@ -353,9 +375,9 @@ def _cmd_egress_prepare(args: list[str]) -> int:
     try:
         if len(args) == 2 and args[1] != "-":
             path = Path(args[1])
-            text = _read_text(path)
+            text = _read_path(path)
         else:
-            text = sys.stdin.read()
+            text = _read_stdin()
         prepared = prepare_outbound(text)
     except EgressMaskError:
         return _egress_fail(_EGRESS_FAIL_RESIDUAL)
@@ -381,7 +403,12 @@ def main(argv: list[str] | None = None) -> int:
     if command == "--egress-prepare":
         return _cmd_egress_prepare(args)
     if command == "-":
-        return _cmd_mask_text(sys.stdin.read())
+        try:
+            text = _read_stdin()
+        except InputDecodeError:
+            print("mask fail-closed: decode error", file=sys.stderr)
+            return 1
+        return _cmd_mask_text(text)
     if command.startswith("-"):
         print(f"Unknown option: {command}", file=sys.stderr)
         return 2
@@ -390,7 +417,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Not found: {path}", file=sys.stderr)
         return 2
     try:
-        text = _read_text(path)
+        text = _read_path(path)
+    except InputDecodeError:
+        print("mask fail-closed: decode error", file=sys.stderr)
+        return 1
     except OSError:
         print(f"Not found: {path}", file=sys.stderr)
         return 2
