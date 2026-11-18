@@ -512,6 +512,39 @@ def _encoded_spans(text: str) -> list[tuple[int, int, str]]:
     return spans
 
 
+def _map_joined_spans(
+    spans: list[tuple[int, int, str]],
+    source: str,
+    joined: str,
+    cover: list[tuple[int, int]] | None,
+) -> list[tuple[int, int, str]]:
+    mapping = secret_text.joined_index_map(source, joined)
+    located: list[tuple[int, int, str]] = []
+    for start, end, token in spans:
+        if start >= len(mapping) or end <= start:
+            continue
+        end = min(end, len(mapping))
+        src_start = mapping[start]
+        src_end = mapping[end - 1] + 1
+        if cover is None:
+            located.append((src_start, src_end, token))
+            continue
+        if src_start >= len(cover):
+            continue
+        src_end = min(src_end, len(cover))
+        located.append((cover[src_start][0], cover[src_end - 1][1], token))
+    return located
+
+
+def _control_spans(text: str) -> list[tuple[int, int, str]]:
+    spans: list[tuple[int, int, str]] = []
+    for index, char in enumerate(text):
+        code = ord(char)
+        if code == 0x7F or (code < 32 and char not in "\t\n\r") or (0x80 <= code <= 0x9F and code != 0x85):
+            spans.append((index, index + 1, ""))
+    return spans
+
+
 def _merge_spans(spans: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
     ordered = sorted(spans)
     merged: list[tuple[int, int, str]] = []
@@ -530,9 +563,9 @@ def _merge_spans(spans: list[tuple[int, int, str]]) -> list[tuple[int, int, str]
     return merged
 
 
-def mask(text: str) -> str:
-    """Detect on a normalized copy and replace only those spans in the original."""
-    if not secret_text.needs_offset_map(text):
+def _mask_impl(text: str) -> str:
+    """Detect on the unjoined and joined surfaces. Replace spans only in the original."""
+    if not secret_text.needs_offset_map(text) and not secret_text.disallowed_control(text):
         direct = _normalized_spans(text)
         direct.extend(
             (start, end, "[REDACTED]")
@@ -541,16 +574,33 @@ def mask(text: str) -> str:
         if not direct:
             return text
         return _replace_original(text, _merge_spans(direct))
-    normalized, cover = secret_text.normalize_tracked(text)
-    mapped = _original_spans(_normalized_spans(normalized), cover)
-    mapped.extend(_encoded_spans(text))
-    mapped.extend(
+    unjoined, cover = secret_text.canonical_unjoined(text)
+    spans: list[tuple[int, int, str]] = []
+    surface_spans = _normalized_spans(unjoined)
+    if cover is None:
+        spans.extend(surface_spans)
+    else:
+        spans.extend(_original_spans(surface_spans, cover))
+    _unjoined_view, joined = secret_text.detection_views(text)
+    if joined != unjoined:
+        spans.extend(_map_joined_spans(_normalized_spans(joined), unjoined, joined, cover))
+    spans.extend(_encoded_spans(text))
+    spans.extend(
         (start, end, "[REDACTED]")
         for start, end in secret_text.base64_secret_spans(text, _contains_secret)
     )
-    if not mapped:
+    spans.extend(_control_spans(text))
+    if not spans:
         return text
-    return _replace_original(text, _merge_spans(mapped))
+    return _replace_original(text, _merge_spans(spans))
+
+
+def mask(text: str) -> str:
+    """Detect on a normalized copy and replace only those spans in the original."""
+    try:
+        return _mask_impl(text)
+    except secret_text.NormalizationBudgetExceeded:
+        return "[REDACTED]"
 
 
 def _has_email(text: str) -> bool:
@@ -611,8 +661,14 @@ def prepare_outbound(text: str) -> str:
     """Mask text once, then rescan with the masker and an independent guard.
 
     A second mask pass is not the check. Any remaining hit raises, and the
-    CLI writes nothing.
+    CLI writes nothing. The rescan uses the same surfaces as mask().
     """
+    if secret_text.disallowed_control(text):
+        raise EgressMaskError(["control"])
+    try:
+        secret_text.detection_views(text)
+    except secret_text.NormalizationBudgetExceeded as exc:
+        raise EgressMaskError(["normalization-budget"]) from exc
     masked = mask(text)
     left = residual_secrets(masked)
     for view in egress_guard.views_for_rescan(masked):
@@ -640,7 +696,14 @@ def _neutralize_backtick_emails(text: str) -> str:
 
 def has_secrets(text: str) -> bool:
     """Return True if text appears to contain unredacted secrets."""
-    return mask(_neutralize_backtick_emails(text)) != _neutralize_backtick_emails(text)
+    if secret_text.disallowed_control(text):
+        return True
+    try:
+        secret_text.detection_views(text)
+    except secret_text.NormalizationBudgetExceeded:
+        return True
+    neutralized = _neutralize_backtick_emails(text)
+    return mask(neutralized) != neutralized
 
 
 def _read_path(path: Path) -> str:
@@ -694,7 +757,7 @@ _EXIT_ERROR = 2
 
 
 def _disallowed_control(text: str) -> bool:
-    return any(ord(char) < 32 and char not in "\t\n\r" for char in text)
+    return secret_text.disallowed_control(text)
 
 
 def _egress_fail(message: str, code: int = _EXIT_ERROR) -> int:

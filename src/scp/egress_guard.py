@@ -4,68 +4,17 @@ from __future__ import annotations
 
 import base64
 import binascii
+import importlib
 import re
-import unicodedata
 
-_INVISIBLE = dict.fromkeys(
-    [
-        0x00AD,
-        0x2063,
-        0x202E,
-        0x2066,
-        0x2067,
-        0x2068,
-        0x2069,
-        0xFE0F,
-        0x034F,
-        *range(0xE0000, 0xE007F + 1),
-    ],
-    None,
-)
+try:
+    from . import secret_text
+except ImportError:  # python src/scp/mask_secrets.py loads this file by path
+    secret_text = importlib.import_module("secret_text")
 
 
 def _cat(*parts: str) -> str:
     return "".join(parts)
-
-
-_TOKEN_EDGE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
-
-
-def _strip_invisible(text: str) -> str:
-    """Drop format characters and the explicit invisible set.
-
-    Soft hyphen, ZWSP, and ZWJ are format characters. Stripping the class
-    covers those without a per-character exception list.
-    """
-    kept = []
-    for char in text:
-        if unicodedata.category(char) == "Cf":
-            continue
-        kept.append(char)
-    return "".join(kept).translate(_INVISIBLE)
-
-
-def _unwrap_lines(text: str) -> str:
-    """Join a line wrap that continues a token fragment of at least 6 characters."""
-    lines = text.split("\n")
-    if len(lines) < 2:
-        return text
-    merged = [lines[0]]
-    for line in lines[1:]:
-        previous = merged[-1]
-        continued = line.lstrip(" ")
-        if (
-            previous
-            and continued
-            and " " not in previous
-            and len(previous) >= 6
-            and previous[-1] in _TOKEN_EDGE
-            and continued[0] in _TOKEN_EDGE
-        ):
-            merged[-1] = previous + continued
-            continue
-        merged.append(line)
-    return "\n".join(merged)
 
 
 def _decoded_payloads(text: str) -> list[str]:
@@ -92,15 +41,14 @@ def _decoded_payloads(text: str) -> list[str]:
 
 
 def views_for_rescan(text: str) -> list[str]:
-    """Normalize, undo wraps, and decode. The caller runs the full detector set."""
-    stripped = unicodedata.normalize("NFKC", _strip_invisible(text))
-    unwrapped = _unwrap_lines(stripped)
-    views = [stripped]
-    if unwrapped != stripped:
-        views.append(unwrapped)
-    views.extend(_decoded_payloads(stripped))
-    if unwrapped != stripped:
-        views.extend(_decoded_payloads(unwrapped))
+    """Same surfaces as mask(), plus decoded payloads. The caller runs every detector."""
+    unjoined, joined = secret_text.detection_views(text)
+    views = [unjoined]
+    if joined != unjoined:
+        views.append(joined)
+    views.extend(_decoded_payloads(unjoined))
+    if joined != unjoined:
+        views.extend(_decoded_payloads(joined))
     return views
 
 
@@ -131,10 +79,10 @@ def _prefix_hit(text: str, prefix: str, body: str) -> bool:
 def find_suspicious(text: str) -> list[str]:
     """Return labels for suspicious leftovers. Does not use the masker's pattern list."""
     hits: list[str] = []
-    folded = unicodedata.normalize("NFKC", _strip_invisible(text))
-    flattened = folded.replace("\n", "").replace("\r", "")
-    decoded = _double_url(flattened)
-    views = (folded, flattened, decoded)
+    unjoined, joined = secret_text.detection_views(text)
+    flat = unjoined.replace("\n", "").replace("\t", "")
+    decoded = _double_url(flat)
+    views = (unjoined, joined, flat, decoded)
 
     def any_view(pred) -> bool:
         return any(pred(view) for view in views)
@@ -183,11 +131,11 @@ def find_suspicious(text: str) -> list[str]:
         is not None
     ):
         hits.append("patient")
-    if re.search(r"[A-Za-z0-9+/]{257,}={0,2}", folded) or re.search(
-        r"[A-Za-z0-9_-]{257,}={0,2}", folded
+    if re.search(r"[A-Za-z0-9+/]{257,}={0,2}", unjoined) or re.search(
+        r"[A-Za-z0-9_-]{257,}={0,2}", unjoined
     ):
         hits.append("long-encoding")
-    if _encoded_payload_is_secret(folded):
+    if _encoded_payload_is_secret(unjoined):
         hits.append("encoded-payload")
     return hits
 

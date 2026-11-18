@@ -240,40 +240,60 @@ def _tail_join_run(text: str) -> int:
     return count
 
 
+class NormalizationBudgetExceeded(RuntimeError):
+    """Normalization could not finish inside its work budget."""
+
+
+# A linear scan stays under a small multiple of the input length.
+# An n^1.5 or n^2 rescan trips this and the callers fail closed.
+_BUDGET_FACTOR = 8
+
+
+def _charge(steps: int, budget: int) -> int:
+    steps += 1
+    if steps > budget:
+        raise NormalizationBudgetExceeded()
+    return steps
+
+
 def _closed_quote_newlines(text: str) -> set[int]:
     """Newlines inside a quote that has a closer.
 
-    An unmatched quote does not open a string. Dropping every later newline
-    would glue the next line onto the previous word and hide a token.
+    One forward pass. An unmatched quote does not open a string, and when no
+    closer remains the scan stops instead of restarting at every later quote.
     """
     drop: set[int] = set()
     index = 0
     length = len(text)
+    steps = 0
+    budget = length * _BUDGET_FACTOR + 16
     while index < length:
+        steps = _charge(steps, budget)
         if text[index] != '"':
             index += 1
             continue
         cursor = index + 1
         escaped = False
         newlines: list[int] = []
-        closed = False
+        closed_at = -1
         while cursor < length:
+            steps = _charge(steps, budget)
             char = text[cursor]
             if escaped:
                 escaped = False
             elif char == "\\":
                 escaped = True
             elif char == '"':
-                closed = True
+                closed_at = cursor
                 break
             elif char == "\n":
                 newlines.append(cursor)
             cursor += 1
-        if closed:
+        if closed_at >= 0:
             drop.update(newlines)
-            index = cursor + 1
+            index = closed_at + 1
             continue
-        index += 1
+        break
     return drop
 
 
@@ -366,9 +386,166 @@ def _drop_tracked(
 def needs_offset_map(text: str) -> bool:
     """True when folding, joining, or decoding can move a match off the original indexes."""
     for char in text:
-        if ord(char) > 127 or char in "\n\r&%=\\":
+        if ord(char) > 127 or char in "\n\r\t&%=\\":
             return True
     return False
+
+
+def disallowed_control(text: str) -> bool:
+    """DEL, C0 (other than tab, CR, LF), and C1 (other than NEL)."""
+    for char in text:
+        code = ord(char)
+        if code == 0x7F:
+            return True
+        if code < 32 and char not in "\t\n\r":
+            return True
+        if 0x80 <= code <= 0x9F and code != 0x85:
+            return True
+    return False
+
+
+def _is_joiner(char: str) -> bool:
+    """Format characters, line/paragraph separators already handled, fillers, variation marks."""
+    code = ord(char)
+    if code < 128:
+        return False
+    if unicodedata.category(char) == "Cf":
+        return True
+    if code in (0x3164, 0x115F, 0x1160, 0x034F):
+        return True
+    if 0x180B <= code <= 0x180F or 0xFE00 <= code <= 0xFE0F or 0xE0100 <= code <= 0xE01EF:
+        return True
+    return False
+
+
+def _has_letter(text: str) -> bool:
+    return any(char.isalpha() for char in text)
+
+
+_TOKEN_EDGE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+
+
+def unwrap_lines(text: str) -> str:
+    """Join wrapped token fragments without copying a growing string.
+
+    A fragment may be shorter than 6 characters. Pure digit lines are left
+    alone so split numbers do not become a new digit run.
+    """
+    if "\n" not in text:
+        return text
+    lines = text.split("\n")
+    groups: list[list[str]] = [[lines[0]]]
+    group_len = len(lines[0])
+    group_space = " " in lines[0]
+    group_letter = _has_letter(lines[0])
+    group_last = lines[0][-1] if lines[0] else ""
+    for line in lines[1:]:
+        continued = line.lstrip(" ")
+        if (
+            group_len >= 1
+            and not group_space
+            and group_letter
+            and continued
+            and group_last in _TOKEN_EDGE
+            and continued[0] in _TOKEN_EDGE
+            and _has_letter(continued)
+        ):
+            groups[-1].append(continued)
+            group_len += len(continued)
+            if " " in continued:
+                group_space = True
+            if _has_letter(continued):
+                group_letter = True
+            group_last = continued[-1]
+            continue
+        groups.append([line])
+        group_len = len(line)
+        group_space = " " in line
+        group_letter = _has_letter(line)
+        group_last = line[-1] if line else ""
+    return "\n".join("".join(group) for group in groups)
+
+
+def canonical_unjoined(text: str) -> tuple[str, list[tuple[int, int]] | None]:
+    """Line endings normalized and joiners removed.
+
+    The cover is omitted when every character is kept as itself. NEL, CR, CRLF,
+    and the line/paragraph separators become a newline.
+    """
+    if not needs_offset_map(text) and not disallowed_control(text):
+        return text, None
+    chars: list[str] = []
+    cover: list[tuple[int, int]] = []
+    index = 0
+    length = len(text)
+    steps = 0
+    budget = length * _BUDGET_FACTOR + 16
+    while index < length:
+        steps = _charge(steps, budget)
+        char = text[index]
+        code = ord(char)
+        if char == "\r":
+            start = index
+            index += 2 if index + 1 < length and text[index + 1] == "\n" else 1
+            chars.append("\n")
+            cover.append((start, index))
+            continue
+        if code in (0x85, 0x2028, 0x2029):
+            chars.append("\n")
+            cover.append((index, index + 1))
+            index += 1
+            continue
+        if code == 0x7F or (code < 32 and char not in "\t\n") or (0x80 <= code <= 0x9F):
+            index += 1
+            continue
+        if _is_joiner(char):
+            index += 1
+            continue
+        if code > 127:
+            folded = unicodedata.normalize("NFKC", char).translate(_ZERO_WIDTH).translate(_DASHES)
+            for out_char in folded:
+                if not out_char or _is_joiner(out_char):
+                    continue
+                chars.append(out_char)
+                cover.append((index, index + 1))
+            index += 1
+            continue
+        chars.append(char)
+        cover.append((index, index + 1))
+        index += 1
+    return "".join(chars), cover
+
+
+def detection_views(text: str) -> tuple[str, str]:
+    """Shared surfaces for mask, has_secrets, and egress.
+
+    The first view keeps newlines. The second joins wraps. Callers search both
+    so a join cannot hide a token that was already visible.
+    """
+    unjoined, _cover = canonical_unjoined(text)
+    if "\n" not in unjoined and "\t" not in unjoined:
+        return unjoined, unjoined
+    joined = unwrap_lines(join_split_tokens(unjoined.replace("\t", "\n")))
+    return unjoined, joined
+
+
+def joined_index_map(source: str, joined: str) -> list[int]:
+    """Index in `source` for each character of `joined`, which only deletes."""
+    mapping: list[int] = []
+    index = 0
+    length = len(source)
+    steps = 0
+    budget = (length + len(joined)) * _BUDGET_FACTOR + 16
+    for char in joined:
+        steps = _charge(steps, budget)
+        while index < length and source[index] != char:
+            index += 1
+            steps = _charge(steps, budget)
+        if index >= length:
+            break
+        mapping.append(index)
+        index += 1
+    return mapping
 
 
 def normalize_tracked(text: str) -> tuple[str, list[tuple[int, int]]]:
