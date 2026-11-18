@@ -1027,29 +1027,56 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
 
 
 def _strip_html_comment_markers(text: str) -> str:
-    """Remove HTML comment delimiters while preserving source-order content."""
+    """Remove markup delimiters while preserving source-order content."""
     parts: list[str] = []
     cursor = 0
     length = len(text)
     while cursor < length:
-        start = text.find("<!--", cursor)
+        start = text.find("<", cursor)
         if start < 0:
             parts.append(text[cursor:])
             break
-        parts.append(text[cursor:start])
-        if text.startswith("<!-->", start):
-            cursor = start + 5
+        if text.startswith("<!--", start):
+            parts.append(text[cursor:start])
+            if text.startswith("<!-->", start):
+                cursor = start + 5
+                continue
+            if text.startswith("<!--->", start):
+                cursor = start + 6
+                continue
+            close = _find_html_comment_close(text, start + 4)
+            if close is None:
+                parts.append(text[start + 4 :])
+                break
+            close_index, close_width = close
+            parts.append(text[start + 4 : close_index])
+            cursor = close_index + close_width
             continue
-        if text.startswith("<!--->", start):
-            cursor = start + 6
+        if text.startswith("<![CDATA[", start):
+            parts.append(text[cursor:start])
+            close_index = text.find("]]>", start + 9)
+            if close_index < 0:
+                parts.append(text[start + 9 :])
+                break
+            parts.append(text[start + 9 : close_index])
+            cursor = close_index + 3
             continue
-        close = _find_html_comment_close(text, start + 4)
-        if close is None:
-            parts.append(text[start + 4 :])
-            break
-        close_index, close_width = close
-        parts.append(text[start + 4 : close_index])
-        cursor = close_index + close_width
+        if text.startswith("<?", start):
+            parts.append(text[cursor:start])
+            close_index = text.find("?>", start + 2)
+            if close_index < 0:
+                break
+            cursor = close_index + 2
+            continue
+        if text.startswith("<!", start):
+            parts.append(text[cursor:start])
+            close_index = text.find(">", start + 2)
+            if close_index < 0:
+                break
+            cursor = close_index + 1
+            continue
+        parts.append(text[cursor : start + 1])
+        cursor = start + 1
     return "".join(parts)
 
 
