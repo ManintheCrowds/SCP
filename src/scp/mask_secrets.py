@@ -465,17 +465,22 @@ def prepare_outbound(text: str) -> str:
     return masked
 
 
+def _neutralize_backtick_emails(text: str) -> str:
+    """Drop only a single-line backtick email from the check comparison.
+
+    The span cannot cross a newline, and any other character inside the
+    backticks is left in place.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        return "`" + _mask_emails_linear(match.group(1)) + "`"
+
+    return re.sub(r"`([^`\n]*)`", _replace, text)
+
+
 def has_secrets(text: str) -> bool:
     """Return True if text appears to contain unredacted secrets."""
-
-    def _redact_backtick_email(match: re.Match[str]) -> str:
-        content = match.group(1)
-        if "@" in content and re.search(r"\.[a-zA-Z]{2,}$", content.split("@")[-1]):
-            return "`[EMAIL]`"
-        return match.group(0)
-
-    text_check = re.sub(r"`([^`]+)`", _redact_backtick_email, text)
-    return mask(text_check) != text_check
+    return mask(_neutralize_backtick_emails(text)) != _neutralize_backtick_emails(text)
 
 
 def _read_path(path: Path) -> str:
