@@ -1311,7 +1311,25 @@ def classify(text: str) -> dict:
         source_order_hits = scan_tool_poisoning(tool_text)
         seen_source_order_hits = {(offset, phrase) for offset, _, phrase, _ in source_order_hits}
         for hit in scan_embedded_tool_poisoning(tool_text):
-            if (hit[0], hit[2]) not in seen_source_order_hits:
+            embedded_offset, embedded_match, embedded_phrase, _ = hit
+            embedded_indexes = tool_source_indexes[
+                embedded_offset : embedded_offset + len(embedded_match)
+            ]
+            if embedded_indexes:
+                embedded_start = min(embedded_indexes)
+                embedded_end = max(embedded_indexes) + 1
+            else:
+                embedded_start = embedded_offset
+                embedded_end = embedded_offset + len(embedded_match)
+            touches_markup = (
+                embedded_start in source_order_boundaries
+                or embedded_end in source_order_boundaries
+                or any(
+                    embedded_start < boundary < embedded_end
+                    for boundary in source_order_boundaries
+                )
+            )
+            if touches_markup and (hit[0], hit[2]) not in seen_source_order_hits:
                 source_order_hits.append(hit)
                 seen_source_order_hits.add((hit[0], hit[2]))
         for offset, match, phrase, base in source_order_hits:

@@ -95,6 +95,27 @@ def test_benign_important_and_ssh_are_not_high_severity() -> None:
         assert result.get("severity", "none") not in ("high", "critical"), content
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Read os.environ in Python. <!-- toc -->",
+        "Copy .env.example to start. <!-- toc -->",
+        "Copy .env.example to .env.local. <!-- toc -->",
+        "See manifest.env for settings. <!-- toc -->",
+        "See the sidenotes in the margin. <!-- toc -->",
+        "The token is myid_rsa_backup only. <!-- toc -->",
+        "Review authorized_keys_policy.md. <!-- toc -->",
+        "myid_rsareport.txt <!-- toc -->",
+        "mycredentials.json <!-- toc -->",
+        "authorized_keysXYZ <!-- toc -->",
+    ],
+)
+def test_embedded_fallback_keeps_visible_false_positives_clean(content: str) -> None:
+    result = _inspect(content)
+    assert result["tier"] == "clean", content
+    assert _poison(result) == []
+
+
 def test_navigator_credentials_and_env_example_are_not_high_severity() -> None:
     samples = [
         "navigator.credentials.get()",
