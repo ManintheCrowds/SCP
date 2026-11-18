@@ -512,8 +512,35 @@ def _encoded_spans(text: str) -> list[tuple[int, int, str]]:
     return spans
 
 
+def _merge_spans(spans: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+    ordered = sorted(spans)
+    merged: list[tuple[int, int, str]] = []
+    for start, end, token in ordered:
+        if end <= start:
+            continue
+        if merged and start < merged[-1][1]:
+            prev_start, prev_end, prev_token = merged[-1]
+            merged[-1] = (
+                prev_start,
+                max(prev_end, end),
+                prev_token if prev_token == token else "[REDACTED]",
+            )
+            continue
+        merged.append((start, end, token))
+    return merged
+
+
 def mask(text: str) -> str:
     """Detect on a normalized copy and replace only those spans in the original."""
+    if not secret_text.needs_offset_map(text):
+        direct = _normalized_spans(text)
+        direct.extend(
+            (start, end, "[REDACTED]")
+            for start, end in secret_text.base64_secret_spans(text, _contains_secret)
+        )
+        if not direct:
+            return text
+        return _replace_original(text, _merge_spans(direct))
     normalized, cover = secret_text.normalize_tracked(text)
     mapped = _original_spans(_normalized_spans(normalized), cover)
     mapped.extend(_encoded_spans(text))
@@ -523,8 +550,7 @@ def mask(text: str) -> str:
     )
     if not mapped:
         return text
-    identity = [(index, index + 1) for index in range(len(text) + 1)]
-    return _replace_original(text, _original_spans(mapped, identity))
+    return _replace_original(text, _merge_spans(mapped))
 
 
 def _has_email(text: str) -> bool:

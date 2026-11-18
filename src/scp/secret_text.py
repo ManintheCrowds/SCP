@@ -363,6 +363,14 @@ def _drop_tracked(
     return "".join(chars), new_cover
 
 
+def needs_offset_map(text: str) -> bool:
+    """True when folding, joining, or decoding can move a match off the original indexes."""
+    for char in text:
+        if ord(char) > 127 or char in "\n\r&%=\\":
+            return True
+    return False
+
+
 def normalize_tracked(text: str) -> tuple[str, list[tuple[int, int]]]:
     """Normalized text plus the original span covered by each normalized character."""
     folded, cover = _fold_tracked(text)
