@@ -83,6 +83,19 @@ def _run_hook(target: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_hook_files_match_handoff_names_regardless_of_case() -> None:
+    files_re = _mask_check_files()
+    assert files_re.search(".cursor/state/HANDOFF.md")
+    assert files_re.search(".cursor/state/notes.TXT")
+    assert files_re.search(".cursor/state/config.YAML")
+    assert files_re.search(".cursor/state/config.yml")
+    assert files_re.search("handoffs/today.md")
+    assert files_re.search(".cursor/state/next_prompt")
+    assert files_re.search(".cursor/state/drafts/next_prompt.txt")
+    assert files_re.search("README.md") is None
+    assert files_re.search("src/scp/mask_secrets.py") is None
+
+
 def test_precommit_pins_gitleaks_and_mask_check() -> None:
     text = _config_text()
     assert re.search(

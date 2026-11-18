@@ -17,7 +17,7 @@ repos:
         name: Mask secrets check (handoff/state)
         entry: python src/scp/mask_secrets.py --check
         language: system
-        files: '(^|/)\.cursor/state/.+\.(md|json|jsonl)$|(^|/)[^/]*handoff[^/]*\.(md|json|jsonl)$'
+        files: '(?i)(?:(^|/)\.cursor/state/.+\.(?:md|txt|json|jsonl|ya?ml)$|(^|/)handoffs/.+\.(?:md|txt|json|jsonl|ya?ml)$|(^|/)[^/]*handoff[^/]*\.(?:md|txt|json|jsonl|ya?ml)$|(^|/)\.cursor/state/(?:.+/)?[^/]*next_prompt[^/]*$)'
         exclude: ^tests/
         pass_filenames: true
         stages: [pre-commit]
