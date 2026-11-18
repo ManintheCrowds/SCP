@@ -1080,8 +1080,8 @@ def _strip_html_comment_markers(text: str) -> str:
     return "".join(parts)
 
 
-def _html_comment_source_order_text(text: str) -> str:
-    """Decode comment delimiters and strip them until source-order text settles."""
+def _html_comment_source_order_scan(text: str) -> tuple[str, bool]:
+    """Return source-order text and whether bounded decoding found more markup."""
     current = text
     stripped_any = False
     for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
@@ -1092,7 +1092,18 @@ def _html_comment_source_order_text(text: str) -> str:
         if stripped == current:
             break
         current = stripped
-    return current if stripped_any else text
+    else:
+        decoded = _decode_html_entities(_decode_url_encoding(current))
+        stripped = _strip_html_comment_markers(decoded)
+        bound_hit = stripped != decoded
+        return (current if stripped_any else text), bound_hit
+    return (current if stripped_any else text), False
+
+
+def _html_comment_source_order_text(text: str) -> str:
+    """Decode comment delimiters and strip them until source-order text settles."""
+    source_order, _ = _html_comment_source_order_scan(text)
+    return source_order
 
 
 def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
@@ -1201,7 +1212,10 @@ def classify(text: str) -> dict:
             if segment == "html_comment":
                 concealed_notes.append(note)
 
-    source_order = _html_comment_source_order_text(text)
+    source_order, source_order_bound_hit = _html_comment_source_order_scan(text)
+    if source_order_bound_hit:
+        legacy["encoding_blocks"].append((0, "html_comment_decode_bound"))
+        severities.append("high")
     if source_order != text:
         prepared = _prepare_text_for_scan(source_order)
         for key, hits in _scan_finding_groups(source_order, prepared).items():

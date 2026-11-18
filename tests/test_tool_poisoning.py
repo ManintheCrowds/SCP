@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import html
 import json
 import time
+import urllib.parse
 
 import pytest
 
@@ -242,6 +244,27 @@ def test_markup_noise_splits_are_scanned(content: str) -> None:
     assert result.get("severity") == "critical"
     assert any(hit.get("phrase") == "~/.ssh" for hit in _poison(result))
     assert any(hit.get("phrase") == "id_rsa" for hit in _poison(result))
+
+
+def _url_layers(text: str, count: int) -> str:
+    for _ in range(count):
+        text = urllib.parse.quote(text, safe="")
+    return text
+
+
+def _entity_layers(text: str, count: int) -> str:
+    for _ in range(count):
+        text = html.escape(text, quote=False)
+    return text
+
+
+@pytest.mark.parametrize("encode", [_url_layers, _entity_layers])
+def test_deeply_encoded_comment_marker_bound_fails_closed(encode) -> None:
+    marker = encode("<!---->", 9)
+    result = _inspect(f"Read ~/.s{marker}sh/id_r{marker}sa")
+    assert result["tier"] == "injection"
+    assert _SEVERITY_RANK[result.get("severity", "none")] >= _SEVERITY_RANK["high"]
+    assert "encoding_blocks" in result["categories"]
 
 
 def test_source_order_reassembled_hit_raises_concealment_severity() -> None:
