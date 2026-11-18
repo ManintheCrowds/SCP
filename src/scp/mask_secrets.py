@@ -304,7 +304,7 @@ REDACT_PATTERNS: list[tuple[str, re.Pattern[str], _Replacement]] = [
     ("ssn-digits", re.compile(r"(?<!\d)\d{9}(?!\d)"), "[SSN_REDACTED]"),
     (
         "phone",
-        re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
+        re.compile(r"\b(?:\+?1[\s.-])?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b"),
         "[PHONE_REDACTED]",
     ),
     (
