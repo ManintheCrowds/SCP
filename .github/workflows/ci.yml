@@ -69,6 +69,11 @@ jobs:
       - name: Mask-check head tree with the installed masker
         working-directory: head
         run: python scripts/run_mask_check.py
+      - name: Run masker tests
+        working-directory: head
+        run: |
+          pip install -e ".[dev]"
+          pytest tests/test_bare_access_tokens.py tests/test_mask_check_hook.py tests/test_egress_mask.py tests/test_egress_leak_corpus.py tests/test_secret_text.py tests/test_mask_decode_fail_closed.py tests/test_mask_size_and_pem.py tests/test_phone_false_positive.py tests/test_extra_secret_formats.py tests/test_backtick_email_check.py tests/test_mask_preserves_labels.py tests/test_joined_key_boundary.py tests/test_gitleaks_allowlist_anchors.py -q --tb=line
 
   # Required status context for main branch protection. Must keep this job id as CI.
   CI:
