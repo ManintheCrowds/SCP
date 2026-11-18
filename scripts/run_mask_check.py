@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -91,8 +92,17 @@ def _relative(repo: Path, raw: str) -> str:
     return path.as_posix()
 
 
+def guard_scan_count(target_count: int, scanned_count: int) -> int:
+    """Fail when target files exist but none were scanned."""
+    if target_count > 0 and scanned_count == 0:
+        print("mask-check found target files but scanned none", file=sys.stderr)
+        return 1
+    return 0
+
+
 def check_staged_paths(repo: Path, paths: list[str], mod) -> int:
     failed = False
+    scanned = 0
     for raw in paths:
         rel = _relative(repo, raw)
         try:
@@ -101,9 +111,13 @@ def check_staged_paths(repo: Path, paths: list[str], mod) -> int:
             print("mask fail-closed: error", file=sys.stderr)
             failed = True
             continue
+        scanned += 1
         if mod.has_secrets(text):
             print(f"SECRETS DETECTED: {rel}", file=sys.stderr)
             failed = True
+    blocked = guard_scan_count(len(paths), scanned)
+    if blocked:
+        return blocked
     if failed:
         return 1
     print("OK: No secrets detected")
@@ -122,14 +136,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     args = list(sys.argv[1:] if argv is None else argv)
+    root = Path(os.environ.get("SCP_MASK_CHECK_ROOT", _REPO))
+    config_path = Path(os.environ.get("SCP_MASK_CHECK_CONFIG", root / ".pre-commit-config.yaml"))
     if args:
-        return check_staged_paths(_REPO, args, mod)
-    config_text = _CONFIG.read_text(encoding="utf-8")
-    targets = [str(path) for path in selected_files(_REPO, config_text)]
+        return check_staged_paths(root, args, mod)
+    config_text = config_path.read_text(encoding="utf-8")
+    targets = [str(path) for path in selected_files(root, config_text)]
     if not targets:
         print("OK: no handoff/state files")
         return 0
-    return check_staged_paths(_REPO, targets, mod)
+    return check_staged_paths(root, targets, mod)
 
 
 if __name__ == "__main__":

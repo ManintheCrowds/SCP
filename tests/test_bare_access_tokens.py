@@ -36,6 +36,19 @@ def test_gitleaks_allowlist_is_not_all_markdown() -> None:
     assert "tests/fixtures/" in text
 
 
+def test_zero_scans_fail_when_targets_exist() -> None:
+    module = _mask_check_module()
+    assert module.guard_scan_count(2, 0) == 1
+    assert module.guard_scan_count(0, 0) == 0
+    assert module.guard_scan_count(2, 2) == 0
+
+
+def test_ci_uses_base_mask_check_runner() -> None:
+    workflow = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "pinned-masker/scripts/run_mask_check.py" in workflow
+    assert "SCP_MASK_CHECK_CONFIG" in workflow
+
+
 def test_ci_gate_requires_mask_check() -> None:
     workflow = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "needs.mask-check.result" in workflow

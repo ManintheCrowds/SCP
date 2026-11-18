@@ -66,9 +66,17 @@ jobs:
           else
             pip install ./head
           fi
-      - name: Mask-check head tree with the installed masker
+      - name: Mask-check head tree with the base scan list
         working-directory: head
-        run: python scripts/run_mask_check.py
+        env:
+          SCP_MASK_CHECK_ROOT: ${{ github.workspace }}/head
+        run: |
+          if [ -d "${{ github.workspace }}/pinned-masker" ]; then
+            export SCP_MASK_CHECK_CONFIG="${{ github.workspace }}/pinned-masker/.pre-commit-config.yaml"
+            python "${{ github.workspace }}/pinned-masker/scripts/run_mask_check.py"
+          else
+            python scripts/run_mask_check.py
+          fi
       - name: Run masker tests
         working-directory: head
         run: |
