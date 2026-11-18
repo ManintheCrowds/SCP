@@ -134,31 +134,77 @@ def _mask_emails_linear(text: str) -> str:
     return "".join(out)
 
 
+# A redaction token must not count as another secret on the egress rescan.
+_NOT_REDACTED = r"(?!\[[A-Z_]*REDACTED\])"
+_PEM_BEGIN = "-----BEGIN PRIVATE KEY-----"
+_PEM_END = "-----END PRIVATE KEY-----"
+_PEM_PATTERN = re.compile(_PEM_BEGIN + r"[\s\S]*?" + _PEM_END)
+
 # Labeled SSN stays ahead of the bare SSN pattern so "SSN: 123-45-6789"
 # still produces [REDACTED] for the existing corpus.
-REDACT_PATTERNS = [
-    (re.compile(r'(?i)(password|passwd|pwd)\s*[:=]\s*["\']?[^\s"\']+["\']?', re.IGNORECASE), r"\1=[REDACTED]"),
-    (re.compile(r'(?i)\b(api_key|apikey|secret)\b\s*[:=]\s*["\']?[^\s"\']+["\']?', re.IGNORECASE), r"\1=[REDACTED]"),
-    (re.compile(r"(?i)bearer\s+[a-zA-Z0-9._-]{20,}"), "Bearer [REDACTED]"),
-    (re.compile(r'(?i)(token|key)\s*[:=]\s*["\']?[a-zA-Z0-9._-]{16,}["\']?', re.IGNORECASE), r"\1=[REDACTED]"),
-    (re.compile(r"(?i)AWS_ACCESS_KEY_ID\s*=\s*\S+"), "AWS_ACCESS_KEY_ID=[REDACTED]"),
-    (re.compile(r"(?i)AWS_SECRET_ACCESS_KEY\s*=\s*\S+"), "AWS_SECRET_ACCESS_KEY=[REDACTED]"),
-    (re.compile(r"postgres://[^\s\"']+"), "postgres://[REDACTED]"),
+REDACT_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     (
-        re.compile(r"-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----"),
-        "-----BEGIN PRIVATE KEY-----\n[REDACTED]\n-----END PRIVATE KEY-----",
+        "password",
+        re.compile(
+            r"(?i)(password|passwd|pwd)\s*[:=]\s*[\"']?" + _NOT_REDACTED + r"[^\s\"']+[\"']?"
+        ),
+        r"\1=[REDACTED]",
     ),
-    (re.compile(r"\bsk-[a-zA-Z0-9]{20,}\b"), "sk-[REDACTED]"),
-    (_BARE_ACCESS_KEY, "[REDACTED]"),
-    (_BARE_GITHUB_TOKEN, "[REDACTED]"),
-    (re.compile(r"\bSSN:\s*\d{3}-\d{2}-\d{4}\b"), "SSN: [REDACTED]"),
     (
+        "api-key",
+        re.compile(
+            r"(?i)\b(api_key|apikey|secret)\b\s*[:=]\s*[\"']?"
+            + _NOT_REDACTED
+            + r"[^\s\"']+[\"']?"
+        ),
+        r"\1=[REDACTED]",
+    ),
+    ("bearer", re.compile(r"(?i)bearer\s+[a-zA-Z0-9._-]{20,}"), "Bearer [REDACTED]"),
+    (
+        "token",
+        re.compile(r"(?i)(token|key)\s*[:=]\s*[\"']?[a-zA-Z0-9._-]{16,}[\"']?"),
+        r"\1=[REDACTED]",
+    ),
+    (
+        "aws-access-key-id",
+        re.compile(r"(?i)AWS_ACCESS_KEY_ID\s*=\s*" + _NOT_REDACTED + r"\S+"),
+        "AWS_ACCESS_KEY_ID=[REDACTED]",
+    ),
+    (
+        "aws-secret-access-key",
+        re.compile(r"(?i)AWS_SECRET_ACCESS_KEY\s*=\s*" + _NOT_REDACTED + r"\S+"),
+        "AWS_SECRET_ACCESS_KEY=[REDACTED]",
+    ),
+    (
+        "postgres",
+        re.compile(r"postgres://" + _NOT_REDACTED + r"[^\s\"']+"),
+        "postgres://[REDACTED]",
+    ),
+    (
+        "private-key",
+        _PEM_PATTERN,
+        _PEM_BEGIN + "\n[REDACTED]\n" + _PEM_END,
+    ),
+    ("openai-key", re.compile(r"\bsk-[a-zA-Z0-9]{20,}\b"), "sk-[REDACTED]"),
+    ("access-key", _BARE_ACCESS_KEY, "[REDACTED]"),
+    ("github-token", _BARE_GITHUB_TOKEN, "[REDACTED]"),
+    ("ssn-labeled", re.compile(r"\bSSN:\s*\d{3}-\d{2}-\d{4}\b"), "SSN: [REDACTED]"),
+    (
+        "patient",
         re.compile(r"(?i)\bPatient:\s*[A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)+"),
         "Patient: [NAME_REDACTED]",
     ),
-    (re.compile(r"(?i)\b(?:DOB|Date of Birth)\s*:\s*\d{1,2}/\d{1,2}/\d{2,4}"), "DOB: [DATE_REDACTED]"),
-    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[SSN_REDACTED]"),
-    (re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"), "[PHONE_REDACTED]"),
+    (
+        "dob",
+        re.compile(r"(?i)\b(?:DOB|Date of Birth)\s*:\s*\d{1,2}/\d{1,2}/\d{2,4}"),
+        "DOB: [DATE_REDACTED]",
+    ),
+    ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[SSN_REDACTED]"),
+    (
+        "phone",
+        re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
+        "[PHONE_REDACTED]",
+    ),
 ]
 
 
@@ -172,12 +218,56 @@ class EgressMaskError(ValueError):
 
 def mask(text: str) -> str:
     result = text
-    for pattern, replacement in REDACT_PATTERNS:
+    for _name, pattern, replacement in REDACT_PATTERNS:
         result = pattern.sub(replacement, result)
     result = _mask_emails_linear(result)
     if _BARE_FIXTURE_NAME in result:
         result = result.replace(_BARE_FIXTURE_NAME, "[NAME_REDACTED]")
     return result
+
+
+def _has_email(text: str) -> bool:
+    if "@" not in text:
+        return False
+    start = 0
+    while True:
+        at = text.find("@", start)
+        if at < 0:
+            return False
+        if _try_email_span_at(text, at) is not None:
+            return True
+        start = at + 1
+
+
+def _private_key_residual(text: str) -> bool:
+    """True when a private-key header still has a body other than the redaction token."""
+    start = 0
+    while True:
+        found = text.find(_PEM_BEGIN, start)
+        if found < 0:
+            return False
+        rest = text[found + len(_PEM_BEGIN) :]
+        end = rest.find(_PEM_END)
+        body = rest if end < 0 else rest[:end]
+        if "".join(body.split()) != "[REDACTED]":
+            return True
+        start = found + len(_PEM_BEGIN)
+
+
+def residual_secrets(text: str) -> list[str]:
+    """Detectors that still match. This does not mask the text a second time."""
+    found: list[str] = []
+    for name, pattern, _replacement in REDACT_PATTERNS:
+        if pattern is _PEM_PATTERN:
+            if _private_key_residual(text):
+                found.append(name)
+            continue
+        if pattern.search(text):
+            found.append(name)
+    if _has_email(text):
+        found.append("email")
+    found.extend(remaining_fixture_sentinels(text))
+    return found
 
 
 def redacted_count(masked: str) -> int:
@@ -196,12 +286,14 @@ def remaining_fixture_sentinels(text: str) -> list[str]:
 
 
 def prepare_outbound(text: str) -> str:
-    """Mask text. Raise EgressMaskError if a sentinel or pattern match remains."""
+    """Mask text once, then rescan with every detector.
+
+    A second mask pass is not the check. Any remaining hit raises, and the
+    CLI writes nothing.
+    """
     masked = mask(text)
-    left = remaining_fixture_sentinels(masked)
-    if left or mask(masked) != masked:
-        if not left:
-            left = ["residual pattern"]
+    left = residual_secrets(masked)
+    if left:
         raise EgressMaskError(left)
     return masked
 
