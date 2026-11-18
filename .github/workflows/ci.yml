@@ -75,12 +75,17 @@ jobs:
         env:
           SCP_MASK_CHECK_ROOT: ${{ github.workspace }}/head
         run: |
-          if [ -f "${{ github.workspace }}/pinned-masker/scripts/run_mask_check.py" ]; then
+          resolved="$(python scripts/run_mask_check.py --resolve-runner --event "${{ github.event_name }}" --base-dir "${{ github.workspace }}/pinned-masker" --local-script scripts/run_mask_check.py)"
+          kind="${resolved%%$'\t'*}"
+          script="${resolved#*$'\t'}"
+          if [ "$kind" = "base" ]; then
             export SCP_MASK_CHECK_CONFIG="${{ github.workspace }}/pinned-masker/.pre-commit-config.yaml"
-            python "${{ github.workspace }}/pinned-masker/scripts/run_mask_check.py"
-          else
-            python scripts/run_mask_check.py
+            case "$script" in
+              */pinned-masker/scripts/run_mask_check.py) ;;
+              *) echo "resolver did not select the base checker" >&2; exit 1 ;;
+            esac
           fi
+          python "$script"
       - name: Run masker tests
         working-directory: head
         env:

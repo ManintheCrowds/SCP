@@ -151,7 +151,67 @@ def check_staged_paths(repo: Path, paths: list[str], mod) -> int:
     return 0
 
 
+class MaskCheckRunnerError(RuntimeError):
+    """The pull-request fallback does not apply."""
+
+
+def resolve_mask_check_runner(
+    event_name: str, base_dir: Path | None, local_script: Path
+) -> tuple[str, Path]:
+    """Choose the checker.
+
+    A pull request may use the head script only when the base checkout exists
+    and that revision has no checker yet. A push, including after this branch
+    merges, never takes that fallback. A missing base checkout fails closed.
+    """
+    if event_name == "pull_request":
+        if base_dir is None or not base_dir.is_dir():
+            raise MaskCheckRunnerError("base revision checkout missing; refusing to fall back")
+        base_script = base_dir / "scripts" / "run_mask_check.py"
+        if base_script.is_file():
+            return "base", base_script
+        if not local_script.is_file():
+            raise MaskCheckRunnerError("mask-check script missing; refusing to fall back")
+        return "fallback", local_script
+    if not local_script.is_file():
+        raise MaskCheckRunnerError("mask-check script missing; refusing to fall back")
+    return "local", local_script
+
+
+def _cmd_resolve(args: list[str]) -> int:
+    event_name = ""
+    base_dir: Path | None = None
+    local_script = _REPO / "scripts" / "run_mask_check.py"
+    index = 0
+    while index < len(args):
+        flag = args[index]
+        if flag == "--event" and index + 1 < len(args):
+            event_name = args[index + 1]
+            index += 2
+            continue
+        if flag == "--base-dir" and index + 1 < len(args):
+            base_dir = Path(args[index + 1])
+            index += 2
+            continue
+        if flag == "--local-script" and index + 1 < len(args):
+            local_script = Path(args[index + 1])
+            index += 2
+            continue
+        print(f"unknown argument: {flag}", file=sys.stderr)
+        return 2
+    try:
+        kind, path = resolve_mask_check_runner(event_name, base_dir, local_script)
+    except MaskCheckRunnerError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"{kind}\t{path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "--resolve-runner":
+        return _cmd_resolve(args[1:])
     mod = load_masker()
     if mod is None:
         print(
@@ -160,7 +220,6 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    args = list(sys.argv[1:] if argv is None else argv)
     root = Path(os.environ.get("SCP_MASK_CHECK_ROOT", _REPO))
     config_path = Path(os.environ.get("SCP_MASK_CHECK_CONFIG", root / ".pre-commit-config.yaml"))
     if args:
