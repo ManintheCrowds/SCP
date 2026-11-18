@@ -20,20 +20,32 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Select the base gitleaks config
+        id: gitleaks-config
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git show "${{ github.event.pull_request.base.sha }}:.gitleaks.toml" > "$RUNNER_TEMP/gitleaks.base.toml"
+            echo "path=$RUNNER_TEMP/gitleaks.base.toml" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=.gitleaks.toml" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_VERSION: "8.30.1"
-          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_CONFIG: ${{ steps.gitleaks-config.outputs.path }}
           GITLEAKS_ENABLE_COMMENTS: false
           GITLEAKS_ENABLE_SUMMARY: true
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
 
       # The action lists pull-request commits from the first API page (30).
-      # Scan the whole range from the base revision to the head.
+      # -m keeps a secret that exists only in a merge commit. The config is
+      # the base revision's file, same as the action step above.
       - name: Scan every pull request commit
         if: github.event_name == 'pull_request'
         run: |
-          gitleaks detect --redact --exit-code=2 --config .gitleaks.toml \
-            --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          gitleaks detect --redact --exit-code=2 \
+            --config "${{ steps.gitleaks-config.outputs.path }}" \
+            --log-opts="-m ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"

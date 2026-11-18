@@ -13,3 +13,6 @@ def test_gitleaks_uses_a_full_fetch_and_explicit_range() -> None:
     assert "github.event.pull_request.base.sha" in text
     assert "github.event.pull_request.head.sha" in text
     assert "--log-opts" in text
+    assert 'git show "${{ github.event.pull_request.base.sha }}:.gitleaks.toml"' in text
+    assert "steps.gitleaks-config.outputs.path" in text
+    assert "--log-opts=\"-m " in text
