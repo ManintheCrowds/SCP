@@ -83,9 +83,14 @@ jobs:
           fi
       - name: Run masker tests
         working-directory: head
+        env:
+          EXPECTED_MASK_TESTS: "115"
         run: |
           pip install -e ".[dev]"
-          pytest tests/test_bare_access_tokens.py tests/test_mask_check_hook.py tests/test_egress_mask.py tests/test_egress_leak_corpus.py tests/test_secret_text.py tests/test_mask_decode_fail_closed.py tests/test_mask_size_and_pem.py tests/test_phone_false_positive.py tests/test_extra_secret_formats.py tests/test_backtick_email_check.py tests/test_mask_preserves_labels.py tests/test_joined_key_boundary.py tests/test_gitleaks_allowlist_anchors.py -q --tb=line
+          files="tests/test_mask_check_hook.py tests/test_egress_mask.py tests/test_egress_leak_corpus.py tests/test_secret_text.py tests/test_mask_decode_fail_closed.py tests/test_mask_size_and_pem.py tests/test_phone_false_positive.py tests/test_extra_secret_formats.py tests/test_backtick_email_check.py tests/test_mask_preserves_labels.py tests/test_joined_key_boundary.py tests/test_gitleaks_allowlist_anchors.py tests/test_egress_independent_guard.py tests/test_mask_round_trip.py tests/test_mask_linear_time.py tests/test_mask_check_reads_index.py tests/test_egress_exit_codes.py"
+          pytest tests/test_bare_access_tokens.py $files --collect-only -q > /tmp/mask-collect.txt
+          python -c 'import os, re, pathlib, sys; text = pathlib.Path("/tmp/mask-collect.txt").read_text(); match = re.search(r"(\d+) tests collected", text); count = int(match.group(1)) if match else 0; expected = int(os.environ["EXPECTED_MASK_TESTS"]); print(f"collected {count} expected at least {expected}"); sys.exit(1 if count < expected else 0)'
+          pytest tests/test_bare_access_tokens.py $files -q --tb=line
 
   # Required status context for main branch protection. Must keep this job id as CI.
   CI:
