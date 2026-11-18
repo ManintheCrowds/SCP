@@ -206,6 +206,21 @@ def redact_base64_secrets(text: str, contains_secret) -> str:
 _JOIN = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 
 
+def _starts_new_secret(line: str) -> bool:
+    stripped = line.lstrip()
+    prefixes = (
+        "AK" + "IA",
+        "AS" + "IA",
+        "gh" + "p_",
+        "gh" + "o_",
+        "gh" + "s_",
+        "gh" + "u_",
+        "sk" + "-",
+        "sk" + "_",
+    )
+    return any(stripped.startswith(prefix) for prefix in prefixes)
+
+
 def _join_run(line: str, *, reverse: bool) -> int:
     count = 0
     chars = reversed(line) if reverse else line
@@ -240,6 +255,11 @@ def join_split_tokens(text: str) -> str:
         previous = joined[-1]
         if previous.endswith("\\"):
             joined[-1] = previous[:-1] + line
+            continue
+        # Do not glue a following secret onto the previous run. That removes
+        # the boundary the detectors use and the raw token would be emitted.
+        if _starts_new_secret(line):
+            joined.append(line)
             continue
         if _join_run(previous, reverse=True) >= 8 and _join_run(line, reverse=False) >= 4:
             joined[-1] = previous + line
