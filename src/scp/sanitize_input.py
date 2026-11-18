@@ -1293,7 +1293,14 @@ def classify(text: str) -> dict:
             else:
                 source_start = offset
                 source_end = offset + len(match)
-            if any(source_start < boundary < source_end for boundary in source_order_boundaries):
+            visible_same_phrase = any(
+                note.get("segment") == "text" and note.get("phrase") == phrase
+                for note in poison_notes
+            )
+            if (
+                any(source_start < boundary < source_end for boundary in source_order_boundaries)
+                or not visible_same_phrase
+            ):
                 severity = _severity_for_concealment(base, "tool_poisoning")
             else:
                 severity = base
