@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +16,8 @@ from scp import mask_secrets
 
 _REPO = Path(__file__).resolve().parents[1]
 _CONFIG = _REPO / ".pre-commit-config.yaml"
-_GITLEAKS_REV = "v8.30.1"
+_GITLEAKS_REV = "83d9cd684c87d95d656c1458ef04895a7f1cbd8e"
+_GITLEAKS_ACTION = "ff98106e4c7b2bc287b24eaf42907196329070c7"
 
 
 def _config_text() -> str:
@@ -34,8 +37,8 @@ def _mask_check_entry() -> list[str]:
     argv = match.group(1).strip().split()
     assert argv[0] == "python"
     argv[0] = sys.executable
-    assert "--check" in argv
-    assert any(part.endswith("mask_secrets.py") for part in argv)
+    assert any(part.endswith("run_mask_check.py") for part in argv)
+    assert not any(part.endswith("mask_secrets.py") for part in argv)
     return argv
 
 
@@ -72,10 +75,21 @@ def _planted_secret_values(raw: str) -> list[str]:
     return values
 
 
-def _run_hook(target: Path) -> subprocess.CompletedProcess[str]:
+def _external_masker(tmp_path: Path) -> str:
+    dest = tmp_path / "installed"
+    package = dest / "scp"
+    if not (package / "mask_secrets.py").is_file():
+        shutil.copytree(_REPO / "src" / "scp", package)
+    return str(dest)
+
+
+def _run_hook(target: Path, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = _external_masker(tmp_path)
     return subprocess.run(
         [*_mask_check_entry(), str(target)],
         cwd=_REPO,
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -124,6 +138,33 @@ def test_committed_markdown_has_no_bare_access_key_prefix() -> None:
         assert "gh" + "p_" not in text, path
 
 
+def test_mask_check_refuses_the_working_tree_masker() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(_REPO / "scripts" / "run_mask_check.py")],
+        cwd=_REPO,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert proc.returncode == 2
+    assert "working-tree" in proc.stderr
+
+
+def test_gitleaks_hook_and_action_are_pinned_to_commits() -> None:
+    pre_commit = _config_text()
+    assert _GITLEAKS_REV in pre_commit
+    assert "rev: v8.30.1" not in pre_commit
+    workflow = (_REPO / ".github" / "workflows" / "security-gitleaks.yml").read_text(
+        encoding="utf-8"
+    )
+    assert f"gitleaks/gitleaks-action@{_GITLEAKS_ACTION}" in workflow
+    assert "gitleaks-action@v2" not in workflow
+    ci = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "github.event.pull_request.base.sha" in ci
+    assert "pip install ./pinned-masker" in ci
+
+
 def test_planted_handoff_fails_mask_check_until_masked(tmp_path: Path) -> None:
     raw = _planted_handoff()
     secrets = _planted_secret_values(raw)
@@ -135,7 +176,7 @@ def test_planted_handoff_fails_mask_check_until_masked(tmp_path: Path) -> None:
     target.parent.mkdir(parents=True)
     target.write_text(raw, encoding="utf-8")
 
-    failed = _run_hook(target)
+    failed = _run_hook(target, tmp_path)
     assert failed.returncode != 0
     assert "SECRETS DETECTED" in failed.stderr
     for secret in secrets:
@@ -148,7 +189,7 @@ def test_planted_handoff_fails_mask_check_until_masked(tmp_path: Path) -> None:
         assert secret not in masked
     target.write_text(masked, encoding="utf-8")
 
-    passed = _run_hook(target)
+    passed = _run_hook(target, tmp_path)
     assert passed.returncode == 0
     assert "OK: No secrets detected" in passed.stdout
     for secret in secrets:

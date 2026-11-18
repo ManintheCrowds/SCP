@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-# PURPOSE: Run SCP mask-check on handoff and state files selected by pre-commit.
-# Test fixtures under tests/ are excluded. B1 uses the installed package.
+# PURPOSE: Run mask-check with an installed masker, not the working-tree copy.
+# A commit that weakens src/scp/mask_secrets.py must not be the code that
+# approves itself. Install with `pip install .` from a trusted revision.
+# CI installs the pull-request base SHA (or the pushed commit on main).
+# `pip install -e .` resolves inside this repo and this script exits 2.
 
 from __future__ import annotations
 
@@ -50,7 +53,34 @@ def selected_files(repo: Path, config_text: str) -> list[Path]:
     return chosen
 
 
+def _inside_repo(path: Path, repo: Path) -> bool:
+    try:
+        path.resolve().relative_to(repo.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def load_masker():
+    """Return the installed masker, or None when it is this working tree."""
+    import scp.mask_secrets as mod
+
+    if _inside_repo(Path(mod.__file__), _REPO):
+        return None
+    return mod
+
+
 def main(argv: list[str] | None = None) -> int:
+    mod = load_masker()
+    if mod is None:
+        print(
+            "mask-check refuses the working-tree masker. "
+            "pip install . from a trusted revision so this commit cannot "
+            "weaken the masker and then approve itself. "
+            "CI installs the pull request base SHA.",
+            file=sys.stderr,
+        )
+        return 2
     args = list(sys.argv[1:] if argv is None else argv)
     config_text = _CONFIG.read_text(encoding="utf-8")
     if args:
@@ -60,9 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     if not targets:
         print("OK: no handoff/state files")
         return 0
-    from scp.mask_secrets import main as mask_main
-
-    return mask_main(["--check", *targets])
+    return mod.main(["--check", *targets])
 
 
 if __name__ == "__main__":

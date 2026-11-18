@@ -49,12 +49,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: head
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: pinned-masker
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install package
-        run: pip install .
-      - name: Mask-check handoff and state files
+      - name: Install masker from a revision this commit cannot edit
+        run: |
+          if [ -d pinned-masker ]; then
+            pip install ./pinned-masker
+          else
+            pip install ./head
+          fi
+      - name: Mask-check head tree with the installed masker
+        working-directory: head
         run: python scripts/run_mask_check.py
 
   # Required status context for main branch protection. Must keep this job id as CI.
