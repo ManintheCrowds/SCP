@@ -956,13 +956,27 @@ def _compile_poison_phrase(phrase: str) -> re.Pattern[str]:
     return re.compile(prefix + escaped + suffix, re.IGNORECASE)
 
 
+def _merge_tool_poison_entries(
+    base_entries: list[tuple[str, str]],
+    overlay_entries: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    merged: dict[str, tuple[str, str]] = {}
+    for phrase, severity in base_entries + overlay_entries:
+        key = phrase.casefold()
+        current = merged.get(key)
+        if current is None:
+            merged[key] = (phrase, severity)
+        else:
+            merged[key] = (current[0], _max_severity(current[1], severity))
+    return list(merged.values())
+
+
 def _tool_poison_entries() -> list[tuple[str, str]]:
+    defaults = pattern_record.iter_tool_poison_phrases(TOOL_POISONING_DEFAULTS)
     reg = _load_threat_registry()
     raw = reg.get("tool_poisoning") if reg else None
     entries = pattern_record.iter_tool_poison_phrases(raw)
-    if entries:
-        return entries
-    return pattern_record.iter_tool_poison_phrases(TOOL_POISONING_DEFAULTS)
+    return _merge_tool_poison_entries(defaults, entries)
 
 
 def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
