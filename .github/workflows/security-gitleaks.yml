@@ -20,11 +20,33 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Select the base gitleaks config
+        id: gitleaks-config
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ -z "${BASE_SHA}" ] || ! git cat-file -e "${BASE_SHA}:.gitleaks.toml" 2>/dev/null; then
+              echo "base revision has no gitleaks config; failing closed" >&2
+              exit 1
+            fi
+            git show "${BASE_SHA}:.gitleaks.toml" > "${RUNNER_TEMP}/gitleaks.base.toml"
+            echo "path=${RUNNER_TEMP}/gitleaks.base.toml" >> "${GITHUB_OUTPUT}"
+          else
+            if [ ! -f .gitleaks.toml ]; then
+              echo "gitleaks config missing; failing closed" >&2
+              exit 1
+            fi
+            echo "path=.gitleaks.toml" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_CONFIG: ${{ steps.gitleaks-config.outputs.path }}
           GITLEAKS_ENABLE_COMMENTS: false
           GITLEAKS_ENABLE_SUMMARY: true
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true

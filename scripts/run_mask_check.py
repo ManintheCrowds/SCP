@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+# PURPOSE: Scan a tree with the installed masker.
+# CI runs this file from the base revision so a pull request cannot approve
+# itself by replacing the checker.
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+from scp import mask_secrets
+
+_SKIP_PARTS = {
+    ".git",
+    "tests",
+    "docs",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "fixtures",
+    "build",
+    "dist",
+}
+
+
+def _skipped(path: Path, root: Path) -> bool:
+    parts = path.relative_to(root).parts
+    if any(part in _SKIP_PARTS for part in parts):
+        return True
+    return any(part.endswith(".egg-info") for part in parts)
+
+
+def iter_targets(root: Path) -> list[Path]:
+    """Handoff and state files. Source modules are left to gitleaks.
+
+    The assignment patterns also match ordinary `key = name` code, so a
+    whole-tree scan would fail on this repository.
+    """
+    chosen: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file() or _skipped(path, root):
+            continue
+        rel_parts = path.relative_to(root).parts
+        name = path.name.lower()
+        in_state = "state" in rel_parts or ".cursor" in rel_parts
+        if name.startswith(".env") or name in {"handoff.md", "handoff.txt"} or in_state:
+            chosen.append(path)
+    return chosen
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    root = Path(os.environ.get("SCP_MASK_CHECK_ROOT", ".")).resolve()
+    targets = [Path(arg) for arg in args] if args else iter_targets(root)
+    failed = False
+    for path in targets:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            print(f"unreadable {path}", file=sys.stderr)
+            failed = True
+            continue
+        if mask_secrets.has_secrets(text):
+            print(f"secret-like text in {path}", file=sys.stderr)
+            failed = True
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
