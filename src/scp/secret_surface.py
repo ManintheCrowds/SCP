@@ -16,6 +16,9 @@ class NormalizationBudgetExceeded(RuntimeError):
 _BUDGET_FACTOR = 8
 
 _FILLER_CATEGORIES = frozenset({"Cf", "Zl", "Zp", "Mn"})
+_TOKEN_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
 
 
 def _charge(steps: int, budget: int, count: int = 1) -> int:
@@ -73,19 +76,113 @@ def fold_unjoined(text: str) -> str:
     return folded
 
 
-def join_wrapped(text: str) -> str:
-    """Charge the join budget. Wrap decisions land in the line-wrap fix.
+def _prose_word(word: str) -> bool:
+    """Words such as Thanks, Notes, and before.
 
-    Until then the joined view is the unjoined text, so a newline cannot
-    hide a token that is already visible and cannot reveal one either.
+    Uppercase runs and long dot-separated segments are token text, not prose.
     """
-    if text:
-        _charge(0, _budget_for(len(text)), len(text))
-    return text
+    if len(word) < 2 or not word.isalpha():
+        return False
+    if word[:1].isupper() and word[1:].islower():
+        return True
+    return word.islower() and len(word) <= 20
+
+
+def _leading_token(line: str) -> str:
+    end = 0
+    length = len(line)
+    while end < length and line[end] in _TOKEN_CHARS:
+        end += 1
+    return line[:end]
+
+
+def _split_tail(line: str) -> tuple[str, str]:
+    start = len(line)
+    while start > 0 and line[start - 1] in _TOKEN_CHARS:
+        start -= 1
+    return line[:start], line[start:]
+
+
+def should_join(prev: str, nxt: str) -> bool:
+    """Decide a wrap from the end of `prev` only.
+
+    Leading spaces and tabs on the continuation are ignored here and stripped
+    by the joiner. A following prose word is not glued on. One to seven key
+    characters after '=' still count, and a line that ends in '.' continues
+    a JWT segment.
+    """
+    continued = nxt.lstrip(" \t")
+    if not continued:
+        return False
+    head = _leading_token(continued)
+    if not head:
+        return False
+    _before, tail = _split_tail(prev)
+    dot_continue = prev.endswith(".") and not tail
+    if _prose_word(head) and not (dot_continue and head.islower() and len(head) >= 16):
+        return False
+    if prev.endswith("=") or prev.endswith(":"):
+        return True
+    if tail and (_before.endswith("=") or _before.endswith(":")):
+        return True
+    return dot_continue
+
+
+def _line_ranges(text: str) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    for index, char in enumerate(text):
+        if char == "\n":
+            ranges.append((start, index))
+            start = index + 1
+    ranges.append((start, len(text)))
+    return ranges
+
+
+def _bridges(lines: list[str]) -> list[bool]:
+    steps = 0
+    budget = _budget_for(sum(len(line) for line in lines) + len(lines))
+    bridges: list[bool] = []
+    for index in range(len(lines) - 1):
+        steps = _charge(steps, budget, len(lines[index]) + len(lines[index + 1]) + 1)
+        bridges.append(should_join(lines[index], lines[index + 1]))
+    return bridges
+
+
+def join_wrapped(text: str) -> str:
+    """Join wrapped token tails. Each pair is decided from the previous line."""
+    if "\n" not in text:
+        return text
+    lines = text.split("\n")
+    bridges = _bridges(lines)
+    parts: list[str] = []
+    for index, line in enumerate(lines):
+        if index > 0 and bridges[index - 1]:
+            parts.append(line.lstrip(" \t"))
+        else:
+            if index > 0:
+                parts.append("\n")
+            parts.append(line)
+    return "".join(parts)
 
 
 def _kept_unjoined_indexes(text: str) -> array:
-    return array("I", range(len(text)))
+    """Indexes into `text` kept by join_wrapped. Same length as the joined string."""
+    lines = text.split("\n")
+    ranges = _line_ranges(text)
+    bridges = _bridges(lines)
+    kept = array("I")
+    for index, (start, _end) in enumerate(ranges):
+        line = lines[index]
+        offset = 0
+        if index > 0 and bridges[index - 1]:
+            while offset < len(line) and line[offset] in " \t":
+                offset += 1
+        elif index > 0:
+            kept.append(start - 1)
+        for cursor in range(offset, len(line)):
+            kept.append(start + cursor)
+    return kept
 
 
 def detection_views(text: str) -> tuple[str, str]:

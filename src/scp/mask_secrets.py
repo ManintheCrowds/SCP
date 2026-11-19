@@ -85,6 +85,11 @@ def _mask_emails_linear(text: str) -> str:
     return "".join(out)
 
 
+# Three synthetic segments. Real bearer tokens are not embedded here.
+_JWT = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{16}\.){2}[A-Za-z0-9_-]{16}(?![A-Za-z0-9_-])"
+)
+
 REDACT_PATTERNS = [
     (re.compile(r'(?i)(password|passwd|pwd)\s*[:=]\s*["\']?[^\s"\']+["\']?', re.IGNORECASE), r"\1=[REDACTED]"),
     (re.compile(r'(?i)\b(api_key|apikey|secret)\b\s*[:=]\s*["\']?[^\s"\']+["\']?', re.IGNORECASE), r"\1=[REDACTED]"),
@@ -99,6 +104,7 @@ REDACT_PATTERNS = [
     ),
     (re.compile(r"\bsk-[a-zA-Z0-9]{20,}\b"), "sk-[REDACTED]"),
     (re.compile(r"\bSSN:\s*\d{3}-\d{2}-\d{4}\b"), "SSN: [REDACTED]"),
+    (_JWT, "[REDACTED]"),
 ]
 
 
