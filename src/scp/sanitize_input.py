@@ -930,6 +930,7 @@ def _base_severity_for_key(key: str) -> str:
     raise ValueError(f"unknown finding key: {key}")
 
 
+@lru_cache(maxsize=512)
 def _compile_poison_phrase(phrase: str) -> re.Pattern[str]:
     """Match a registry phrase literally, with flexible whitespace.
 
@@ -1002,6 +1003,22 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
     return "".join(parts), comments
 
 
+def _html_comment_segments(comments: list[tuple[int, str]]) -> list[tuple[str, int, str]]:
+    """Return concealed scan segments with delimiters stripped.
+
+    Comment bodies are scanned as one hidden stream so dangerous phrases cannot
+    be split across adjacent comments to evade literal phrase matching.
+    """
+    nonempty = [(start, body) for start, body in comments if body.strip()]
+    if not nonempty:
+        return []
+    if len(nonempty) == 1:
+        start, body = nonempty[0]
+        return [("html_comment", start, body)]
+    first_start = nonempty[0][0]
+    return [("html_comment", first_start, "".join(body for _start, body in nonempty))]
+
+
 def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
     return {
         "override_phrases": scan_override_phrases(prepared),
@@ -1061,9 +1078,7 @@ def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
     visible, comments = extract_html_comments(text)
     segments: list[tuple[str, int, str]] = [("text", 0, visible)]
-    for start, body in comments:
-        if body.strip():
-            segments.append(("html_comment", start, body))
+    segments.extend(_html_comment_segments(comments))
 
     legacy: dict[str, list[tuple[int, str]]] = {key: [] for key in _FINDING_CATEGORY}
     poison_notes: list[dict[str, object]] = []

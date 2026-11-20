@@ -9,7 +9,13 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback keeps imports working.
+    fcntl = None
 
 from . import sanitize_input
 from . import mask_secrets as mask_secrets_mod
@@ -82,6 +88,28 @@ def _new_quarantine_paths(qdir: Path) -> tuple[str, Path, Path, Path, Path]:
         ):
             return qid, content_path, meta_path, tmp_content_path, tmp_meta_path
     raise RuntimeError("unable to allocate unique quarantine id")
+
+
+@contextmanager
+def _quarantine_process_lock(root: Path):
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / ".scp-quarantine.lock"
+    with lock_path.open("a+b") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _delete_quarantine_pair(pair_dir: Path, qid: str) -> bool:
+    staged = quarantine_limits._stage_pair_for_delete(pair_dir, qid)
+    if not staged:
+        return False
+    quarantine_limits._cleanup_staged_paths(staged)
+    return True
 
 
 def inspect(content: str, context: str | None = None) -> dict:
@@ -186,8 +214,10 @@ def quarantine(
     layout: str | None = None,
 ) -> dict:
     """Quarantine content. ``layout`` is internal-only (e.g. registry_fetch); MCP must not pass it."""
+    root = _quarantine_dir()
     with _QUARANTINE_WRITE_LOCK:
-        return _quarantine_locked(content, reason, source, layout=layout)
+        with _quarantine_process_lock(root):
+            return _quarantine_locked(content, reason, source, layout=layout)
 
 
 def _quarantine_locked(
@@ -264,37 +294,36 @@ def purge_quarantine(quarantine_id: str | None = None, older_than_days: int | No
         return {"purged": 0, "ids": []}
     if quarantine_id is not None and not _QUARANTINE_ID_RE.match(quarantine_id):
         raise ValueError("quarantine_id must be UUID-like")
-    cutoff = time.time() - (older_than_days * 86400) if older_than_days else None
-    purged = []
-    if quarantine_id:
-        for pair_dir in _quarantine_pair_dirs():
-            meta_path = pair_dir / f"{quarantine_id}.json"
-            content_path = pair_dir / f"{quarantine_id}.txt"
-            if not (meta_path.exists() or content_path.exists()):
-                continue
-            if cutoff:
-                mtime = meta_path.stat().st_mtime if meta_path.exists() else content_path.stat().st_mtime
-                if mtime >= cutoff:
-                    continue
-            meta_path.unlink(missing_ok=True)
-            content_path.unlink(missing_ok=True)
-            purged.append(quarantine_id)
-            break
-    else:
-        for pair_dir in _quarantine_pair_dirs():
-            for meta_path in list(pair_dir.glob("*.json")):
-                qid = meta_path.stem
-                if cutoff:
-                    try:
-                        if meta_path.stat().st_mtime >= cutoff:
-                            continue
-                    except OSError:
+    with _QUARANTINE_WRITE_LOCK:
+        with _quarantine_process_lock(root):
+            cutoff = time.time() - (older_than_days * 86400) if older_than_days else None
+            purged = []
+            if quarantine_id:
+                for pair_dir in _quarantine_pair_dirs():
+                    meta_path = pair_dir / f"{quarantine_id}.json"
+                    content_path = pair_dir / f"{quarantine_id}.txt"
+                    if not (meta_path.exists() or content_path.exists()):
                         continue
-                content_path = pair_dir / f"{qid}.txt"
-                meta_path.unlink(missing_ok=True)
-                content_path.unlink(missing_ok=True)
-                purged.append(qid)
-    return {"purged": len(purged), "ids": purged}
+                    if cutoff:
+                        mtime = meta_path.stat().st_mtime if meta_path.exists() else content_path.stat().st_mtime
+                        if mtime >= cutoff:
+                            continue
+                    if _delete_quarantine_pair(pair_dir, quarantine_id):
+                        purged.append(quarantine_id)
+                    break
+            else:
+                for pair_dir in _quarantine_pair_dirs():
+                    for meta_path in list(pair_dir.glob("*.json")):
+                        qid = meta_path.stem
+                        if cutoff:
+                            try:
+                                if meta_path.stat().st_mtime >= cutoff:
+                                    continue
+                            except OSError:
+                                continue
+                        if _delete_quarantine_pair(pair_dir, qid):
+                            purged.append(qid)
+            return {"purged": len(purged), "ids": purged}
 
 
 def mask_secrets(content: str) -> dict:
