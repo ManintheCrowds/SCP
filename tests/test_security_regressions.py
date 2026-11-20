@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
 import os
 import threading
 import time
@@ -11,6 +12,41 @@ from pathlib import Path
 import pytest
 
 from scp import mask_secrets, quarantine_limits, sanitize_input, scp_utils
+
+
+def _delayed_quarantine_worker(
+    root: str,
+    content: str,
+    barrier: mp.Barrier,
+    queue: mp.Queue,
+) -> None:
+    os.environ["SCP_QUARANTINE_DIR"] = root
+    os.environ["SCP_QUARANTINE_MAX_CONTENT_BYTES"] = "900"
+    os.environ["SCP_QUARANTINE_MAX_TOTAL_BYTES"] = "1000"
+    os.environ["SCP_QUARANTINE_EVICT_OLDEST_ON_PRESSURE"] = "1"
+
+    original_enforce = scp_utils.quarantine_limits.enforce_quarantine_limits
+
+    def wait_for_peer_before_enforcing(*args, **kwargs):
+        try:
+            barrier.wait(timeout=1.0)
+        except threading.BrokenBarrierError:
+            pass
+        return original_enforce(*args, **kwargs)
+
+    scp_utils.quarantine_limits.enforce_quarantine_limits = wait_for_peer_before_enforcing
+    try:
+        out = scp_utils.quarantine(content, reason="race", source="worker")
+        content_path = Path(out["path"])
+        queue.put(
+            (
+                out["quarantine_id"],
+                content_path.exists(),
+                content_path.with_suffix(".json").exists(),
+            )
+        )
+    except Exception as exc:
+        queue.put(("ERROR", type(exc).__name__, str(exc)))
 
 
 def test_contain_markdown_uses_longer_fence_than_payload() -> None:
@@ -233,7 +269,9 @@ def test_quarantine_partial_replace_leaves_no_orphan(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(os, "replace", fail_meta_replace)
     with pytest.raises(OSError, match="meta replace failed"):
         scp_utils.quarantine("hello", reason="r", source="s")
-    assert list(tmp_path.iterdir()) == []
+    assert list(tmp_path.glob("*.txt")) == []
+    assert list(tmp_path.glob("*.json")) == []
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 def test_retention_does_not_purge_the_pair_just_written(tmp_path, monkeypatch) -> None:
@@ -923,6 +961,63 @@ def test_list_and_purge_include_registry_fetch_layout(tmp_path, monkeypatch) -> 
     assert bulk["purged"] >= 1
     assert q2["quarantine_id"] in bulk["ids"]
     assert scp_utils.list_quarantine() == []
+
+
+def test_purge_quarantine_does_not_leave_hidden_content_when_delete_fails(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    q = scp_utils.quarantine("secret evidence", reason="r", source="s")
+    qid = q["quarantine_id"]
+    content_path = tmp_path / f"{qid}.txt"
+    meta_path = tmp_path / f"{qid}.json"
+    original_unlink = type(tmp_path).unlink
+
+    def fail_content_unlink(self, *args, **kwargs):
+        if self == content_path:
+            raise OSError("cannot delete content")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(tmp_path), "unlink", fail_content_unlink)
+
+    try:
+        scp_utils.purge_quarantine(quarantine_id=qid)
+    except OSError:
+        pass
+
+    assert content_path.exists() == meta_path.exists()
+    if content_path.exists():
+        assert any(entry["quarantine_id"] == qid for entry in scp_utils.list_quarantine())
+        assert quarantine_limits.total_quarantine_bytes(
+            tmp_path,
+            layout_subdirs=frozenset({scp_utils.REGISTRY_FETCH_LAYOUT}),
+        ) > 0
+    else:
+        assert all(entry["quarantine_id"] != qid for entry in scp_utils.list_quarantine())
+
+
+def test_cross_process_quarantine_writes_do_not_return_evicted_paths(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SCP_QUARANTINE_DIR", str(tmp_path))
+    barrier = mp.Barrier(2)
+    queue = mp.Queue()
+    processes = [
+        mp.Process(
+            target=_delayed_quarantine_worker,
+            args=(str(tmp_path), "x" * 800, barrier, queue),
+        )
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=5)
+
+    for process in processes:
+        assert process.exitcode == 0
+
+    results = [queue.get(timeout=1) for _ in processes]
+    assert all(result[0] != "ERROR" for result in results)
+    assert all(result[1] and result[2] for result in results)
 
 
 def test_registry_fetch_layout_symlink_is_not_trusted(tmp_path, monkeypatch) -> None:
