@@ -64,13 +64,66 @@ def _encounter_dir() -> Path | None:
     return resolved
 
 
+_TOKEN_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
+
+
+def _skip_indent(content: str, index: int, cap: int) -> int:
+    while index < cap and content[index] in " \t":
+        index += 1
+    return index
+
+
+def _run_continues_token(content: str, index: int, cap: int) -> bool:
+    """True when the next line is still the token, not a prose word."""
+    if index >= cap:
+        return False
+    end = index
+    while end < cap and content[end] not in " \t\r\n":
+        end += 1
+    run = content[index:end]
+    if not run or any(char not in _TOKEN_CHARS for char in run):
+        return False
+    if len(run) >= 2 and run.isalpha() and run[0].isupper() and run[1:].islower():
+        return False
+    if run.islower() and len(run) >= 4 and len(set(run)) > 1:
+        return False
+    return True
+
+
 def _prefix_for_mask(content: str) -> str:
-    """Prefix to mask. Finish a token that straddles the cut, or drop that run."""
+    """Prefix to mask. Finish a token that straddles the cut, or drop that run.
+
+    A newline is not the end of the token when the next line continues it.
+    """
     if len(content) <= _LOG_MASK_CHARS:
         return content
     end = _LOG_MASK_CHARS
     cap = min(len(content), _LOG_MASK_CHARS + _LOG_TOKEN_EXTEND)
-    while end < cap and content[end] not in " \t\r\n":
+    while end < cap:
+        char = content[end]
+        if char in " \t":
+            cursor = end
+            while cursor > 0 and content[cursor - 1] in " \t":
+                cursor -= 1
+            if cursor > 0 and content[cursor - 1] in "\r\n":
+                resumed = _skip_indent(content, end, cap)
+                if _run_continues_token(content, resumed, cap):
+                    end = resumed
+                    continue
+            break
+        if char in "\r\n":
+            nxt = end + 1
+            if char == "\r" and nxt < len(content) and content[nxt] == "\n":
+                nxt += 1
+            elif char == "\r":
+                break
+            resumed = _skip_indent(content, nxt, cap)
+            if not _run_continues_token(content, resumed, cap):
+                break
+            end = resumed
+            continue
         end += 1
     if end < len(content) and content[end] not in " \t\r\n":
         while end > 0 and content[end - 1] not in " \t\r\n":
