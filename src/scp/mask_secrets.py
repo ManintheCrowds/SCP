@@ -131,10 +131,6 @@ REDACT_PATTERNS = [
     (re.compile(r"(?i)AWS_ACCESS_KEY_ID\s*=\s*\S+"), "AWS_ACCESS_KEY_ID=[REDACTED]"),
     (re.compile(r"(?i)AWS_SECRET_ACCESS_KEY\s*=\s*\S+"), "AWS_SECRET_ACCESS_KEY=[REDACTED]"),
     (re.compile(r"postgres://[^\s\"']+"), "postgres://[REDACTED]"),
-    (
-        re.compile(r"-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----"),
-        "-----BEGIN PRIVATE KEY-----\n[REDACTED]\n-----END PRIVATE KEY-----",
-    ),
     (re.compile(r"\bsk-[a-zA-Z0-9]{20,}\b"), "sk-[REDACTED]"),
     (_PROJECT_KEY, "[REDACTED]"),
     (_BARE_GH_PERSONAL, "[REDACTED]"),
@@ -184,7 +180,8 @@ REDACT_PATTERNS = [
 
 
 def _mask_plain(text: str) -> str:
-    result = text
+    pem = _pem_spans(text)
+    result = _apply_spans(text, pem) if pem else text
     for pattern, replacement in REDACT_PATTERNS:
         result = pattern.sub(replacement, result)
     return _mask_emails_linear(result)
@@ -206,6 +203,44 @@ def _redaction_marker(piece: str) -> bool:
 
 def _over_cap(text: str) -> bool:
     return len(text) > MAX_SCAN_CHARS
+
+
+_PEM_BEGIN = "-----BEGIN "
+_PEM_KINDS = (
+    "ENCRYPTED PRIVATE KEY",
+    "OPENSSH PRIVATE KEY",
+    "RSA PRIVATE KEY",
+    "EC PRIVATE KEY",
+    "PRIVATE KEY",
+)
+
+
+def _pem_spans(text: str) -> list[tuple[int, int, str]]:
+    """Private-key blocks, including a missing END line. One forward scan."""
+    spans: list[tuple[int, int, str]] = []
+    cursor = 0
+    begin = _PEM_BEGIN
+    while True:
+        at = text.find(begin, cursor)
+        if at < 0:
+            return spans
+        rest = text[at + len(begin) :]
+        kind = None
+        for candidate in _PEM_KINDS:
+            if rest.startswith(candidate + "-----"):
+                kind = candidate
+                break
+        if kind is None:
+            cursor = at + len(begin)
+            continue
+        header_end = at + len(begin) + len(kind) + 5
+        end_marker = "-----END " + kind + "-----"
+        end_at = text.find(end_marker, header_end)
+        if end_at < 0:
+            spans.append((at, len(text), "[REDACTED]"))
+            return spans
+        spans.append((at, end_at + len(end_marker), "[REDACTED]"))
+        cursor = end_at + len(end_marker)
 
 
 def credential_spans(text: str) -> list[tuple[int, int, str]]:
@@ -230,6 +265,9 @@ def credential_spans(text: str) -> list[tuple[int, int, str]]:
             found.append((match.start(), match.end(), token))
         if found:
             streams.append(found)
+    pem = _pem_spans(text)
+    if pem:
+        streams.append(pem)
     if not streams:
         return []
     heap: list[tuple[int, int, int, int, str]] = []
@@ -346,6 +384,8 @@ def mask(text: str) -> str:
 
 def _view_has_secret(text: str) -> bool:
     """True on the first hit. Does not compare matches against each other."""
+    if _pem_spans(text):
+        return True
     for pattern, _replacement in REDACT_PATTERNS:
         match = pattern.search(text)
         if match is not None and not _redaction_marker(match.group(0)):
