@@ -229,14 +229,15 @@ _PEM_KINDS = (
 )
 
 
-_SGR = re.compile(r"\x1b\[[0-9;]*m")
+_CSI = re.compile(r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]")
+_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
 def _without_sgr(text: str) -> str:
-    """Drop well-formed CSI SGR sequences. Other controls stay in place."""
-    if "\x1b[" not in text:
+    """Drop well-formed CSI and OSC sequences. Other controls stay in place."""
+    if "\x1b" not in text and "\x9b" not in text:
         return text
-    return _SGR.sub("", text)
+    return _OSC.sub("", _CSI.sub("", text))
 
 
 def _pem_spans(text: str) -> list[tuple[int, int, str]]:

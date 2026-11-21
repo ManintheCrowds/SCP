@@ -31,9 +31,31 @@ def test_colored_text_is_not_refused_and_a_colored_token_is_masked() -> None:
     assert leaked is False
 
 
+def test_csi_and_osc_inside_a_token_are_stripped_and_the_token_is_masked() -> None:
+    token = _token()
+    sequences = (
+        "\x1b[K",
+        "\x1b[2J",
+        "\x1b[1G",
+        "\x1b[38:5:196m",
+        "\x9b31m",
+        "\x1b]8;;https://example.test/\x07",
+    )
+    leaked = 0
+    for sequence in sequences:
+        text = token[:8] + sequence + token[8:]
+        try:
+            outbound = mask_secrets.prepare_outbound(text)
+        except mask_secrets.EgressMaskError:
+            outbound = token
+        if token in mask_secrets.mask(text) or token in outbound:
+            leaked += 1
+    assert leaked == 0
+
+
 def test_bare_esc_and_esc_inside_a_token_are_still_refused() -> None:
     token = _token()
-    for text in ("\x1b", "\x1b[31", "\x1b[2J", token[:8] + "\x1b" + token[8:]):
+    for text in ("\x1b", "\x1b[31", token[:8] + "\x1b" + token[8:]):
         assert mask_secrets.has_secrets(text) is True
         with pytest.raises(mask_secrets.EgressMaskError):
             mask_secrets.prepare_outbound(text)
