@@ -1227,6 +1227,18 @@ def _html_comment_source_order_text(text: str) -> str:
     return source_order
 
 
+def _decode_for_comment_visibility(text: str) -> str:
+    current = text
+    source_map = list(range(len(text)))
+    for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
+        decoded, decoded_map = _decode_url_html_with_map(current, source_map)
+        if decoded == current:
+            break
+        current = decoded
+        source_map = decoded_map
+    return current
+
+
 def _normalize_source_order_for_tool_scan(text: str) -> tuple[str, list[int]]:
     """Normalize source-order text and map each normalized char to source text."""
     chars: list[str] = []
@@ -1453,6 +1465,36 @@ def classify(text: str) -> dict:
                 )
             )
             severities.append(severity)
+
+    decoded_visible_source = _decode_for_comment_visibility(text)
+    if decoded_visible_source != text:
+        decoded_visible, decoded_comments = extract_html_comments(decoded_visible_source)
+        decoded_boundaries = _visible_comment_boundaries(decoded_visible_source)
+        if decoded_comments:
+            prepared = _prepare_text_for_scan(decoded_visible)
+            for key, hits in _scan_finding_groups(decoded_visible, prepared).items():
+                base = _base_severity_for_key(key)
+                for offset, phrase in hits:
+                    end = offset + len(str(phrase))
+                    if any(offset < boundary < end for boundary in decoded_boundaries):
+                        legacy[key].append((offset, str(phrase)))
+                        severities.append(_severity_for_concealment(base, key))
+            for offset, match, phrase, base in scan_tool_poisoning(prepared):
+                end = offset + len(match)
+                if any(offset < boundary < end for boundary in decoded_boundaries):
+                    poison_notes.append(
+                        _location_record(
+                            category="tool_poisoning",
+                            offset=offset,
+                            match=match,
+                            segment="decoded_html_comment_visible",
+                            source_offset=offset,
+                            severity=_severity_for_concealment(base, "tool_poisoning"),
+                            base_severity=base,
+                            phrase=phrase,
+                        )
+                    )
+                    severities.append(_severity_for_concealment(base, "tool_poisoning"))
 
     injection_any = any(legacy[key] for key in _INJECTION_FINDING_KEYS) or any(
         severity in ("high", "critical") for severity in severities
