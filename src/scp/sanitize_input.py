@@ -1331,9 +1331,6 @@ def classify(text: str) -> dict:
         legacy["encoding_blocks"].append((0, "html_comment_decode_bound"))
         severities.append("high")
     if source_order != text:
-        if (0, "html_comment_source_order") not in legacy["encoding_blocks"]:
-            legacy["encoding_blocks"].append((0, "html_comment_source_order"))
-        severities.append("high")
         prepared = _prepare_text_for_scan(source_order)
         for key, hits in _scan_finding_groups(source_order, prepared).items():
             base = _base_severity_for_key(key)
@@ -1342,7 +1339,7 @@ def classify(text: str) -> dict:
                 if item not in legacy[key]:
                     legacy[key].append(item)
                     end = offset + len(str(phrase))
-                    if any(offset < boundary < end for boundary in source_order_boundaries):
+                    if any(offset <= boundary <= end for boundary in source_order_boundaries):
                         severity = _severity_for_concealment(base, key)
                     else:
                         severity = base
@@ -1363,6 +1360,7 @@ def classify(text: str) -> dict:
                 embedded_end = embedded_offset + len(embedded_match)
             touches_markup = (
                 embedded_start in source_order_boundaries
+                or (embedded_start - 1) in source_order_boundaries
                 or embedded_end in source_order_boundaries
                 or any(
                     embedded_start < boundary < embedded_end
@@ -1389,7 +1387,8 @@ def classify(text: str) -> dict:
                 for note in poison_notes
             )
             crosses_markup = any(
-                source_start < boundary < source_end for boundary in source_order_boundaries
+                source_start <= boundary <= source_end
+                for boundary in source_order_boundaries
             )
             if visible_same_phrase and not crosses_markup:
                 continue
