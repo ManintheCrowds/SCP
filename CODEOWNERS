@@ -2,5 +2,7 @@
 .gitleaksignore @ManintheCrowds
 .gitleaks.toml @ManintheCrowds
 .github/ @ManintheCrowds
+CODEOWNERS @ManintheCrowds
 scripts/gitleaks_blob_allow.txt @ManintheCrowds
+scripts/mask_check_allow.txt @ManintheCrowds
 scripts/run_mask_check.py @ManintheCrowds

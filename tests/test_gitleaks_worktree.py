@@ -400,3 +400,6 @@ def test_codeowners_covers_the_ignore_file_and_github_workflows() -> None:
     assert owners.get(".gitattributes") == "@ManintheCrowds"
     assert owners.get(".gitleaks.toml") == "@ManintheCrowds"
     assert owners.get("scripts/run_mask_check.py") == "@ManintheCrowds"
+    assert owners.get("scripts/mask_check_allow.txt") == "@ManintheCrowds"
+    assert owners.get("scripts/gitleaks_blob_allow.txt") == "@ManintheCrowds"
+    assert owners.get("CODEOWNERS") == "@ManintheCrowds"

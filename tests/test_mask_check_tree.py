@@ -43,6 +43,47 @@ def test_new_secret_in_tests_still_fails(tmp_path: Path) -> None:
     assert token not in proc.stderr
 
 
+def _first_allow_entry() -> tuple[str, int]:
+    for line in (_REPO / "scripts" / "mask_check_allow.txt").read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        rel, number, _digest = stripped.split(":")
+        return rel, int(number)
+    raise AssertionError("allowlist is empty")
+
+
+def _run(root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(_SCRIPT)],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_a_changed_allowlisted_line_is_flagged(tmp_path: Path) -> None:
+    rel, number = _first_allow_entry()
+    source = (_REPO / rel).read_text(encoding="utf-8").splitlines(keepends=True)
+    source[number - 1] = source[number - 1].rstrip("\n") + " Z\n"
+    dest = tmp_path / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("".join(source), encoding="utf-8")
+    proc = _run(tmp_path)
+    assert proc.returncode == 1
+
+
+def test_a_moved_allowlisted_line_is_flagged(tmp_path: Path) -> None:
+    rel, _number = _first_allow_entry()
+    text = (_REPO / rel).read_text(encoding="utf-8")
+    dest = tmp_path / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("\n" + text, encoding="utf-8")
+    proc = _run(tmp_path)
+    assert proc.returncode == 1
+
+
 def test_changed_allowlisted_line_is_not_covered(tmp_path: Path) -> None:
     source = _REPO / "tests" / "test_line_wrap.py"
     copied = tmp_path / "tests" / "test_line_wrap.py"
