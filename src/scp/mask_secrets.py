@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import heapq
 import re
 import sys
 from pathlib import Path
@@ -12,6 +13,9 @@ from . import secret_surface
 # RFC-ish bounds (avoid catastrophic backtracking on long almost-email strings).
 _EMAIL_LOCAL_MAX = 64
 _EMAIL_DOMAIN_MAX = 253
+
+# Above this length mask, has_secrets, egress, and the CLI fail closed.
+MAX_SCAN_CHARS = 1_000_000
 
 
 def _is_email_local_char(c: str) -> bool:
@@ -194,24 +198,52 @@ def _redaction_marker(piece: str) -> bool:
     return any(marker in piece for marker in _MARKERS)
 
 
+def _over_cap(text: str) -> bool:
+    return len(text) > MAX_SCAN_CHARS
+
+
 def credential_spans(text: str) -> list[tuple[int, int, str]]:
-    """Secret spans. Email addresses are not credentials."""
-    found: list[tuple[int, int, str]] = []
-    covered: list[tuple[int, int]] = []
+    """Secret and personal-data spans.
+
+    Each pattern yields matches in order. A heap merges those lists, then one
+    left-to-right sweep keeps the first non-overlapping span. The overlap
+    work is linear in the number of matches.
+    """
+    if _over_cap(text):
+        return [(0, len(text), "[REDACTED]")]
+    streams: list[list[tuple[int, int, str]]] = []
     for pattern, replacement in REDACT_PATTERNS:
+        found: list[tuple[int, int, str]] = []
         for match in pattern.finditer(text):
-            start, end = match.start(), match.end()
-            if any(start < right and end > left for left, right in covered):
-                continue
             if _redaction_marker(match.group(0)):
                 continue
             if isinstance(replacement, str):
                 token = match.expand(replacement)
             else:
                 token = replacement(match)
-            found.append((start, end, token))
-            covered.append((start, end))
-    return found
+            found.append((match.start(), match.end(), token))
+        if found:
+            streams.append(found)
+    if not streams:
+        return []
+    heap: list[tuple[int, int, int, int, str]] = []
+    for stream_index, stream in enumerate(streams):
+        start, end, token = stream[0]
+        heap.append((start, stream_index, 0, end, token))
+    heapq.heapify(heap)
+    accepted: list[tuple[int, int, str]] = []
+    last_end = -1
+    while heap:
+        start, stream_index, item_index, end, token = heapq.heappop(heap)
+        if start >= last_end and end > start:
+            accepted.append((start, end, token))
+            last_end = end
+        next_index = item_index + 1
+        stream = streams[stream_index]
+        if next_index < len(stream):
+            next_start, next_end, next_token = stream[next_index]
+            heapq.heappush(heap, (next_start, stream_index, next_index, next_end, next_token))
+    return accepted
 
 
 def _email_spans(text: str) -> list[tuple[int, int, str]]:
@@ -284,6 +316,8 @@ class EgressMaskError(ValueError):
 
 def mask(text: str) -> str:
     """Detect on the shared unjoined and joined surfaces. Fail closed on budget."""
+    if _over_cap(text):
+        return "[REDACTED]"
     try:
         unjoined, joined = secret_surface.detection_views(text)
     except secret_surface.NormalizationBudgetExceeded:
@@ -296,23 +330,37 @@ def mask(text: str) -> str:
         return "[REDACTED]"
 
 
+def _view_has_secret(text: str) -> bool:
+    """True on the first hit. Does not compare matches against each other."""
+    for pattern, _replacement in REDACT_PATTERNS:
+        match = pattern.search(text)
+        if match is not None and not _redaction_marker(match.group(0)):
+            return True
+    return False
+
+
 def has_secrets(text: str) -> bool:
     """True when a credential or personal-data value is visible.
 
     Scans the unjoined surface and the joined surface. An exhausted
-    normalization budget fails closed. Email addresses alone do not count.
+    normalization budget or an over-cap input fails closed. Email addresses
+    alone do not count.
     """
+    if _over_cap(text):
+        return True
     try:
         unjoined, joined = secret_surface.detection_views(text)
     except secret_surface.NormalizationBudgetExceeded:
         return True
-    if credential_spans(unjoined):
+    if _view_has_secret(unjoined):
         return True
-    return joined != unjoined and bool(credential_spans(joined))
+    return joined != unjoined and _view_has_secret(joined)
 
 
 def prepare_outbound(text: str) -> str:
     """Mask, then rescan both surfaces. Any failure raises and the CLI writes nothing."""
+    if _over_cap(text):
+        raise EgressMaskError(["input-cap"])
     try:
         secret_surface.detection_views(text)
     except secret_surface.NormalizationBudgetExceeded as exc:

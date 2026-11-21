@@ -11,9 +11,13 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import mask_secrets
+
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MAX_CONTENT_LENGTH = 10_000
 _MAX_SOURCE_LENGTH = 256
+# Mask only a bounded prefix. The rest of a huge note is not scanned.
+_LOG_MASK_CHARS = 4_000
 
 _INJECTION_CFG = {
     "encounter_type": "prompt_injection_attempt",
@@ -59,10 +63,8 @@ def _encounter_dir() -> Path | None:
 
 
 def _sanitize_for_log(content: str, tier: str) -> str:
-    """Redact secrets then truncate for durable encounter logs."""
-    from . import mask_secrets
-
-    redacted = mask_secrets.mask(content)
+    """Truncate first, then redact, so a huge note cannot blow the mask budget."""
+    redacted = mask_secrets.mask(content[:_LOG_MASK_CHARS])
     if tier == "injection":
         preview = redacted[:500]
         return f"[auto] SCP injection-tier detection (preview truncated)\n{preview}"
