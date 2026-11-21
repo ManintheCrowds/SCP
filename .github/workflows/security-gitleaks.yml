@@ -52,18 +52,16 @@ jobs:
           GITLEAKS_ENABLE_SUMMARY: true
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
 
-      # The pinned action scans with --no-merges --first-parent, so a secret
-      # that exists only in a merge commit is invisible to it. -m scans the
-      # full base..head range, including those commits. The config is the
-      # base revision's file, same as the action step above.
+      # The pinned action scans with --no-merges --first-parent. The script
+      # scans the full base..head range, including merge commits, using the
+      # base commit's config and ignore file.
       - name: Scan every pull request commit
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
-          test "$(gitleaks version)" = "8.30.1"
-          gitleaks detect --redact --exit-code=2 \
-            --config "${{ steps.gitleaks-config.outputs.path }}" \
-            --log-opts="-m ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          bash scripts/gitleaks_scan.sh "$(command -v gitleaks)" "$GITHUB_WORKSPACE" \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
 
       - name: Set up Python
         uses: actions/setup-python@v5

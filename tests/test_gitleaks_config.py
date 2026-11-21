@@ -21,6 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = REPO_ROOT / ".gitleaks.toml"
 IGNORE = REPO_ROOT / ".gitleaksignore"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "security-gitleaks.yml"
+SCAN_SCRIPT = REPO_ROOT / "scripts" / "gitleaks_scan.sh"
 
 _AWS_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 _ALNUM = string.ascii_letters + string.digits
@@ -150,6 +151,72 @@ def _commit(root: Path) -> None:
         ["git", "-C", str(root), "commit", "-q", "-m", "fixture"],
         check=True,
     )
+
+
+def _sha(root: Path) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return proc.stdout.strip()
+
+
+def _run_scan_script(root: Path, base: str, head: str) -> int:
+    proc = subprocess.run(
+        ["bash", str(SCAN_SCRIPT), _require_gitleaks(), str(root), base, head],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode
+
+
+def _fingerprints(root: Path, base: str, head: str) -> list[str]:
+    binary = _require_gitleaks()
+    with tempfile.TemporaryDirectory(prefix="gitleaks-report-") as tmp:
+        report = Path(tmp) / "report.json"
+        ignore = Path(tmp) / "ignore"
+        ignore.mkdir()
+        proc = subprocess.run(
+            [
+                binary,
+                "detect",
+                "--source",
+                str(root),
+                "--config",
+                str(root / ".gitleaks.toml"),
+                "--report-format",
+                "json",
+                "--report-path",
+                str(report),
+                "--gitleaks-ignore-path",
+                str(ignore),
+                "--ignore-gitleaks-allow",
+                "--redact",
+                "--no-banner",
+                "--no-color",
+                "--log-level",
+                "error",
+                "--exit-code",
+                "2",
+                "--log-opts",
+                f"-m {base}..{head}",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 2:
+            raise AssertionError(f"expected a leak while reading fingerprints, exit {proc.returncode}")
+        payload = json.loads(report.read_text() or "[]")
+        found = [str(item.get("Fingerprint", "")) for item in payload if item.get("Fingerprint")]
+        for item in payload:
+            item.clear()
+        if not found:
+            raise AssertionError("leak report had no fingerprint")
+        return found
 
 
 def _scan(root: Path) -> list[tuple[str, str]]:
@@ -284,12 +351,46 @@ def test_workflow_pins_action_and_scans_full_range() -> None:
     job = text.split("jobs:", 1)[1]
     assert re.search(r"(?m)^    timeout-minutes:\s*[1-9]\d*\s*$", job)
     assert "if: github.event_name == 'pull_request'" in job
-    log_opts = (
-        '--log-opts="-m ${{ github.event.pull_request.base.sha }}'
-        '..${{ github.event.pull_request.head.sha }}"'
-    )
-    assert log_opts in job
+    assert "scripts/gitleaks_scan.sh" in job
+    assert "${{ github.event.pull_request.base.sha }}" in job
+    assert "${{ github.event.pull_request.head.sha }}" in job
+    script = SCAN_SCRIPT.read_text()
+    assert '--log-opts="-m ${BASE}..${HEAD}"' in script
+    assert "--ignore-gitleaks-allow" in script
+    assert "worktree add --detach" in script
+    assert '--config "$work/.gitleaks.toml"' in script
+    assert '--gitleaks-ignore-path "$work"' in script
     assert "tests/test_gitleaks_config.py" in job
+
+
+def test_pr_ignore_file_cannot_hide_a_leak() -> None:
+    with _repo() as root:
+        _write(root, ".gitleaks.toml", CONFIG.read_text())
+        _write(root, ".gitleaksignore", "# base ignore\n")
+        _write(root, "readme.txt", "clean sample\n")
+        _commit(root)
+        base = _sha(root)
+        _write(root, "leak.txt", _sample(_aws) + "\n")
+        _commit(root)
+        introduced = _sha(root)
+        fingerprint = _fingerprints(root, base, introduced)[0]
+        _write(root, ".gitleaksignore", "# pull request ignore\n" + fingerprint + "\n")
+        _commit(root)
+        head = _sha(root)
+        assert _run_scan_script(root, base, head) == 2
+
+
+def test_pr_allow_comment_cannot_hide_a_leak() -> None:
+    with _repo() as root:
+        _write(root, ".gitleaks.toml", CONFIG.read_text())
+        _write(root, ".gitleaksignore", "# base ignore\n")
+        _write(root, "readme.txt", "clean sample\n")
+        _commit(root)
+        base = _sha(root)
+        _write(root, "leak.txt", _sample(_aws) + " # gitleaks:allow\n")
+        _commit(root)
+        head = _sha(root)
+        assert _run_scan_script(root, base, head) == 2
 
 
 def test_benign_sample_passes() -> None:
