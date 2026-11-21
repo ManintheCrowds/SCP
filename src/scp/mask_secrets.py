@@ -112,9 +112,15 @@ _ACCESS_KEY = re.compile(r"\b" + re.escape(_cat("AK", "IA")) + r"[A-Z2-7]{16}\b"
 _SLACK_BOT = re.compile(
     r"(?<![A-Za-z0-9])" + re.escape(_cat("xo", "xb-")) + r"[0-9]{6,}(?:-[A-Za-z0-9]{6,}){1,4}"
 )
-# Three segments, no label required. A header prefix is not required.
+# Three base64url segments, no label and no fixed length. Payloads of a few
+# dozen characters through a few thousand still match. The quantifiers are
+# bounded so a long run without two dots stays linear.
 _JWT = re.compile(
-    r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{16}\.){2}[A-Za-z0-9_-]{16}(?![A-Za-z0-9_-])"
+    r"(?<![A-Za-z0-9_-])"
+    r"[A-Za-z0-9_-]{16,512}\."
+    r"[A-Za-z0-9_-]{16,4096}\."
+    r"[A-Za-z0-9_-]{16,512}"
+    r"(?![A-Za-z0-9_-])"
 )
 
 REDACT_PATTERNS = [
