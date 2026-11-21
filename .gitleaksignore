@@ -1,0 +1,4 @@
+# Synthetic value planted by the encounter-mask regression. That test
+# asserts the logged text no longer contains it. This is the exact
+# fingerprint gitleaks reports for the commit that introduced the line.
+67c651da93fc759b016e981c7b8b5b2d277a23a5:tests/test_appsec_antigen_mcp_gates.py:generic-api-key:250

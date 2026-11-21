@@ -1,20 +1,26 @@
 title = "Gitleaks configuration"
 
+# An allowlist-only file does not load built-in rules, so gitleaks reports
+# nothing. Extend the default ruleset. Path regexes are anchored so a
+# substring of an allowlisted name cannot hide another file.
+[extend]
+useDefault = true
+
 [allowlist]
 description = "Docs, binaries, SCP redaction source, and intentional test hazard corpus."
 paths = [
-  '''.*\.md$''',
-  '''.*\.lock$''',
-  '''.*\.svg$''',
-  '''.*\.png$''',
-  '''.*\.jpg$''',
-  '''.*\.jpeg$''',
-  '''.*\.gif$''',
-  '''.*\.pdf$''',
-  '''.*\.min\.js$''',
-  '''.*\.map$''',
-  '''src/scp/mask_secrets\.py''',
-  '''tests/fixtures/''',
-  '''__pycache__/''',
-  '''.*\.pyc$'''
+  '''(^|/)[^/]+\.md$''',
+  '''(^|/)[^/]+\.lock$''',
+  '''(^|/)[^/]+\.svg$''',
+  '''(^|/)[^/]+\.png$''',
+  '''(^|/)[^/]+\.jpg$''',
+  '''(^|/)[^/]+\.jpeg$''',
+  '''(^|/)[^/]+\.gif$''',
+  '''(^|/)[^/]+\.pdf$''',
+  '''(^|/)[^/]+\.min\.js$''',
+  '''(^|/)[^/]+\.map$''',
+  '''^src/scp/mask_secrets\.py$''',
+  '''^tests/fixtures/[^/]+$''',
+  '''(^|/)__pycache__(/|$)''',
+  '''(^|/)[^/]+\.pyc$''',
 ]
