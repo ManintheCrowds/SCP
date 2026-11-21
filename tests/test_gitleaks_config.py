@@ -278,6 +278,71 @@ def test_codeowners_assigns_gitleaks_files() -> None:
     assert owners["/.github/workflows/security-gitleaks.yml"] == ["@ManintheCrowds"]
 
 
+def _embedded_rule_ids(binary: str) -> list[str]:
+    data = Path(binary).read_bytes()
+    marker = b'title = "gitleaks config"'
+    start = data.find(marker)
+    assert start >= 0
+    window = data[start : start + 120_000]
+    end = window.find(b"\x00")
+    assert end > 0
+    ids: list[str] = []
+    for line in window[:end].decode().splitlines():
+        if line.startswith('id = "'):
+            ids.append(line.split('"', 2)[1])
+    return ids
+
+
+def test_effective_config_loads_default_rules() -> None:
+    binary = _require_gitleaks()
+    rule_ids = _embedded_rule_ids(binary)
+    assert len(rule_ids) == 222
+    assert len(set(rule_ids)) == 222
+    with tempfile.TemporaryDirectory() as tmp:
+        empty = Path(tmp)
+        command = [
+            binary,
+            "detect",
+            "--no-git",
+            "--source",
+            str(empty),
+            "--config",
+            str(CONFIG),
+            "--log-level",
+            "error",
+            "--no-banner",
+            "--exit-code",
+            "0",
+        ]
+        for rule_id in rule_ids:
+            command.extend(["--enable-rule", rule_id])
+        loaded = subprocess.run(command, capture_output=True, text=True)
+        assert loaded.returncode == 0
+        zero = empty / "empty.toml"
+        zero.write_text('title = "no rules"\n')
+        denied = subprocess.run(
+            [
+                binary,
+                "detect",
+                "--no-git",
+                "--source",
+                str(empty),
+                "--config",
+                str(zero),
+                "--enable-rule",
+                "aws-access-token",
+                "--log-level",
+                "error",
+                "--no-banner",
+                "--exit-code",
+                "0",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert denied.returncode != 0
+
+
 def test_config_extends_default_rules() -> None:
     text = CONFIG.read_text()
     assert "[extend]" in text
