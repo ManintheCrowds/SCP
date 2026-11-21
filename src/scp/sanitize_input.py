@@ -49,7 +49,7 @@ LEETSPEAK_PHRASES = [
 
 HIDDEN_UNICODE: frozenset[int] = frozenset(
     set(range(0x200B, 0x2010))      # ZWSP, ZWNJ, ZWJ, LRM, RLM
-    | set(range(0x2028, 0x2030))    # line/para separators, bidi embeds/overrides/pop
+    | set(range(0x2028, 0x202F))    # line/para separators, bidi embeds/overrides/pop
     | set(range(0x2060, 0x2065))    # word joiner, invisible operators
     | set(range(0x2066, 0x2070))    # bidi isolates, deprecated formatting
     | set(range(0xFE00, 0xFE10))    # variation selectors 1-16
@@ -1041,6 +1041,32 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
     return "".join(parts), comments
 
 
+def _visible_comment_boundaries(text: str) -> set[int]:
+    """Offsets in rendered-visible text where raw HTML comments were removed."""
+    boundaries: set[int] = set()
+    cursor = 0
+    out_len = 0
+    length = len(text)
+    while cursor < length:
+        start = text.find("<!--", cursor)
+        if start < 0:
+            break
+        out_len += start - cursor
+        boundaries.add(out_len)
+        if text.startswith("<!-->", start):
+            cursor = start + 5
+            continue
+        if text.startswith("<!--->", start):
+            cursor = start + 6
+            continue
+        close = _find_html_comment_close(text, start + 4)
+        if close is None:
+            break
+        close_index, close_width = close
+        cursor = close_index + close_width
+    return boundaries
+
+
 def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int], list[int]]:
     """Remove markup delimiters and record output offsets where markup was removed."""
     parts: list[str] = []
@@ -1270,6 +1296,7 @@ def reconcile_severity(result: dict) -> None:
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
     visible, comments = extract_html_comments(text)
+    visible_comment_boundaries = _visible_comment_boundaries(text)
     segments: list[tuple[str, int, str]] = [("text", 0, visible)]
     for start, body in comments:
         if body.strip():
@@ -1290,7 +1317,10 @@ def classify(text: str) -> dict:
                 if (
                     segment == "text"
                     and comments
-                    and str(phrase).lower() not in text.lower()
+                    and any(
+                        offset < boundary < offset + len(str(phrase))
+                        for boundary in visible_comment_boundaries
+                    )
                 ):
                     severity = _severity_for_concealment(base, key)
                 legacy[key].append((offset, str(phrase)))
@@ -1348,7 +1378,7 @@ def classify(text: str) -> dict:
                 if item not in legacy[key]:
                     legacy[key].append(item)
                     end = offset + len(str(phrase))
-                    if any(offset <= boundary <= end for boundary in source_order_boundaries):
+                    if any(offset < boundary < end for boundary in source_order_boundaries):
                         severity = _severity_for_concealment(base, key)
                     else:
                         severity = base

@@ -168,7 +168,7 @@ def test_finding_group_boundary_join_mutant_is_killed() -> None:
     assert _RANK[result.get("severity", "none")] >= _RANK["high"]
 
 
-def test_r9_locked_finding_group_boundary_start_mutant_is_killed() -> None:
-    result = _inspect("<!--x-->ignore safety")
+def test_r9_locked_finding_group_end_side_boundary_mutant_is_killed() -> None:
+    result = _inspect("ignore safe<!--x-->ty")
     assert result["tier"] == "injection"
     assert _RANK[result.get("severity", "none")] >= _RANK["high"]
