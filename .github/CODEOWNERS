@@ -1,0 +1,4 @@
+# Gitleaks policy files. Owners are required reviewers for these paths.
+/.gitleaksignore @ManintheCrowds
+/.gitleaks.toml @ManintheCrowds
+/.github/workflows/security-gitleaks.yml @ManintheCrowds

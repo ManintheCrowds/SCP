@@ -22,6 +22,7 @@ CONFIG = REPO_ROOT / ".gitleaks.toml"
 IGNORE = REPO_ROOT / ".gitleaksignore"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "security-gitleaks.yml"
 SCAN_SCRIPT = REPO_ROOT / "scripts" / "gitleaks_scan.sh"
+CODEOWNERS = REPO_ROOT / ".github" / "CODEOWNERS"
 
 _AWS_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 _ALNUM = string.ascii_letters + string.digits
@@ -262,6 +263,19 @@ def _scan(root: Path) -> list[tuple[str, str]]:
         for item in payload:
             item.clear()
         return summary
+
+
+def test_codeowners_assigns_gitleaks_files() -> None:
+    owners: dict[str, list[str]] = {}
+    for raw in CODEOWNERS.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        path, *names = line.split()
+        owners[path] = names
+    assert owners["/.gitleaksignore"] == ["@ManintheCrowds"]
+    assert owners["/.gitleaks.toml"] == ["@ManintheCrowds"]
+    assert owners["/.github/workflows/security-gitleaks.yml"] == ["@ManintheCrowds"]
 
 
 def test_config_extends_default_rules() -> None:
