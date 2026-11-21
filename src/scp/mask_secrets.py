@@ -314,6 +314,12 @@ class EgressMaskError(ValueError):
         super().__init__("egress mask fail-closed")
 
 
+def _without_controls(text: str) -> str:
+    if not secret_surface.has_refused_control(text):
+        return text
+    return "".join(char for char in text if not secret_surface.is_refused_control(char))
+
+
 def mask(text: str) -> str:
     """Detect on the shared unjoined and joined surfaces. Fail closed on budget."""
     if _over_cap(text):
@@ -322,12 +328,14 @@ def mask(text: str) -> str:
         unjoined, joined = secret_surface.detection_views(text)
     except secret_surface.NormalizationBudgetExceeded:
         return "[REDACTED]"
-    if unjoined == text and joined == text:
-        return _mask_plain(text)
     try:
-        return _mask_views(text, unjoined, joined)
+        if unjoined == text and joined == text:
+            masked = _mask_plain(text)
+        else:
+            masked = _mask_views(text, unjoined, joined)
     except secret_surface.NormalizationBudgetExceeded:
         return "[REDACTED]"
+    return _without_controls(masked)
 
 
 def _view_has_secret(text: str) -> bool:
@@ -346,7 +354,7 @@ def has_secrets(text: str) -> bool:
     normalization budget or an over-cap input fails closed. Email addresses
     alone do not count.
     """
-    if _over_cap(text):
+    if _over_cap(text) or secret_surface.has_refused_control(text):
         return True
     try:
         unjoined, joined = secret_surface.detection_views(text)
@@ -361,6 +369,8 @@ def prepare_outbound(text: str) -> str:
     """Mask, then rescan both surfaces. Any failure raises and the CLI writes nothing."""
     if _over_cap(text):
         raise EgressMaskError(["input-cap"])
+    if secret_surface.has_refused_control(text):
+        raise EgressMaskError(["control"])
     try:
         secret_surface.detection_views(text)
     except secret_surface.NormalizationBudgetExceeded as exc:

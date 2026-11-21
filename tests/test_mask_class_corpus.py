@@ -7,7 +7,7 @@ import tracemalloc
 
 import pytest
 
-from scp import mask_secrets
+from scp import mask_secrets, secret_surface
 
 _BENIGN_PER_TEMPLATE = 40
 _BENIGN_FLAG_CEILING = 0
@@ -87,6 +87,10 @@ def _cases() -> list[tuple[str, str, str]]:
         ("per-char-separator", _assignment("\u2028".join(token)), token),
         ("filler-17b4", _assignment(token[:8] + "\u17b4" + token[8:]), token),
         ("filler-17b5", _assignment(token[:8] + "\u17b5" + token[8:]), token),
+        ("hangul-filler", _assignment(token[:8] + "\u3164" + token[8:]), token),
+        ("nbsp", _assignment(token[:8] + "\u00a0" + token[8:]), token),
+        ("fullwidth", _assignment(token[:8] + "\uff21" + token[8:]), token),
+        ("control-del", _assignment(token[:8] + "\u007f" + token[8:]), token),
     ]
     for width in range(17, 24):
         samples.append((f"wrap-{width}", line[:width] + "\n" + line[width:], token))
@@ -108,8 +112,12 @@ def test_leak_class_is_masked(name: str, text: str, secret: str) -> None:
     assert mask_secrets.has_secrets(text)
     masked = mask_secrets.mask(text)
     assert secret not in masked
-    outbound = mask_secrets.prepare_outbound(text)
-    assert secret not in outbound
+    if secret_surface.has_refused_control(text):
+        with pytest.raises(mask_secrets.EgressMaskError):
+            mask_secrets.prepare_outbound(text)
+    else:
+        outbound = mask_secrets.prepare_outbound(text)
+        assert secret not in outbound
 
 
 def _benign_lines() -> list[str]:

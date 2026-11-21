@@ -32,16 +32,82 @@ def _budget_for(length: int) -> int:
     return length * _BUDGET_FACTOR + 16
 
 
-def is_filler(char: str) -> bool:
-    """Invisible and filler characters by Unicode category, not a hand list.
+# Look-alike letters folded on the detection surface only.
+_HOMOGLYPHS = str.maketrans(
+    {
+        "\u0410": "A",
+        "\u0412": "B",
+        "\u0415": "E",
+        "\u041a": "K",
+        "\u041c": "M",
+        "\u041d": "H",
+        "\u041e": "O",
+        "\u0420": "P",
+        "\u0421": "C",
+        "\u0422": "T",
+        "\u0425": "X",
+        "\u0430": "a",
+        "\u0435": "e",
+        "\u043e": "o",
+        "\u0440": "p",
+        "\u0441": "c",
+        "\u0443": "y",
+        "\u0445": "x",
+        "\u0391": "A",
+        "\u0392": "B",
+        "\u0395": "E",
+        "\u0396": "Z",
+        "\u0397": "H",
+        "\u0399": "I",
+        "\u039a": "K",
+        "\u039c": "M",
+        "\u039d": "N",
+        "\u039f": "O",
+        "\u03a1": "P",
+        "\u03a4": "T",
+        "\u03a5": "Y",
+        "\u03a7": "X",
+        "\u03b1": "a",
+        "\u03bf": "o",
+    }
+)
 
-    Cf (format), Zl (line separator), Zp (paragraph separator), and Mn
-    (nonspacing mark, including U+17B4 and U+17B5) are removed from the
-    detection surface. ASCII is never a filler.
+
+def is_refused_control(char: str) -> bool:
+    """NEL, DEL, C1, VT, and FF. These are not kept and not forwarded."""
+    code = ord(char)
+    if code in (0x0B, 0x0C, 0x7F):
+        return True
+    return 0x80 <= code <= 0x9F
+
+
+def has_refused_control(text: str) -> bool:
+    return any(is_refused_control(char) for char in text)
+
+
+def is_filler(char: str) -> bool:
+    """Invisible and filler characters by Unicode property, not a hand list.
+
+    Cf, Zl, Zp, and Mn (including U+17B4 and U+17B5) are fillers. So are
+    non-ASCII spaces (NBSP and the other Zs variants) and Hangul filler
+    characters, which are letters by category but fillers by name.
     """
     if ord(char) < 128:
         return False
-    return unicodedata.category(char) in _FILLER_CATEGORIES
+    category = unicodedata.category(char)
+    if category in _FILLER_CATEGORIES or category == "Zs":
+        return True
+    code = ord(char)
+    if 0x1100 <= code <= 0xFFA0:
+        return "FILLER" in unicodedata.name(char, "")
+    return False
+
+
+def _normalize_kept(char: str) -> str:
+    """NFKC for fullwidth forms, then common homoglyphs."""
+    if ord(char) < 128:
+        return char
+    return unicodedata.normalize("NFKC", char).translate(_HOMOGLYPHS)
 
 
 def _fold(text: str, *, keep_origins: bool) -> tuple[str, array | None]:
@@ -61,12 +127,16 @@ def _fold(text: str, *, keep_origins: bool) -> tuple[str, array | None]:
                 origins.append(index)
             index += 2 if index + 1 < length and text[index + 1] == "\n" else 1
             continue
-        if is_filler(char):
+        if is_filler(char) or is_refused_control(char):
             index += 1
             continue
-        chars.append(char)
-        if origins is not None:
-            origins.append(index)
+        kept = _normalize_kept(char)
+        for out_char in kept:
+            if not out_char or is_filler(out_char) or is_refused_control(out_char):
+                continue
+            chars.append(out_char)
+            if origins is not None:
+                origins.append(index)
         index += 1
     return "".join(chars), origins
 
