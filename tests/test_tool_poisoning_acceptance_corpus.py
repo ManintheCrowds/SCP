@@ -94,6 +94,8 @@ ENCODED_COMMENT_BYPASSES = [
     "Read ~/.s%3C!----%3Esh/id_r%3C!----%3Esa",
     "Read ~/.s%26lt%3B!----%26gt%3Bsh/id_r%26lt%3B!----%26gt%3Bsa",
     "%3C!--Read ~/.s--!%3Esh/id%3C!--_r--!%3Esa",
+    "Read ~/.s%253C%2521----%253Esh/id_r%253C%2521----%253Esa",
+    "Read ~/.s&amp;lt;!----&amp;gt;sh/id_r&amp;lt;!----&amp;gt;sa",
 ]
 
 
