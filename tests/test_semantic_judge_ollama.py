@@ -67,6 +67,34 @@ class TestSemanticJudgeOllamaUrl(unittest.TestCase):
         self.assertIn("redirect", out["reason"].lower())
         m_post.assert_called_once()
 
+    def test_allowed_private_ollama_host_is_forwarded_to_http_policy(self) -> None:
+        long_content = "z" * 600
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"response": "NO private Ollama is clean"}
+        fake_session = _FakeSession(resp)
+        seen: dict[str, object] = {}
+
+        def fake_outbound_session(**kwargs: object) -> _FakeSession:
+            seen.update(kwargs)
+            return fake_session
+
+        env = {
+            "OLLAMA_BASE_URL": "http://192.168.1.10:11434",
+            "OLLAMA_ALLOWED_HOSTS": "192.168.1.10",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch(
+                "scp.scp_semantic_judge.http_policy.outbound_session",
+                side_effect=fake_outbound_session,
+            ):
+                out = judge(long_content, "handoff")
+
+        self.assertFalse(out["suspicious"])
+        self.assertEqual(seen["allowed_private_hosts"], {"192.168.1.10"})
+        self.assertIsNotNone(fake_session.post_kwargs)
+        self.assertFalse(fake_session.post_kwargs["allow_redirects"])
+
     def test_ollama_post_disables_redirects_and_proxy_environment(self) -> None:
         resp = MagicMock()
         fake_session = _FakeSession(resp)

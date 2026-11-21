@@ -11,6 +11,7 @@ import re
 import socket
 import ssl
 import unicodedata
+from collections.abc import Iterable
 from urllib.parse import unquote, urlparse
 
 import requests
@@ -260,6 +261,58 @@ def _address_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bo
     return any(_ipv4_address_is_blocked(embedded) for embedded in _embedded_ipv4s(ip))
 
 
+def _normalize_allowed_private_hosts(hosts: Iterable[str] | None) -> frozenset[str]:
+    if not hosts:
+        return frozenset()
+    normalized = []
+    for host in hosts:
+        item = _normalize_hostname(str(host))
+        if item.startswith("[") and item.endswith("]"):
+            item = item[1:-1]
+        if item:
+            normalized.append(item)
+    return frozenset(normalized)
+
+
+def _private_address_allowed_for_host(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    hostname: str,
+    allowed_private_hosts: frozenset[str],
+) -> bool:
+    if _normalize_hostname(hostname) not in allowed_private_hosts:
+        return False
+    if isinstance(ip, ipaddress.IPv4Address):
+        return (
+            ip.is_private
+            and not ip.is_loopback
+            and not ip.is_link_local
+            and not ip.is_multicast
+            and not ip.is_unspecified
+            and not ip.is_reserved
+            and ip not in _CGNAT
+        )
+    return (
+        ip.is_private
+        and not ip.is_loopback
+        and not ip.is_link_local
+        and not ip.is_multicast
+        and not ip.is_unspecified
+        and not ip.is_reserved
+        and not ip.is_site_local
+    )
+
+
+def _blocked_literal_allowed_by_policy(
+    hostname: str, allowed_private_hosts: frozenset[str]
+) -> bool:
+    norm = _normalize_hostname(hostname)
+    try:
+        ip = ipaddress.ip_address(norm.split("%", 1)[0])
+    except ValueError:
+        return False
+    return _private_address_allowed_for_host(ip, hostname, allowed_private_hosts)
+
+
 def _hostname_is_blocked(hostname: str) -> bool:
     h = _normalize_hostname(hostname)
     if not h or _host_has_forbidden_chars(h):
@@ -295,7 +348,12 @@ def _exact_loopback_name(hostname: str) -> bool:
     return raw in _LOOPBACK_HOSTS
 
 
-def _records_include_blocked(hostname: str, records: list[tuple]) -> bool:
+def _records_include_blocked(
+    hostname: str,
+    records: list[tuple],
+    *,
+    allowed_private_hosts: frozenset[str] = frozenset(),
+) -> bool:
     """True when any resolved address is blocked, unless the name is exact loopback."""
     allow_loopback = _exact_loopback_name(hostname)
     if not records:
@@ -306,6 +364,8 @@ def _records_include_blocked(hostname: str, records: list[tuple]) -> bool:
         if ip is None:
             return True
         if allow_loopback and ip.is_loopback:
+            continue
+        if _private_address_allowed_for_host(ip, hostname, allowed_private_hosts):
             continue
         if _address_is_blocked(ip):
             return True
@@ -342,7 +402,12 @@ def resolved_url_blocked(url: str) -> bool:
         return True
 
 
-def resolved_addresses_blocked(hostname: str, port: int) -> bool:
+def resolved_addresses_blocked(
+    hostname: str,
+    port: int,
+    *,
+    allowed_private_hosts: Iterable[str] | None = None,
+) -> bool:
     """Report whether ``hostname`` is a blocked literal or resolves to one.
 
     Raises ``socket.gaierror`` when a non-literal name does not resolve.
@@ -356,11 +421,16 @@ def resolved_addresses_blocked(hostname: str, port: int) -> bool:
         or _has_zone_suffix(hostname)
     ):
         return True
-    if not _exact_loopback_name(hostname) and _hostname_is_blocked(hostname):
+    allowed = _normalize_allowed_private_hosts(allowed_private_hosts)
+    if (
+        not _exact_loopback_name(hostname)
+        and _hostname_is_blocked(hostname)
+        and not _blocked_literal_allowed_by_policy(hostname, allowed)
+    ):
         return True
     family = urllib3_connection.allowed_gai_family()
     records = socket.getaddrinfo(hostname, port, family, socket.SOCK_STREAM)
-    return _records_include_blocked(hostname, records)
+    return _records_include_blocked(hostname, records, allowed_private_hosts=allowed)
 
 
 def connect_validated_tcp(
@@ -370,6 +440,7 @@ def connect_validated_tcp(
     *,
     source_address: tuple[str, int] | None = None,
     socket_options: object | None = None,
+    allowed_private_hosts: Iterable[str] | None = None,
 ) -> socket.socket:
     """Resolve once, refuse blocked addresses, and connect to a checked IP.
 
@@ -383,11 +454,16 @@ def connect_validated_tcp(
         or _has_zone_suffix(hostname)
     ):
         raise OSError("destination address is blocked")
-    if not _exact_loopback_name(hostname) and _hostname_is_blocked(hostname):
+    allowed = _normalize_allowed_private_hosts(allowed_private_hosts)
+    if (
+        not _exact_loopback_name(hostname)
+        and _hostname_is_blocked(hostname)
+        and not _blocked_literal_allowed_by_policy(hostname, allowed)
+    ):
         raise OSError("destination address is blocked")
     family = urllib3_connection.allowed_gai_family()
     records = socket.getaddrinfo(hostname, port, family, socket.SOCK_STREAM)
-    if _records_include_blocked(hostname, records):
+    if _records_include_blocked(hostname, records, allowed_private_hosts=allowed):
         raise OSError("destination address is blocked")
 
     last_error: OSError | None = None
@@ -413,7 +489,11 @@ def wrap_tls_sni(sock: socket.socket, hostname: str) -> socket.socket:
     return context.wrap_socket(sock, server_hostname=hostname)
 
 
-def _open_pinned_socket(conn: HTTPConnection) -> socket.socket:
+def _open_pinned_socket(
+    conn: HTTPConnection,
+    *,
+    allowed_private_hosts: frozenset[str] = frozenset(),
+) -> socket.socket:
     """Dial an address from one validated lookup of the original host."""
     host = conn._dns_host
     if host.startswith("["):
@@ -425,6 +505,7 @@ def _open_pinned_socket(conn: HTTPConnection) -> socket.socket:
             conn.timeout,
             source_address=conn.source_address,
             socket_options=conn.socket_options,
+            allowed_private_hosts=allowed_private_hosts,
         )
     except socket.gaierror as exc:
         raise NameResolutionError(conn.host, conn, exc) from exc
@@ -439,12 +520,14 @@ def _open_pinned_socket(conn: HTTPConnection) -> socket.socket:
 
 class _PinnedHTTPConnection(HTTPConnection):
     def _new_conn(self) -> socket.socket:
-        return _open_pinned_socket(self)
+        allowed = getattr(self, "_scp_allowed_private_hosts", frozenset())
+        return _open_pinned_socket(self, allowed_private_hosts=allowed)
 
 
 class _PinnedHTTPSConnection(HTTPSConnection):
     def _new_conn(self) -> socket.socket:
-        return _open_pinned_socket(self)
+        allowed = getattr(self, "_scp_allowed_private_hosts", frozenset())
+        return _open_pinned_socket(self, allowed_private_hosts=allowed)
 
 
 class _PinnedHTTPConnectionPool(HTTPConnectionPool):
@@ -456,11 +539,34 @@ class _PinnedHTTPSConnectionPool(HTTPSConnectionPool):
 
 
 class _PinnedHTTPAdapter(HTTPAdapter):
+    def __init__(
+        self,
+        *args,
+        allowed_private_hosts: Iterable[str] | None = None,
+        **kwargs,
+    ):
+        self._allowed_private_hosts = _normalize_allowed_private_hosts(allowed_private_hosts)
+        super().__init__(*args, **kwargs)
+
     def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
         super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+        allowed = self._allowed_private_hosts
+
+        class _SessionPinnedHTTPConnection(_PinnedHTTPConnection):
+            _scp_allowed_private_hosts = allowed
+
+        class _SessionPinnedHTTPSConnection(_PinnedHTTPSConnection):
+            _scp_allowed_private_hosts = allowed
+
+        class _SessionPinnedHTTPConnectionPool(_PinnedHTTPConnectionPool):
+            ConnectionCls = _SessionPinnedHTTPConnection
+
+        class _SessionPinnedHTTPSConnectionPool(_PinnedHTTPSConnectionPool):
+            ConnectionCls = _SessionPinnedHTTPSConnection
+
         self.poolmanager.pool_classes_by_scheme = {
-            "http": _PinnedHTTPConnectionPool,
-            "https": _PinnedHTTPSConnectionPool,
+            "http": _SessionPinnedHTTPConnectionPool,
+            "https": _SessionPinnedHTTPSConnectionPool,
         }
 
 
@@ -542,7 +648,11 @@ def _reject_proxy_env_if_trusted(sess: requests.Session) -> None:
         proxies.clear()
 
 
-def outbound_session(session: requests.Session | None = None) -> requests.Session:
+def outbound_session(
+    session: requests.Session | None = None,
+    *,
+    allowed_private_hosts: Iterable[str] | None = None,
+) -> requests.Session:
     """Session that ignores ambient proxies, refuses redirects, and pins DNS.
 
     Redirects are forced off even if a caller passes ``allow_redirects=True``.
@@ -566,7 +676,7 @@ def outbound_session(session: requests.Session | None = None) -> requests.Sessio
         return sess
     mount = getattr(sess, "mount", None)
     if callable(mount):
-        adapter = _PinnedHTTPAdapter()
+        adapter = _PinnedHTTPAdapter(allowed_private_hosts=allowed_private_hosts)
         mount("https://", adapter)
         mount("http://", adapter)
     request = getattr(sess, "request", None)

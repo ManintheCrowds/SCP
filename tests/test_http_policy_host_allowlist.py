@@ -55,6 +55,51 @@ def test_public_ip_allowed_when_explicitly_allowlisted():
     assert http_policy.host_allowed("https://8.8.8.8/x", ["8.8.8.8"]) is True
 
 
+def test_validated_tcp_allows_explicit_private_ollama_host(monkeypatch):
+    dialed: list[tuple[str, int]] = []
+
+    def fake_dns(host, port, *args, **kwargs):
+        assert host == "192.168.1.10"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("192.168.1.10", port),
+            )
+        ]
+
+    def fake_create(address, *args, **kwargs):
+        dialed.append(address)
+        raise OSError("dial attempted")
+
+    monkeypatch.setattr(http_policy.socket, "getaddrinfo", fake_dns)
+    monkeypatch.setattr(http_policy.urllib3_connection, "create_connection", fake_create)
+
+    with pytest.raises(OSError, match="dial attempted"):
+        http_policy.connect_validated_tcp(
+            "192.168.1.10",
+            11434,
+            allowed_private_hosts={"192.168.1.10"},
+        )
+
+    assert dialed == [("192.168.1.10", 11434)]
+
+
+def test_private_host_exception_does_not_allow_link_local_metadata(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("link-local metadata should be blocked before dialing")
+
+    monkeypatch.setattr(http_policy.socket, "getaddrinfo", boom)
+    with pytest.raises(OSError, match="blocked"):
+        http_policy.connect_validated_tcp(
+            "169.254.169.254",
+            80,
+            allowed_private_hosts={"169.254.169.254"},
+        )
+
+
 @pytest.mark.parametrize(
     "url, host",
     [
