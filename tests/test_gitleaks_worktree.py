@@ -358,3 +358,6 @@ def test_codeowners_covers_the_ignore_file_and_github_workflows() -> None:
         owners[path] = owner.strip()
     assert owners.get(".gitleaksignore") == "@ManintheCrowds"
     assert owners.get(".github/") == "@ManintheCrowds"
+    assert owners.get(".gitattributes") == "@ManintheCrowds"
+    assert owners.get(".gitleaks.toml") == "@ManintheCrowds"
+    assert owners.get("scripts/run_mask_check.py") == "@ManintheCrowds"

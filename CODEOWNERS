@@ -1,2 +1,5 @@
+.gitattributes @ManintheCrowds
 .gitleaksignore @ManintheCrowds
+.gitleaks.toml @ManintheCrowds
 .github/ @ManintheCrowds
+scripts/run_mask_check.py @ManintheCrowds
