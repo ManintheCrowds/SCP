@@ -43,3 +43,36 @@ def test_checked_trees_are_scanned_and_source_is_not(tmp_path: Path) -> None:
     assert "docs/clean.md" not in reported
     assert token not in proc.stdout
     assert token not in proc.stderr
+
+
+def test_build_dirs_inside_checked_trees_are_scanned(tmp_path: Path) -> None:
+    token = _token()
+    nested = {
+        tmp_path / "docs" / "build" / "note.md": token,
+        tmp_path / "tests" / "dist" / "note.py": token,
+        tmp_path / "fixtures" / "build" / "note.txt": token,
+        tmp_path / ".cursor" / "node_modules" / "note.js": token,
+        tmp_path / ".cursor" / ".venv" / "note.py": token,
+        tmp_path / "docs" / "pkg.egg-info" / "note.txt": token,
+        tmp_path / "build" / "note.md": token,
+    }
+    for path, text in nested.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(_SCRIPT)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    reported = proc.stderr
+    assert "docs/build/note.md" in reported
+    assert "tests/dist/note.py" in reported
+    assert "fixtures/build/note.txt" in reported
+    assert ".cursor/node_modules/note.js" in reported
+    assert ".cursor/.venv/note.py" in reported
+    assert "docs/pkg.egg-info/note.txt" in reported
+    assert str(tmp_path / "build" / "note.md") not in reported
+    assert token not in proc.stdout
+    assert token not in proc.stderr

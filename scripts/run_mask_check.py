@@ -28,6 +28,11 @@ _CHECK_PARTS = frozenset({"docs", "fixtures", "tests", ".cursor"})
 
 def _skipped(path: Path, root: Path) -> bool:
     parts = path.relative_to(root).parts
+    if ".git" in parts or "__pycache__" in parts:
+        return True
+    # A checked tree wins over build, dist, node_modules, .venv, and egg-info.
+    if any(part in _CHECK_PARTS for part in parts):
+        return False
     if any(part in _SKIP_PARTS for part in parts):
         return True
     return any(part.endswith(".egg-info") for part in parts)
