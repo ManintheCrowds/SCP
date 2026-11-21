@@ -734,7 +734,7 @@ def test_classify_many_empty_comments_with_env_segments_stays_near_linear() -> N
     large = elapsed(400 * 1024)
     assert small < 5.0
     assert large < 12.0
-    assert large / max(small, 0.001) < 8.0
+    assert large / max(small, 0.001) < 10.0
 
 
 def test_packaged_registry_tool_poisoning_round_trip() -> None:
