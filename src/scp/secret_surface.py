@@ -74,9 +74,14 @@ _HOMOGLYPHS = str.maketrans(
 
 
 def is_refused_control(char: str) -> bool:
-    """NEL, DEL, C1, VT, and FF. These are not kept and not forwarded."""
+    """Every C0 control except tab, LF, and CR, plus DEL and C1.
+
+    U+0000 through U+001F are refused aside from U+0009, U+000A, and U+000D.
+    """
     code = ord(char)
-    if code in (0x0B, 0x0C, 0x7F):
+    if code < 0x20 and code not in (0x09, 0x0A, 0x0D):
+        return True
+    if code == 0x7F:
         return True
     return 0x80 <= code <= 0x9F
 
