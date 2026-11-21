@@ -64,33 +64,37 @@ def _allowlist_path() -> Path:
     return Path(__file__).resolve().parent / "mask_check_allow.txt"
 
 
-def _load_allowlist() -> set[str]:
+def _line_digest(line: str) -> str:
+    body = line[:-1] if line.endswith("\n") else line
+    if body.endswith("\r"):
+        body = body[:-1]
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _load_allowlist() -> dict[tuple[str, str], int]:
+    """path + line digest -> how many copies of that line may be ignored."""
     path = _allowlist_path()
     if not path.is_file():
-        return set()
-    rows: set[str] = set()
+        return {}
+    rows: dict[tuple[str, str], int] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        rows.add(stripped)
+        rel, digest, count = stripped.split(":")
+        rows[(rel, digest)] = int(count)
     return rows
 
 
-def _line_key(rel: str, number: int, line: str) -> str:
-    body = line[:-1] if line.endswith("\n") else line
-    if body.endswith("\r"):
-        body = body[:-1]
-    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
-    return f"{rel}:{number}:{digest}"
-
-
-def _without_allowed_lines(text: str, rel: str, allowed: set[str]) -> str:
+def _without_allowed_lines(text: str, rel: str, allowed: dict[tuple[str, str], int]) -> str:
     if not allowed:
         return text
+    used: dict[tuple[str, str], int] = {}
     kept: list[str] = []
-    for number, line in enumerate(text.splitlines(keepends=True), start=1):
-        if _line_key(rel, number, line) in allowed:
+    for line in text.splitlines(keepends=True):
+        key = (rel, _line_digest(line))
+        if key in allowed and used.get(key, 0) < allowed[key]:
+            used[key] = used.get(key, 0) + 1
             kept.append("\n" if line.endswith("\n") else "")
             continue
         kept.append(line)

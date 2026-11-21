@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -43,14 +44,22 @@ def test_new_secret_in_tests_still_fails(tmp_path: Path) -> None:
     assert token not in proc.stderr
 
 
-def _first_allow_entry() -> tuple[str, int]:
+def _allow_rows() -> list[tuple[str, str, int]]:
+    rows: list[tuple[str, str, int]] = []
     for line in (_REPO / "scripts" / "mask_check_allow.txt").read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        rel, number, _digest = stripped.split(":")
-        return rel, int(number)
-    raise AssertionError("allowlist is empty")
+        rel, digest, count = stripped.split(":")
+        rows.append((rel, digest, int(count)))
+    if not rows:
+        raise AssertionError("allowlist is empty")
+    return rows
+
+
+def _digest(line: str) -> str:
+    body = line[:-1] if line.endswith("\n") else line
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def _run(root: Path) -> subprocess.CompletedProcess[str]:
@@ -63,25 +72,50 @@ def _run(root: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _copy(tmp_path: Path, rel: str, text: str) -> None:
+    dest = tmp_path / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(text, encoding="utf-8")
+
+
 def test_a_changed_allowlisted_line_is_flagged(tmp_path: Path) -> None:
-    rel, number = _first_allow_entry()
-    source = (_REPO / rel).read_text(encoding="utf-8").splitlines(keepends=True)
-    source[number - 1] = source[number - 1].rstrip("\n") + " Z\n"
-    dest = tmp_path / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text("".join(source), encoding="utf-8")
-    proc = _run(tmp_path)
-    assert proc.returncode == 1
+    rel, digest, _count = _allow_rows()[0]
+    lines = (_REPO / rel).read_text(encoding="utf-8").splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if _digest(line) == digest:
+            lines[index] = line.rstrip("\n") + " Z\n"
+            break
+    else:
+        raise AssertionError("allowlisted line was not in the file")
+    _copy(tmp_path, rel, "".join(lines))
+    assert _run(tmp_path).returncode == 1
 
 
-def test_a_moved_allowlisted_line_is_flagged(tmp_path: Path) -> None:
-    rel, _number = _first_allow_entry()
+def test_a_blank_line_above_an_allowlisted_line_passes(tmp_path: Path) -> None:
+    rel = _allow_rows()[0][0]
     text = (_REPO / rel).read_text(encoding="utf-8")
-    dest = tmp_path / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text("\n" + text, encoding="utf-8")
-    proc = _run(tmp_path)
-    assert proc.returncode == 1
+    _copy(tmp_path, rel, "\n" + text)
+    assert _run(tmp_path).returncode == 0
+
+
+def test_an_allowlisted_line_copied_to_another_file_is_flagged(tmp_path: Path) -> None:
+    rel = _allow_rows()[0][0]
+    text = (_REPO / rel).read_text(encoding="utf-8")
+    _copy(tmp_path, "tests/copied_allowlist_case.py", text)
+    assert _run(tmp_path).returncode == 1
+
+
+def test_an_extra_occurrence_of_an_allowlisted_line_is_flagged(tmp_path: Path) -> None:
+    rel, digest, _count = _allow_rows()[0]
+    lines = (_REPO / rel).read_text(encoding="utf-8").splitlines(keepends=True)
+    for line in lines:
+        if _digest(line) == digest:
+            lines.append(line if line.endswith("\n") else line + "\n")
+            break
+    else:
+        raise AssertionError("allowlisted line was not in the file")
+    _copy(tmp_path, rel, "".join(lines))
+    assert _run(tmp_path).returncode == 1
 
 
 def test_changed_allowlisted_line_is_not_covered(tmp_path: Path) -> None:
