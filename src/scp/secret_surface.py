@@ -195,9 +195,25 @@ def _bearer_open(prev: str) -> bool:
     return 1 <= len(tail) <= 12 and all(char in _TOKEN_CHARS for char in tail)
 
 
-def _jwt_open(prev: str) -> bool:
-    """A dot between segments, or a break inside segment 2 or 3."""
+def _jwt_subject(prev: str) -> str:
+    """The token tail after a label, assignment, or bearer marker."""
     stripped = prev.rstrip(" \t")
+    cut = max(stripped.rfind("="), stripped.rfind(":"))
+    if cut >= 0:
+        stripped = stripped[cut + 1 :].lstrip(" \t")
+    lower = stripped.lower()
+    marker = "bearer"
+    idx = lower.rfind(marker)
+    if idx >= 0 and (idx == 0 or lower[idx - 1] in " \t"):
+        rest = stripped[idx + len(marker) :]
+        if rest[:1] in " \t":
+            stripped = rest.lstrip(" \t")
+    return stripped
+
+
+def _jwt_open(prev: str) -> bool:
+    """A dot between segments, including after a label on the same line."""
+    stripped = _jwt_subject(prev)
     if not stripped or "." not in stripped:
         return False
     if stripped.endswith("."):

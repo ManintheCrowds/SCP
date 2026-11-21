@@ -112,15 +112,26 @@ _ACCESS_KEY = re.compile(r"\b" + re.escape(_cat("AK", "IA")) + r"[A-Z2-7]{16}\b"
 _SLACK_BOT = re.compile(
     r"(?<![A-Za-z0-9])" + re.escape(_cat("xo", "xb-")) + r"[0-9]{6,}(?:-[A-Za-z0-9]{6,}){1,4}"
 )
-# Three base64url segments, no label and no fixed length. Payloads of a few
-# dozen characters through a few thousand still match. The quantifiers are
-# bounded so a long run without two dots stays linear.
+# Three base64url segments. A header that starts with the JWT marker may use
+# segments of 10 or more; other headers stay at 16. The signature segment
+# allows a 4096-bit RSA signature. Quantifiers stay bounded.
+_JWT_MARKER = _cat("ey", "J")
+_B64URL = r"[A-Za-z0-9_-]"
 _JWT = re.compile(
-    r"(?<![A-Za-z0-9_-])"
-    r"[A-Za-z0-9_-]{16,512}\."
-    r"[A-Za-z0-9_-]{16,4096}\."
-    r"[A-Za-z0-9_-]{16,512}"
-    r"(?![A-Za-z0-9_-])"
+    r"(?<![A-Za-z0-9_-])(?:"
+    + re.escape(_JWT_MARKER)
+    + _B64URL
+    + r"{7,1021}\."
+    + _B64URL
+    + r"{10,4096}\."
+    + _B64URL
+    + r"{10,1024}|"
+    + _B64URL
+    + r"{16,1024}\."
+    + _B64URL
+    + r"{16,4096}\."
+    + _B64URL
+    + r"{16,1024})(?![A-Za-z0-9_-])"
 )
 
 REDACT_PATTERNS = [
