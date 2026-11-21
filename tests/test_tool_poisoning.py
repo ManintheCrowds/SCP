@@ -87,6 +87,7 @@ def test_benign_important_and_ssh_are_not_high_severity() -> None:
         "This check is important before you ssh to the bastion.",
         "Use ssh with the project config. The important field is the username.",
         "Document why this ssh step is important for operators.",
+        "Connect with ssh. <!-- This note is important for operators. -->",
     ]
     for content in samples:
         result = _inspect(content)
