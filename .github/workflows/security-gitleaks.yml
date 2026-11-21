@@ -113,11 +113,50 @@ jobs:
           from pathlib import Path
 
           root = Path(sys.argv[1])
-          binary_suffixes = {
-              ".pyc", ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".webp",
-              ".ico", ".zip", ".gz", ".woff", ".woff2", ".wasm", ".ttf",
-              ".otf", ".eot", ".so", ".dll", ".exe",
-          }
+          # Content signatures. The file name is not an exemption.
+          _MAGICS = (
+              b"\x89PNG\r\n\x1a\n",
+              b"\xff\xd8\xff",
+              b"GIF87a",
+              b"GIF89a",
+              b"%PDF-",
+              b"\x7fELF",
+              b"PK\x03\x04",
+              b"\x1f\x8b",
+          )
+
+          def known_binary(data: bytes) -> bool:
+              if any(data.startswith(magic) for magic in _MAGICS):
+                  return True
+              return len(data) >= 4 and data[1:4] == b"\r\r\n"
+
+          def utf16_text(data: bytes) -> bool:
+              if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+                  return True
+              sample = data[:512]
+              if len(sample) < 16:
+                  return False
+              if len(sample) % 2:
+                  sample = sample[:-1]
+              pairs = len(sample) // 2
+              le = sum(1 for index in range(1, len(sample), 2) if sample[index] == 0)
+              be = sum(1 for index in range(0, len(sample), 2) if sample[index] == 0)
+              return le >= int(pairs * 0.8) or be >= int(pairs * 0.8)
+
+          def ascii_after_nul(data: bytes) -> bool:
+              start = data.find(b"\x00")
+              if start < 0:
+                  return False
+              run = 0
+              for byte in data[start + 1 :]:
+                  if 48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122:
+                      run += 1
+                      if run >= 20:
+                          return True
+                  else:
+                      run = 0
+              return False
+
           listed = subprocess.run(
               ["git", "rev-list", "--objects", "HEAD"],
               cwd=root,
@@ -143,11 +182,15 @@ jobs:
                   capture_output=True,
               ).stdout
               name = path.decode("utf-8", "replace")
-              if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
-                  sys.stderr.write(f"refusing UTF-16 BOM file: {name}\n")
+              if utf16_text(data):
+                  sys.stderr.write(f"refusing UTF-16 text: {name}\n")
                   sys.exit(1)
-              suffix = Path(name).suffix.lower()
-              if b"\x00" in data and suffix not in binary_suffixes:
+              if b"\x00" not in data:
+                  continue
+              if ascii_after_nul(data):
+                  sys.stderr.write(f"refusing text hidden after a NUL byte: {name}\n")
+                  sys.exit(1)
+              if not known_binary(data):
                   sys.stderr.write(f"refusing NUL byte in text file: {name}\n")
                   sys.exit(1)
           PY

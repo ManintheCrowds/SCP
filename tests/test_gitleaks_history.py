@@ -249,7 +249,7 @@ def test_nul_byte_in_a_text_file_is_refused(tmp_path: Path) -> None:
     _git(repo, "commit", "-q", "-m", "nul")
     proc = _scan(repo, tmp_path)
     assert proc.returncode == 1
-    assert "refusing NUL byte in text file" in proc.stderr
+    assert "refusing" in proc.stderr
 
 
 def test_utf16_bom_file_is_refused(tmp_path: Path) -> None:
@@ -260,4 +260,48 @@ def test_utf16_bom_file_is_refused(tmp_path: Path) -> None:
     _git(repo, "commit", "-q", "-m", "utf")
     proc = _scan(repo, tmp_path)
     assert proc.returncode == 1
-    assert "refusing UTF-16 BOM file" in proc.stderr
+    assert "refusing UTF-16 text" in proc.stderr
+
+
+def test_bomless_utf16_with_a_binary_name_is_refused(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "photo.png").write_bytes(("value " + _token(29)).encode("utf-16-le"))
+    _git(repo, "add", "photo.png")
+    _git(repo, "commit", "-q", "-m", "le")
+    le = _scan(repo, tmp_path)
+    assert le.returncode == 1
+    assert "refusing UTF-16 text" in le.stderr
+    repo2 = tmp_path / "be"
+    _init(repo2)
+    (repo2 / "note.pdf").write_bytes(("value " + _token(30)).encode("utf-16-be"))
+    _git(repo2, "add", "note.pdf")
+    _git(repo2, "commit", "-q", "-m", "be")
+    be = _scan(repo2, tmp_path / "be-scan")
+    assert be.returncode == 1
+    assert "refusing UTF-16 text" in be.stderr
+
+
+def test_token_after_a_nul_in_a_png_is_refused(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    blob = b"\x89PNG\r\n\x1a\n" + b"\x00" + _token(31).encode("ascii")
+    (repo / "photo.png").write_bytes(blob)
+    _git(repo, "add", "photo.png")
+    _git(repo, "commit", "-q", "-m", "png")
+    proc = _scan(repo, tmp_path)
+    assert proc.returncode == 1
+    assert "refusing text hidden after a NUL byte" in proc.stderr
+
+
+def test_a_real_png_header_without_text_is_not_refused(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    body = bytearray(b"\x89PNG\r\n\x1a\n")
+    body += bytes(range(1, 32))
+    body += b"\x00\x01\x02\x03"
+    (repo / "photo.png").write_bytes(bytes(body))
+    _git(repo, "add", "photo.png")
+    _git(repo, "commit", "-q", "-m", "png")
+    proc = _scan(repo, tmp_path)
+    assert proc.returncode == 0
