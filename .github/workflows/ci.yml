@@ -103,6 +103,9 @@ jobs:
           SCP_MASK_CHECK_ROOT: ${{ github.workspace }}/head
         run: |
           set -euo pipefail
+          # A pull request must not put its own tree on the import path.
+          unset PYTHONPATH
+          export PYTHONSAFEPATH=1
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             checker="${BASE_DIR}/scripts/run_mask_check.py"
             if [ ! -f "$checker" ]; then
@@ -128,6 +131,11 @@ jobs:
       - name: Gate on upstream jobs
         run: |
           echo "contract=${{ needs.contract.result }} promptfoo-eval=${{ needs.promptfoo-eval.result }} tests=${{ needs.tests.result }} mask-check=${{ needs.mask-check.result }}"
-          if [ "${{ needs.contract.result }}" != "success" ] || [ "${{ needs.promptfoo-eval.result }}" != "success" ] || [ "${{ needs.tests.result }}" != "success" ] || [ "${{ needs.mask-check.result }}" != "success" ]; then
+          contract="${{ needs.contract.result }}"
+          promptfoo="${{ needs.promptfoo-eval.result }}"
+          tests="${{ needs.tests.result }}"
+          mask="${{ needs.mask-check.result }}"
+          # skipped is not success. A skipped mask-check must fail the gate.
+          if [ "$contract" != "success" ] || [ "$promptfoo" != "success" ] || [ "$tests" != "success" ] || [ "$mask" != "success" ]; then
             exit 1
           fi

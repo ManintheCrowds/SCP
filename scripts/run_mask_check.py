@@ -49,9 +49,26 @@ def iter_targets(root: Path) -> list[Path]:
     return chosen
 
 
+def _loaded_from_head(root: Path) -> bool:
+    """True when this process imported the masker from the tree under scan."""
+    loaded = Path(mask_secrets.__file__).resolve()
+    try:
+        loaded.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    root = Path(os.environ.get("SCP_MASK_CHECK_ROOT", ".")).resolve()
+    raw_root = os.environ.get("SCP_MASK_CHECK_ROOT")
+    root = Path(raw_root).resolve() if raw_root else Path(".").resolve()
+    if raw_root and _loaded_from_head(root):
+        print(
+            "mask-check refuses a masker loaded from the tree it is scanning",
+            file=sys.stderr,
+        )
+        return 2
     targets = [Path(arg) for arg in args] if args else iter_targets(root)
     failed = False
     for path in targets:
