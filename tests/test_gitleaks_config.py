@@ -442,20 +442,25 @@ def test_config_detects_synthetic_tokens() -> None:
         assert rule in found.get(path, set()), path
 
 
-def test_workflow_pins_action_and_scans_full_range() -> None:
+def test_workflow_uses_the_verified_gitleaks_binary() -> None:
     text = WORKFLOW.read_text()
-    assert "gitleaks/gitleaks-action@v2" not in text
-    assert (
-        "uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7"
-        in text
-    )
-    assert 'GITLEAKS_VERSION: "8.30.1"' in text
+    permissions = text.split("permissions:", 1)[1].split("jobs:", 1)[0]
+    assert "contents: read" in permissions
+    assert "write" not in permissions
+    assert "pull-requests" not in permissions
+    assert "security-events" not in permissions
+    assert "gitleaks/gitleaks-action@" not in text
     assert "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb" in text
+    assert 'test "$("$RUNNER_TEMP/gitleaks-bin/gitleaks" version)" = "8.30.1"' in text
+    assert 'echo "GITLEAKS_BIN=$RUNNER_TEMP/gitleaks-bin/gitleaks"' in text
     job = text.split("jobs:", 1)[1]
     assert re.search(r"(?m)^    timeout-minutes:\s*[1-9]\d*\s*$", job)
-    assert "scripts/gitleaks_scan.sh" in job
+    assert 'bash scripts/gitleaks_scan.sh "$GITLEAKS_BIN"' in job
+    assert "command -v gitleaks" not in job
     assert "${{ github.event.pull_request.base.sha }}" in job
     assert "${{ github.event.pull_request.head.sha }}" in job
+    assert "${{ github.event.before }}" in job
+    assert "${{ github.event.after }}" in job
     script = SCAN_SCRIPT.read_text()
     assert '--log-opts="-m ${BASE}..${HEAD}"' in script
     assert "--ignore-gitleaks-allow" in script

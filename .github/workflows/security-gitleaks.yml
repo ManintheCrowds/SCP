@@ -8,8 +8,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
-  security-events: write
 
 jobs:
   gitleaks:
@@ -29,33 +27,15 @@ jobs:
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/gitleaks-bin"
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
-          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+          chmod 0755 "$RUNNER_TEMP/gitleaks-bin/gitleaks"
           test "$("$RUNNER_TEMP/gitleaks-bin/gitleaks" version)" = "8.30.1"
+          echo "GITLEAKS_BIN=$RUNNER_TEMP/gitleaks-bin/gitleaks" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
 
-      - name: Select the base gitleaks config
-        id: gitleaks-config
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git show "${{ github.event.pull_request.base.sha }}:.gitleaks.toml" > "$RUNNER_TEMP/gitleaks.base.toml"
-            echo "path=$RUNNER_TEMP/gitleaks.base.toml" >> "$GITHUB_OUTPUT"
-          else
-            echo "path=.gitleaks.toml" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_VERSION: "8.30.1"
-          GITLEAKS_CONFIG: ${{ steps.gitleaks-config.outputs.path }}
-          GITLEAKS_ENABLE_COMMENTS: false
-          GITLEAKS_ENABLE_SUMMARY: true
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
-
-      # The pinned action scans with --no-merges --first-parent. The script
-      # scans the full base..head range, including merge commits, using the
-      # base commit's config and ignore file. Push uses the same guards.
+      # Pull requests and pushes both use scripts/gitleaks_scan.sh. That
+      # script checks the endpoints, rejects an empty range, and scans
+      # with the base commit's config and ignore file. The binary is the
+      # checksum-verified path, not whatever else is first on PATH.
       - name: Scan commits
         run: |
           set -euo pipefail
@@ -69,7 +49,7 @@ jobs:
             echo "unsupported event" >&2
             exit 1
           fi
-          bash scripts/gitleaks_scan.sh "$(command -v gitleaks)" "$GITHUB_WORKSPACE" "$BASE" "$HEAD"
+          bash scripts/gitleaks_scan.sh "$GITLEAKS_BIN" "$GITHUB_WORKSPACE" "$BASE" "$HEAD"
 
       - name: Set up Python
         uses: actions/setup-python@v5
