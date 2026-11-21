@@ -1181,9 +1181,12 @@ def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int], lis
         if stripped == current:
             break
         stripped_any = True
-        boundaries = stripped_boundaries
+        boundaries = {bisect.bisect_left(stripped_map, b) for b in boundaries} | stripped_boundaries
         source_map = [source_map[index] for index in stripped_map]
         current = stripped
+    else:
+        if _strip_html_comment_markers(current) != current:
+            return text, True, set(), list(range(len(text)))
     return (current if stripped_any else text), False, boundaries, (source_map if stripped_any else list(range(len(text))))
 
 
@@ -1284,6 +1287,12 @@ def classify(text: str) -> dict:
             severity = base if segment == "text" else _severity_for_concealment(base, key)
             category = _FINDING_CATEGORY[key]
             for offset, phrase in hits:
+                if (
+                    segment == "text"
+                    and comments
+                    and str(phrase).lower() not in text.lower()
+                ):
+                    severity = _severity_for_concealment(base, key)
                 legacy[key].append((offset, str(phrase)))
                 severities.append(severity)
                 if segment == "html_comment":
