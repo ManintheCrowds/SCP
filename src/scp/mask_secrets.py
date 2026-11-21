@@ -85,7 +85,30 @@ def _mask_emails_linear(text: str) -> str:
     return "".join(out)
 
 
-# Three synthetic segments. Real bearer tokens are not embedded here.
+def _cat(*parts: str) -> str:
+    """Join a prefix at runtime so the source file never stores it whole."""
+    return "".join(parts)
+
+
+# Unlabeled token shapes. Prefixes are concatenated so this file does not
+# contain the joined form. Personal-data rules follow the same list so mask,
+# has_secrets, egress, and the CLI all see them.
+_BARE_GH_PERSONAL = re.compile(r"\b" + re.escape(_cat("gh", "p_")) + r"[A-Za-z0-9]{36}\b")
+_BARE_GH_OAUTH = re.compile(r"\b" + re.escape(_cat("gh", "o_")) + r"[A-Za-z0-9]{36}\b")
+_GH_FINE = re.compile(
+    r"(?<![A-Za-z0-9])" + re.escape(_cat("github", "_pat_")) + r"[A-Za-z0-9_]{20,220}"
+)
+_GL_PAT = re.compile(
+    r"(?<![A-Za-z0-9])" + re.escape(_cat("gl", "pat-")) + r"[A-Za-z0-9_-]{16,120}"
+)
+_PROJECT_KEY = re.compile(
+    r"(?<![A-Za-z0-9])" + re.escape(_cat("sk-", "proj-")) + r"[A-Za-z0-9_-]{16,120}"
+)
+_ACCESS_KEY = re.compile(r"\b" + re.escape(_cat("AK", "IA")) + r"[A-Z2-7]{16}\b")
+_SLACK_BOT = re.compile(
+    r"(?<![A-Za-z0-9])" + re.escape(_cat("xo", "xb-")) + r"[0-9]{6,}(?:-[A-Za-z0-9]{6,}){1,4}"
+)
+# Three segments, no label required. A header prefix is not required.
 _JWT = re.compile(
     r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{16}\.){2}[A-Za-z0-9_-]{16}(?![A-Za-z0-9_-])"
 )
@@ -103,8 +126,50 @@ REDACT_PATTERNS = [
         "-----BEGIN PRIVATE KEY-----\n[REDACTED]\n-----END PRIVATE KEY-----",
     ),
     (re.compile(r"\bsk-[a-zA-Z0-9]{20,}\b"), "sk-[REDACTED]"),
-    (re.compile(r"\bSSN:\s*\d{3}-\d{2}-\d{4}\b"), "SSN: [REDACTED]"),
+    (_PROJECT_KEY, "[REDACTED]"),
+    (_BARE_GH_PERSONAL, "[REDACTED]"),
+    (_BARE_GH_OAUTH, "[REDACTED]"),
+    (_GH_FINE, "[REDACTED]"),
+    (_GL_PAT, "[REDACTED]"),
+    (_ACCESS_KEY, "[REDACTED]"),
+    (_SLACK_BOT, "[REDACTED]"),
     (_JWT, "[REDACTED]"),
+    (re.compile(r"\bSSN:\s*\d{3}-\d{2}-\d{4}\b"), "SSN: [REDACTED]"),
+    (
+        re.compile(r"(?i)\bPatient:\s*[A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+)+"),
+        "Patient: [NAME_REDACTED]",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(DOB|Date of Birth)(\s*:\s*)\d{1,2}[/-]\d{1,2}[/-]\d{2,4}"
+        ),
+        r"\1\2[DATE_REDACTED]",
+    ),
+    (
+        re.compile(r"(?i)\b(DOB|Date of Birth)(\s*:\s*)\d{4}-\d{2}-\d{2}"),
+        r"\1\2[DATE_REDACTED]",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(DOB|Date of Birth)(\s*:\s*)"
+            r"(?:(?:January|February|March|April|May|June|July|August|September|"
+            r"October|November|December)\s+\d{1,2},\s+\d{4}|"
+            r"\d{1,2}\s+(?:January|February|March|April|May|June|July|August|"
+            r"September|October|November|December)\s+\d{4})"
+        ),
+        r"\1\2[DATE_REDACTED]",
+    ),
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[SSN_REDACTED]"),
+    (re.compile(r"\b\d{3}([-. ])\d{2}\1\d{4}\b"), "[SSN_REDACTED]"),
+    (re.compile(r"(?<!\d)\d{9}(?!\d)"), "[SSN_REDACTED]"),
+    (
+        re.compile(r"\b(?:\+?1[\s.-])?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b"),
+        "[PHONE_REDACTED]",
+    ),
+    (
+        re.compile(r"\+\d{1,3}(?:[\s.\-]\d{2,4}){2,5}\b"),
+        "[PHONE_REDACTED]",
+    ),
 ]
 
 
@@ -115,8 +180,18 @@ def _mask_plain(text: str) -> str:
     return _mask_emails_linear(result)
 
 
+_MARKERS = (
+    "[REDACTED]",
+    "[EMAIL_REDACTED]",
+    "[NAME_REDACTED]",
+    "[DATE_REDACTED]",
+    "[SSN_REDACTED]",
+    "[PHONE_REDACTED]",
+)
+
+
 def _redaction_marker(piece: str) -> bool:
-    return "[REDACTED]" in piece or "[EMAIL_REDACTED]" in piece
+    return any(marker in piece for marker in _MARKERS)
 
 
 def credential_spans(text: str) -> list[tuple[int, int, str]]:
@@ -222,11 +297,10 @@ def mask(text: str) -> str:
 
 
 def has_secrets(text: str) -> bool:
-    """True when a credential is visible on the unjoined or the joined surface.
+    """True when a credential or personal-data value is visible.
 
-    An exhausted normalization budget fails closed. Email addresses alone do
-    not count: mask() still redacts them, and the benign ceiling tracks
-    credentials.
+    Scans the unjoined surface and the joined surface. An exhausted
+    normalization budget fails closed. Email addresses alone do not count.
     """
     try:
         unjoined, joined = secret_surface.detection_views(text)

@@ -30,12 +30,42 @@ _TEMPLATES = (
 )
 
 
+def _cat(*parts: str) -> str:
+    return "".join(parts)
+
+
 def _token() -> str:
-    return "gh" + "p_" + ("A" * 36)
+    return _cat("gh", "p_") + ("A" * 36)
 
 
 def _jwt() -> str:
     return ("a" * 16) + "." + ("b" * 16) + "." + ("c" * 16)
+
+
+def _pii_cases() -> list[tuple[str, str, str]]:
+    personal = _cat("gh", "p_") + ("A" * 36)
+    oauth = _cat("gh", "o_") + ("B" * 36)
+    fine = _cat("github", "_pat_") + ("C" * 22)
+    lab = _cat("gl", "pat-") + ("D" * 20)
+    project = _cat("sk-", "proj-") + ("E" * 20)
+    access = _cat("AK", "IA") + ("F" * 16)
+    slack = _cat("xo", "xb-") + ("1" * 10) + "-" + ("A" * 16)
+    ssn = "000" + "-" + "00" + "-" + "0000"
+    phone = "555" + "-010-" + "0000"
+    return [
+        ("bare-personal", "see " + personal + " end", personal),
+        ("bare-oauth", "see " + oauth + " end", oauth),
+        ("bare-fine", "see " + fine + " end", fine),
+        ("bare-lab", "see " + lab + " end", lab),
+        ("bare-project", "see " + project + " end", project),
+        ("bare-access", "see " + access + " end", access),
+        ("bare-slack", "see " + slack + " end", slack),
+        ("plain-jwt", "see " + _jwt() + " end", _jwt()),
+        ("patient", "Patient: Ada Lovelace", "Ada Lovelace"),
+        ("dob", "DOB: 01/02/1900", "01/02/1900"),
+        ("ssn", "record " + ssn + " end", ssn),
+        ("phone", "Call " + phone + " today", phone),
+    ]
 
 
 def _assignment(token: str | None = None) -> str:
@@ -60,6 +90,7 @@ def _cases() -> list[tuple[str, str, str]]:
     ]
     for width in range(17, 24):
         samples.append((f"wrap-{width}", line[:width] + "\n" + line[width:], token))
+    samples.extend(_pii_cases())
     return samples
 
 
