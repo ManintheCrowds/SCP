@@ -228,6 +228,72 @@ def test_wrong_gitleaks_version_is_refused(tmp_path: Path) -> None:
     assert "refusing GITLEAKS_VERSION" in proc.stderr
 
 
+def test_inline_allow_comment_cannot_hide_a_leak(tmp_path: Path) -> None:
+    binary = _real_gitleaks(tmp_path / "bin")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    token = _synthetic_token()
+    (repo / "leak.txt").write_text("value " + token + " # gitleaks:allow\n", encoding="utf-8")
+    _git(repo, "add", "leak.txt")
+    _git(repo, "commit", "-m", "leak")
+    config = repo / "rules.toml"
+    config.write_text("[extend]\nuseDefault = true\n", encoding="utf-8")
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    env = os.environ.copy()
+    env["PATH"] = f"{binary.parent}{os.pathsep}{env.get('PATH', '')}"
+    env["RUNNER_TEMP"] = str(runner)
+    env["GITHUB_EVENT_NAME"] = "pull_request"
+    env["BASE_SHA"] = ""
+    env["GITLEAKS_CONFIG"] = str(config)
+    env["GITLEAKS_VERSION"] = _VERSION
+    proc = subprocess.run(
+        ["bash", "-c", _scan_script()],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 2
+
+
+def test_checksum_mismatch_exits_on_its_own(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    (repo / "clean.txt").write_text("nothing to see\n", encoding="utf-8")
+    _git(repo, "add", "clean.txt")
+    _git(repo, "commit", "-m", "clean")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "gitleaks"
+    stub.write_text(
+        "#!/bin/sh\nif [ \"$1\" = version ]; then echo 8.30.1; exit 0; fi\nexit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    env = os.environ.copy()
+    env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
+    env["RUNNER_TEMP"] = str(tmp_path / "runner")
+    (tmp_path / "runner").mkdir()
+    env["GITHUB_EVENT_NAME"] = "pull_request"
+    env["BASE_SHA"] = ""
+    env["GITLEAKS_CONFIG"] = str(repo / "clean.txt")
+    env["GITLEAKS_VERSION"] = _VERSION
+    proc = subprocess.run(
+        ["bash", "-c", _scan_script()],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 1
+    assert "refusing gitleaks binary digest" in proc.stderr
+
+
 def test_wrong_gitleaks_binary_is_refused(tmp_path: Path) -> None:
     bindir = tmp_path / "bin"
     bindir.mkdir()
