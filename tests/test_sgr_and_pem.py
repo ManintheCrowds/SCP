@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
-from scp import mask_secrets, secret_surface
+from scp import encounter_auto_log, mask_secrets, secret_surface
 
 
 def _token() -> str:
@@ -31,24 +34,70 @@ def test_colored_text_is_not_refused_and_a_colored_token_is_masked() -> None:
     assert leaked is False
 
 
-def test_csi_and_osc_inside_a_token_are_stripped_and_the_token_is_masked() -> None:
+def _eight_visible(token: str, text: str) -> bool:
+    return any(token[index : index + 8] in text for index in range(0, len(token) - 7))
+
+
+def test_complete_sgr_erase_and_osc_do_not_hide_a_token() -> None:
     token = _token()
     sequences = (
         "\x1b[K",
         "\x1b[2J",
-        "\x1b[1G",
         "\x1b[38:5:196m",
-        "\x9b31m",
         "\x1b]8;;https://example.test/\x07",
     )
     leaked = 0
     for sequence in sequences:
         text = token[:8] + sequence + token[8:]
+        outbound = mask_secrets.prepare_outbound(text)
+        if _eight_visible(token, mask_secrets.mask(text)) or _eight_visible(token, outbound):
+            leaked += 1
+    assert leaked == 0
+
+
+def test_unfinished_escapes_do_not_leak_on_mask_egress_or_log() -> None:
+    token = _token()
+    sequences = ("\x1b[31", "\x1b[", "\x1b[?", "\x9b", "\x9b31")
+    leaked = 0
+    for sequence in sequences:
+        text = token[:8] + sequence + token[8:]
+        masked = mask_secrets.mask(text)
+        logged = encounter_auto_log._sanitize_for_log(text, "reversal")
         try:
             outbound = mask_secrets.prepare_outbound(text)
         except mask_secrets.EgressMaskError:
-            outbound = token
-        if token in mask_secrets.mask(text) or token in outbound:
+            outbound = ""
+        else:
+            leaked += 1
+        if _eight_visible(token, masked) or _eight_visible(token, outbound) or _eight_visible(token, logged):
+            leaked += 1
+        checked = subprocess.run(
+            [sys.executable, "-m", "scp.mask_secrets", "--egress-prepare", "-"],
+            input=text.encode("utf-8"),
+            capture_output=True,
+            check=False,
+        )
+        if checked.returncode == 0 or checked.stdout:
+            leaked += 1
+    assert leaked == 0
+
+
+def test_control_character_sweep_does_not_leak() -> None:
+    token = _token()
+    codes = [code for code in range(0x20) if code not in (0x09, 0x0A, 0x0D)]
+    codes.append(0x7F)
+    codes.extend(range(0x80, 0xA0))
+    leaked = 0
+    for code in codes:
+        mark = chr(code)
+        text = token[:8] + mark + token[8:]
+        if _eight_visible(token, mask_secrets.mask(text)):
+            leaked += 1
+        try:
+            mask_secrets.prepare_outbound(text)
+        except mask_secrets.EgressMaskError:
+            pass
+        else:
             leaked += 1
     assert leaked == 0
 

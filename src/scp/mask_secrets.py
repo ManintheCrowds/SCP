@@ -229,13 +229,15 @@ _PEM_KINDS = (
 )
 
 
-_CSI = re.compile(r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]")
+# Final byte is m (SGR), K (erase in line), or J (erase in display).
+# Anything else, including an unfinished sequence, stays and is refused.
+_CSI = re.compile(r"\x1b\[[0-9;:]*[mKJ]")
 _OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
 def _without_sgr(text: str) -> str:
-    """Drop well-formed CSI and OSC sequences. Other controls stay in place."""
-    if "\x1b" not in text and "\x9b" not in text:
+    """Drop complete SGR, erase, and terminated OSC sequences."""
+    if "\x1b" not in text:
         return text
     return _OSC.sub("", _CSI.sub("", text))
 
@@ -392,6 +394,8 @@ def _without_controls(text: str) -> str:
 def mask(text: str) -> str:
     """Detect on the shared unjoined and joined surfaces. Fail closed on budget."""
     text = _without_sgr(text)
+    if secret_surface.has_refused_control(text):
+        return "[REDACTED]"
     if _over_cap(text):
         return "[REDACTED]"
     try:
