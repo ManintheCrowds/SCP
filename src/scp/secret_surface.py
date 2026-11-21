@@ -165,6 +165,67 @@ def _prose_word(word: str) -> bool:
     return word.islower() and 4 <= len(word) <= 20 and len(set(word)) > 1
 
 
+_MARK_CHARS = frozenset("_-0123456789")
+# A line that begins with one of these is a new token. The previous line
+# stays where it is. Pieces are concatenated so the source has no whole prefix.
+_KNOWN_PREFIXES = (
+    "github" + "_pat_",
+    "gl" + "pat-",
+    "sk-" + "proj-",
+    "xo" + "xb-",
+    "gh" + "p_",
+    "gh" + "o_",
+    "gh" + "s_",
+    "gh" + "u_",
+    "AK" + "IA",
+    "AS" + "IA",
+    "sk" + "-",
+    "sk" + "_",
+)
+# Trailing English words of two or three letters. Repeated-character fragments
+# are not in this set, so a wrapped token body still joins.
+_STOP_WORDS = frozenset(
+    {
+        "ok", "to", "be", "if", "or", "an", "at", "on", "in", "of", "is", "it",
+        "we", "my", "up", "no", "so", "do", "go", "us", "am", "as", "hi", "he",
+        "me", "by", "ah", "the", "and", "for", "you", "not", "but", "his", "her",
+        "she", "was", "are", "all", "can", "had", "one", "our", "out", "day",
+        "get", "has", "him", "how", "its", "let", "may", "new", "now", "old",
+        "see", "two", "way", "who", "did", "put", "say", "too", "use", "yes",
+        "yet", "any", "big", "end", "few", "got", "hot", "lot", "man", "off",
+        "own", "run", "set", "top", "try", "win", "hey", "gi", "th", "ub",
+        "git", "hub", "pat",
+    }
+)
+
+
+def _starts_known_prefix(line: str) -> bool:
+    stripped = line.lstrip(" \t")
+    return any(stripped.startswith(prefix) for prefix in _KNOWN_PREFIXES)
+
+
+def _stop_word(word: str) -> bool:
+    return word.lower() in _STOP_WORDS
+
+
+def _body_continues(line: str) -> bool:
+    head = _continuation_head(line)
+    if not head or _prose_word(head) or _stop_word(head):
+        return False
+    return True
+
+
+def _trailing_stop(lines: list[str], index: int, head: str, seen_mark: bool, joined_len: int) -> bool:
+    """A short word after a token that has already started, with nothing after it."""
+    if not _stop_word(head):
+        return False
+    if not seen_mark and joined_len < 16:
+        return False
+    if index + 2 < len(lines) and _body_continues(lines[index + 2]):
+        return False
+    return True
+
+
 def _assignment_open(prev: str) -> bool:
     """A label ending in ':' or '=', including a trailing space and a 1-7 char tail."""
     stripped = prev.rstrip(" \t")
@@ -318,33 +379,60 @@ def _line_ranges(text: str) -> list[tuple[int, int]]:
 def _bridges(lines: list[str]) -> list[bool]:
     """Join every continuation of an open label, bearer, or JWT.
 
-    The carry is a flag, not a growing copy of the line, so a 3-line wrap
-    stays linear and does not glue a later prose word.
+    The carry is a flag plus two counters, not a growing copy of the line.
+    A known prefix starts a new token. A trailing two- or three-letter word
+    is not glued on once the token has a mark or is already 16 characters.
     """
     steps = 0
     budget = _budget_for(sum(len(line) for line in lines) + len(lines))
     bridges: list[bool] = []
     open_kind = "none"
+    joined_len = 0
+    seen_mark = False
     for index in range(len(lines) - 1):
         prev = lines[index]
         nxt = lines[index + 1]
         steps = _charge(steps, budget, len(prev) + len(nxt) + 1)
+        if _starts_known_prefix(nxt):
+            bridges.append(False)
+            run = _leading_token(nxt.lstrip(" \t"))
+            open_kind = "bare"
+            joined_len = len(run)
+            seen_mark = any(char in _MARK_CHARS for char in run)
+            continue
         continued = nxt.lstrip(" \t")
         head = _continuation_head(nxt)
         if not head or _prose_word(head):
             bridges.append(False)
             open_kind = "none"
+            joined_len = 0
+            seen_mark = False
             continue
         if open_kind in {"assign", "bearer", "jwt", "bare"}:
             kind = open_kind
             join = True
+            base_len = joined_len
+            base_mark = seen_mark
         else:
             kind = _kind(prev)
             join = kind != "none"
+            if join:
+                _before, tail = _split_tail(prev.rstrip(" \t"))
+                base_len = len(tail)
+                base_mark = any(char in _MARK_CHARS for char in tail)
+            else:
+                base_len = 0
+                base_mark = False
+        if join and _trailing_stop(lines, index, head, base_mark, base_len):
+            join = False
         bridges.append(join)
         if not join:
             open_kind = "none"
+            joined_len = 0
+            seen_mark = False
             continue
+        joined_len = base_len + len(head)
+        seen_mark = base_mark or any(char in _MARK_CHARS for char in head)
         if kind == "wrap":
             open_kind = _kind(continued)
             if open_kind == "wrap":
