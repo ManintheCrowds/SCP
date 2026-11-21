@@ -283,6 +283,9 @@ def test_allowlist_paths_are_anchored() -> None:
         assert "test_appsec" not in pattern
         assert "test_egress" not in pattern
         assert "test_gitleaks" not in pattern
+        assert ".md" not in pattern
+        assert "mask_secrets" not in pattern
+        assert "fixtures" not in pattern
 
 
 def test_ignore_entries_are_exact_fingerprints() -> None:
@@ -292,8 +295,17 @@ def test_ignore_entries_are_exact_fingerprints() -> None:
         if line.strip() and not line.strip().startswith("#")
     ]
     assert entries == [
-        "67c651da93fc759b016e981c7b8b5b2d277a23a5:tests/test_appsec_antigen_mcp_gates.py:generic-api-key:250"
+        "67c651da93fc759b016e981c7b8b5b2d277a23a5:tests/test_appsec_antigen_mcp_gates.py:generic-api-key:250",
+        "8e1410f772621122d629ce678f4f190ab82810fb:src/scp/mask_secrets.py:private-key:91",
+        "5be4c70bdb0fe76b49e4ed77215b4014a34dfa9f:tests/fixtures/scp_corpus_wave3.json:generic-api-key:330",
+        "5be4c70bdb0fe76b49e4ed77215b4014a34dfa9f:tests/fixtures/scp_corpus_wave3.json:private-key:347",
     ]
+    for entry in entries:
+        commit, path, rule, line_no = entry.split(":")
+        assert re.fullmatch(r"[0-9a-f]{40}", commit)
+        assert re.fullmatch(r"[a-z0-9-]+", rule)
+        assert line_no.isdigit()
+        assert "*" not in path and "?" not in path
 
 
 def test_config_detects_synthetic_tokens() -> None:
@@ -307,12 +319,10 @@ def test_config_detects_synthetic_tokens() -> None:
         "src/scp/mask_secrets.py.extra": "github-fine-grained-pat",
         "elsewhere/tests/fixtures/hazard.txt": "jwt",
         "leak.md.txt": "github-pat",
+        "src/scp/mask_secrets.py": "aws-access-token",
+        "tests/fixtures/hazard.txt": "slack-bot-token",
+        "leak.md": "aws-access-token",
     }
-    hidden = (
-        "src/scp/mask_secrets.py",
-        "tests/fixtures/hazard.txt",
-        "leak.md",
-    )
     with _repo() as root:
         _write(root, "cloud.txt", _sample(_aws) + "\n")
         _write(root, "git.txt", _sample(_github_pat) + "\n")
@@ -335,8 +345,6 @@ def test_config_detects_synthetic_tokens() -> None:
         found.setdefault(path, set()).add(rule)
     for path, rule in expected.items():
         assert rule in found.get(path, set()), path
-    for path in hidden:
-        assert path not in found, path
 
 
 def test_workflow_pins_action_and_scans_full_range() -> None:

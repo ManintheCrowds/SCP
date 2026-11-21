@@ -2,3 +2,13 @@
 # asserts the logged text no longer contains it. This is the exact
 # fingerprint gitleaks reports for the commit that introduced the line.
 67c651da93fc759b016e981c7b8b5b2d277a23a5:tests/test_appsec_antigen_mcp_gates.py:generic-api-key:250
+
+# PEM-shaped detector pattern in the redaction table. Historical commit
+# on main; rewriting it would republish the same line.
+8e1410f772621122d629ce678f4f190ab82810fb:src/scp/mask_secrets.py:private-key:91
+
+# Synthetic mask-corpus prompt in the wave-3 fixture.
+5be4c70bdb0fe76b49e4ed77215b4014a34dfa9f:tests/fixtures/scp_corpus_wave3.json:generic-api-key:330
+
+# Synthetic PEM block in the wave-3 mask corpus.
+5be4c70bdb0fe76b49e4ed77215b4014a34dfa9f:tests/fixtures/scp_corpus_wave3.json:private-key:347

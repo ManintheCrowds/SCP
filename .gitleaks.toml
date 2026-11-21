@@ -7,9 +7,8 @@ title = "Gitleaks configuration"
 useDefault = true
 
 [allowlist]
-description = "Docs, binaries, SCP redaction source, and intentional test hazard corpus."
+description = "Binaries, lockfiles, and bytecode caches."
 paths = [
-  '''(^|/)[^/]+\.md$''',
   '''(^|/)[^/]+\.lock$''',
   '''(^|/)[^/]+\.svg$''',
   '''(^|/)[^/]+\.png$''',
@@ -19,8 +18,6 @@ paths = [
   '''(^|/)[^/]+\.pdf$''',
   '''(^|/)[^/]+\.min\.js$''',
   '''(^|/)[^/]+\.map$''',
-  '''^src/scp/mask_secrets\.py$''',
-  '''^tests/fixtures/[^/]+$''',
   '''(^|/)__pycache__(/|$)''',
   '''(^|/)[^/]+\.pyc$''',
 ]
