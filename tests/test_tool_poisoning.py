@@ -704,6 +704,23 @@ def test_source_order_scan_handles_large_comment_inputs_quickly() -> None:
     assert large_elapsed / max(mid_elapsed, 0.001) < 6.0
 
 
+def test_source_order_scan_handles_plain_large_input_quickly() -> None:
+    mid = "a" * (400 * 1024)
+    large = "a" * (1024 * 1024)
+
+    t0 = time.perf_counter()
+    sanitize_input._html_comment_source_order_text(mid)
+    mid_elapsed = time.perf_counter() - t0
+
+    t1 = time.perf_counter()
+    sanitize_input._html_comment_source_order_text(large)
+    large_elapsed = time.perf_counter() - t1
+
+    assert mid_elapsed < 2.0
+    assert large_elapsed < 4.0
+    assert large_elapsed / max(mid_elapsed, 0.001) < 8.0
+
+
 def test_packaged_registry_tool_poisoning_round_trip() -> None:
     registry = pr.load_packaged_threat_registry()
     records = [

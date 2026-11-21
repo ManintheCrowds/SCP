@@ -1069,6 +1069,8 @@ def _visible_comment_boundaries(text: str) -> set[int]:
 
 def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int], list[int]]:
     """Remove markup delimiters and record output offsets where markup was removed."""
+    if "<" not in text:
+        return text, set(), list(range(len(text)))
     parts: list[str] = []
     boundaries: set[int] = set()
     source_map: list[int] = []
