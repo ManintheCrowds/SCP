@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -51,6 +52,46 @@ def iter_targets(root: Path) -> list[Path]:
     return chosen
 
 
+def _allowlist_path() -> Path:
+    override = os.environ.get("SCP_MASK_ALLOWLIST")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent / "mask_check_allow.txt"
+
+
+def _load_allowlist() -> set[str]:
+    path = _allowlist_path()
+    if not path.is_file():
+        return set()
+    rows: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        rows.add(stripped)
+    return rows
+
+
+def _line_key(rel: str, number: int, line: str) -> str:
+    body = line[:-1] if line.endswith("\n") else line
+    if body.endswith("\r"):
+        body = body[:-1]
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return f"{rel}:{number}:{digest}"
+
+
+def _without_allowed_lines(text: str, rel: str, allowed: set[str]) -> str:
+    if not allowed:
+        return text
+    kept: list[str] = []
+    for number, line in enumerate(text.splitlines(keepends=True), start=1):
+        if _line_key(rel, number, line) in allowed:
+            kept.append("\n" if line.endswith("\n") else "")
+            continue
+        kept.append(line)
+    return "".join(kept)
+
+
 def _loaded_from_head(root: Path) -> bool:
     """True when this process imported the masker from the tree under scan."""
     loaded = Path(mask_secrets.__file__).resolve()
@@ -72,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     targets = [Path(arg) for arg in args] if args else iter_targets(root)
+    allowed = _load_allowlist()
     failed = False
     for path in targets:
         try:
@@ -80,7 +122,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"unreadable {path}", file=sys.stderr)
             failed = True
             continue
-        if mask_secrets.has_secrets(text):
+        try:
+            rel = path.resolve().relative_to(root).as_posix()
+        except ValueError:
+            rel = path.as_posix()
+        visible = _without_allowed_lines(text, rel, allowed)
+        if mask_secrets.has_secrets(visible):
             print(f"secret-like text in {path}", file=sys.stderr)
             failed = True
     return 1 if failed else 0
