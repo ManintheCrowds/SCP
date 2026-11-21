@@ -160,7 +160,9 @@ def _prose_word(word: str) -> bool:
         return False
     if word[:1].isupper() and word[1:].islower():
         return True
-    return word.islower() and len(word) <= 20 and len(set(word)) > 1
+    # Two- and three-letter pieces are how a token prefix breaks. Longer
+    # lowercase words such as before and notes still stop a join.
+    return word.islower() and 4 <= len(word) <= 20 and len(set(word)) > 1
 
 
 def _assignment_open(prev: str) -> bool:
@@ -220,6 +222,23 @@ def _hard_wrap(prev: str) -> bool:
     return len(stripped) >= 72 and bool(stripped) and stripped[-1] in _TOKEN_CHARS
 
 
+def _bare_fragment(line: str) -> bool:
+    """A line that is only a token run.
+
+    Title-case words stay prose. A lowercase fragment such as the start of a
+    token may still continue, and the next line is what rejects Thanks or before.
+    """
+    stripped = line.strip(" \t")
+    if not stripped:
+        return False
+    for char in stripped:
+        if char not in _TOKEN_CHARS:
+            return False
+    if len(stripped) >= 2 and stripped.isalpha() and stripped[0].isupper() and stripped[1:].islower():
+        return False
+    return True
+
+
 def _kind(prev: str) -> str:
     if _bearer_open(prev):
         return "bearer"
@@ -229,6 +248,8 @@ def _kind(prev: str) -> str:
         return "jwt"
     if _hard_wrap(prev):
         return "wrap"
+    if _bare_fragment(prev):
+        return "bare"
     return "none"
 
 
@@ -298,7 +319,7 @@ def _bridges(lines: list[str]) -> list[bool]:
             bridges.append(False)
             open_kind = "none"
             continue
-        if open_kind in {"assign", "bearer", "jwt"}:
+        if open_kind in {"assign", "bearer", "jwt", "bare"}:
             kind = open_kind
             join = True
         else:
@@ -314,7 +335,7 @@ def _bridges(lines: list[str]) -> list[bool]:
                 open_kind = "none"
             continue
         nxt_kind = _kind(continued)
-        open_kind = nxt_kind if nxt_kind in {"assign", "bearer", "jwt"} else kind
+        open_kind = nxt_kind if nxt_kind in {"assign", "bearer", "jwt", "bare"} else kind
     return bridges
 
 
