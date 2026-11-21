@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import time
 
-from scp import mask_secrets
+from scp import encounter_auto_log, mask_secrets
 
 _ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 _LABELS = (
@@ -103,6 +103,67 @@ def test_long_signature_and_short_marker_match_on_one_line() -> None:
     short = _parts((10, 10, 10, True))
     short_token = ".".join(short)
     assert short[2] not in mask_secrets.mask(short_token)
+
+
+def _signature_visible(text: str, signature: str) -> bool:
+    masked = mask_secrets.mask(text)
+    try:
+        outbound = mask_secrets.prepare_outbound(text)
+    except mask_secrets.EgressMaskError:
+        outbound = ""
+    logged = encounter_auto_log._sanitize_for_log(text, "reversal")
+    return signature in masked or signature in outbound or signature in logged
+
+
+def test_indented_trailing_space_and_bearer_dot_splits_hide_the_signature() -> None:
+    header, payload, signature = _parts((36, 48, 43, True))
+    shapes = (
+        "  " + header + ".\n" + payload + ".\n" + signature,
+        "token: " + header + ". \n" + payload + ". \n" + signature,
+        "Authorization: Bearer " + header + "\n." + payload + "\n." + signature,
+        "Here is the header.\n  " + header + ".\n  " + payload + ".\n  " + signature,
+    )
+    visible = sum(1 for text in shapes if _signature_visible(text, signature))
+    assert visible == 0
+
+
+def _lower_segment(length: int, salt: int) -> str:
+    alphabet = "abcdefghijklmnopqrstuvwxyz"
+    state = salt & 0xFFFFFFFF
+    chars: list[str] = []
+    for index in range(length):
+        state = (state * 1664525 + 1013904223 + index) & 0xFFFFFFFF
+        chars.append(alphabet[state % len(alphabet)])
+    return "".join(chars)
+
+
+def test_narrow_wrapped_bare_jwts_stay_under_the_old_leak_count() -> None:
+    leaked = 0
+    total = 0
+    marker = "".join(("ey", "J"))
+    for width in (4, 8):
+        for salt in range(220):
+            mixed = (
+                _header(36, salt + 10, True),
+                _segment(80, salt + 20),
+                _segment(43, salt + 30),
+            )
+            lower = (
+                marker + _lower_segment(33, salt + 1),
+                _lower_segment(40, salt + 2),
+                _lower_segment(43, salt + 3),
+            )
+            for header, payload, signature in (mixed, lower):
+                token = header + "." + payload + "." + signature
+                text = "\n".join(
+                    token[index : index + width] for index in range(0, len(token), width)
+                )
+                total += 1
+                masked = mask_secrets.mask(text)
+                if any(token[index : index + 8] in masked for index in range(0, len(token) - 7)):
+                    leaked += 1
+    assert total == 880
+    assert leaked <= 80
 
 
 def test_jwt_scan_stays_linear_without_two_dots() -> None:

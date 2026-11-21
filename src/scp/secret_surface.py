@@ -197,6 +197,13 @@ _STOP_WORDS = frozenset(
         "git", "hub", "pat",
     }
 )
+# Lowercase words that must not be swallowed as a wrapped JWT fragment.
+_JWT_FRAGMENT_WORDS = frozenset(
+    {
+        "before", "notes", "thanks", "friday", "header", "value", "token",
+        "bearer", "secret", "please", "export", "after", "there",
+    }
+)
 
 
 def _starts_known_prefix(line: str) -> bool:
@@ -258,7 +265,7 @@ def _bearer_open(prev: str) -> bool:
 
 def _jwt_subject(prev: str) -> str:
     """The token tail after a label, assignment, or bearer marker."""
-    stripped = prev.rstrip(" \t")
+    stripped = prev.strip(" \t")
     cut = max(stripped.rfind("="), stripped.rfind(":"))
     if cut >= 0:
         stripped = stripped[cut + 1 :].lstrip(" \t")
@@ -272,9 +279,33 @@ def _jwt_subject(prev: str) -> str:
     return stripped
 
 
+def _eyj_piece(line: str) -> bool:
+    """A wrapped piece that still begins with the JWT marker."""
+    stripped = line.strip(" \t").lstrip(".")
+    marker = "".join(("ey", "J"))
+    if not stripped.startswith(marker):
+        return False
+    return all(char in _TOKEN_CHARS or char == "." for char in stripped)
+
+
+def _bearer_header(prev: str) -> bool:
+    """A bearer line whose tail is a JWT header waiting for a leading dot."""
+    stripped = prev.strip(" \t")
+    lower = stripped.lower()
+    marker = "bearer"
+    idx = lower.rfind(marker)
+    if idx < 0 or (idx > 0 and lower[idx - 1] not in " \t"):
+        return False
+    rest = stripped[idx + len(marker) :]
+    if not rest or rest[0] not in " \t":
+        return False
+    tail = rest.lstrip(" \t")
+    return len(tail) >= 8 and all(char in _TOKEN_CHARS for char in tail)
+
+
 def _jwt_open(prev: str) -> bool:
     """A dot between segments, including after a label on the same line."""
-    stripped = _jwt_subject(prev)
+    stripped = _jwt_subject(prev).lstrip(".")
     if not stripped or "." not in stripped:
         return False
     if stripped.endswith("."):
@@ -389,11 +420,16 @@ def _bridges(lines: list[str]) -> list[bool]:
     open_kind = "none"
     joined_len = 0
     seen_mark = False
+    jwt_run = False
+    jwt_dots = 0
     for index in range(len(lines) - 1):
         prev = lines[index]
         nxt = lines[index + 1]
         steps = _charge(steps, budget, len(prev) + len(nxt) + 1)
-        if _starts_known_prefix(nxt):
+        if _eyj_piece(prev):
+            jwt_run = True
+        inside_jwt = jwt_run or open_kind == "jwt" or _jwt_open(prev)
+        if _starts_known_prefix(nxt) and not inside_jwt:
             bridges.append(False)
             run = _leading_token(nxt.lstrip(" \t"))
             open_kind = "bare"
@@ -402,11 +438,29 @@ def _bridges(lines: list[str]) -> list[bool]:
             continue
         continued = nxt.lstrip(" \t")
         head = _continuation_head(nxt)
-        if not head or _prose_word(head):
+        dot_only = continued == "."
+        if not head and not dot_only:
             bridges.append(False)
             open_kind = "none"
             joined_len = 0
             seen_mark = False
+            jwt_run = False
+            jwt_dots = 0
+            continue
+        lowercase_piece = (
+            bool(head)
+            and head.isalpha()
+            and head.islower()
+            and 4 <= len(head) <= 8
+            and head not in _JWT_FRAGMENT_WORDS
+        )
+        if head and _prose_word(head) and not (inside_jwt and lowercase_piece):
+            bridges.append(False)
+            open_kind = "none"
+            joined_len = 0
+            seen_mark = False
+            jwt_run = False
+            jwt_dots = 0
             continue
         if open_kind in {"assign", "bearer", "jwt", "bare"}:
             kind = open_kind
@@ -423,16 +477,28 @@ def _bridges(lines: list[str]) -> list[bool]:
             else:
                 base_len = 0
                 base_mark = False
-        if join and _trailing_stop(lines, index, head, base_mark, base_len):
+        if not join and continued.startswith(".") and _bearer_header(prev):
+            kind = "jwt"
+            join = True
+            base_len = 0
+            base_mark = False
+        if join and head and kind != "jwt" and _trailing_stop(lines, index, head, base_mark, base_len):
             join = False
         bridges.append(join)
         if not join:
             open_kind = "none"
             joined_len = 0
             seen_mark = False
+            jwt_run = False
+            jwt_dots = 0
             continue
         joined_len = base_len + len(head)
         seen_mark = base_mark or any(char in _MARK_CHARS for char in head)
+        if jwt_run or _eyj_piece(prev):
+            jwt_run = True
+            jwt_dots += prev.count(".")
+            if kind == "bare":
+                kind = "jwt"
         if kind == "wrap":
             open_kind = _kind(continued)
             if open_kind == "wrap":
@@ -451,12 +517,13 @@ def join_wrapped(text: str) -> str:
     bridges = _bridges(lines)
     parts: list[str] = []
     for index, line in enumerate(lines):
+        chunk = line.rstrip(" \t") if index < len(bridges) and bridges[index] else line
         if index > 0 and bridges[index - 1]:
-            parts.append(line.lstrip(" \t"))
+            parts.append(chunk.lstrip(" \t"))
         else:
             if index > 0:
                 parts.append("\n")
-            parts.append(line)
+            parts.append(chunk)
     return "".join(parts)
 
 
@@ -469,12 +536,16 @@ def _kept_unjoined_indexes(text: str) -> array:
     for index, (start, _end) in enumerate(ranges):
         line = lines[index]
         offset = 0
+        end = len(line)
+        if index < len(bridges) and bridges[index]:
+            while end > 0 and line[end - 1] in " \t":
+                end -= 1
         if index > 0 and bridges[index - 1]:
-            while offset < len(line) and line[offset] in " \t":
+            while offset < end and line[offset] in " \t":
                 offset += 1
         elif index > 0:
             kept.append(start - 1)
-        for cursor in range(offset, len(line)):
+        for cursor in range(offset, end):
             kept.append(start + cursor)
     return kept
 
