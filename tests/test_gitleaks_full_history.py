@@ -7,20 +7,45 @@ import hashlib
 import json
 import stat
 import subprocess
+import urllib.request
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
+_VERSION = "8.30.1"
+_TARBALL_SHA = "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 _BINARY_SHA = "88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509"
+_TARBALL_URL = (
+    "https://github.com/gitleaks/gitleaks/releases/download/v"
+    + _VERSION
+    + "/gitleaks_"
+    + _VERSION
+    + "_linux_x64.tar.gz"
+)
 _LOG_OPTS = "--diff-merges=first-parent --text"
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def _binary(dest: Path) -> Path:
-    cached = Path("/tmp/gitleaks-bin/gitleaks")
-    digest = hashlib.sha256(cached.read_bytes()).hexdigest()
-    if digest != _BINARY_SHA:
-        raise AssertionError("pinned gitleaks binary is not available")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(cached.read_bytes())
+    cached = Path("/tmp/gitleaks-bin/gitleaks")
+    if cached.is_file() and _sha256(cached) == _BINARY_SHA:
+        dest.write_bytes(cached.read_bytes())
+    else:
+        archive = dest.parent / "gitleaks.tar.gz"
+        urllib.request.urlretrieve(_TARBALL_URL, archive)
+        if _sha256(archive) != _TARBALL_SHA:
+            raise AssertionError("gitleaks tarball digest mismatch")
+        subprocess.run(
+            ["tar", "-xzf", str(archive), "-C", str(dest.parent), "gitleaks"],
+            check=True,
+        )
+        if _sha256(dest) != _BINARY_SHA:
+            raise AssertionError("gitleaks binary digest mismatch")
     dest.chmod(dest.stat().st_mode | stat.S_IEXEC)
     return dest
 
