@@ -52,12 +52,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The default checkout is a depth-1 synthetic merge. Its hash
+          # changes every run, so history scans must see the real head.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install package and dev deps
         run: python3 -m pip install -e ".[dev]"
       - name: Run unit tests
+        env:
+          SCP_GITLEAKS_HISTORY: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           python3 -m pytest tests \
             --ignore=tests/test_setup_mycelium_nostr_key.py \

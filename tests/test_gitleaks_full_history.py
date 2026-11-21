@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import subprocess
 import urllib.request
@@ -67,7 +68,8 @@ def _config(path: Path) -> None:
     )
 
 
-def _scan(source: Path, config: Path, ignore: Path, binary: Path) -> int:
+def _scan(source: Path, config: Path, ignore: Path, binary: Path, *, history: str = "") -> int:
+    opts = _LOG_OPTS if not history else f"{_LOG_OPTS} {history}"
     proc = subprocess.run(
         [
             str(binary),
@@ -80,7 +82,7 @@ def _scan(source: Path, config: Path, ignore: Path, binary: Path) -> int:
             str(ignore),
             "--ignore-gitleaks-allow",
             "--log-opts",
-            _LOG_OPTS,
+            opts,
             "--exit-code",
             "2",
             "--no-banner",
@@ -120,7 +122,11 @@ def test_reachable_history_is_clean_and_a_new_leak_fails(tmp_path: Path) -> None
     binary = _binary(tmp_path / "gitleaks")
     config = tmp_path / "rules.toml"
     _config(config)
-    assert _scan(_REPO, config, _REPO / ".gitleaksignore", binary) == 0
+    # CI checks out refs/pull/<n>/merge. That commit's hash changes every run,
+    # and a depth-1 clone has no parents, so git presents existing lines as
+    # introduced there. Scan the pull request head when the workflow names it.
+    history = os.environ.get("SCP_GITLEAKS_HISTORY", "").strip()
+    assert _scan(_REPO, config, _REPO / ".gitleaksignore", binary, history=history) == 0
 
     repo = tmp_path / "repo"
     repo.mkdir()
