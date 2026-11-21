@@ -263,6 +263,21 @@ def test_utf16_bom_file_is_refused(tmp_path: Path) -> None:
     assert "refusing UTF-16 text" in proc.stderr
 
 
+def test_bomless_utf16_is_refused_under_former_binary_names(tmp_path: Path) -> None:
+    suffixes = (".png", ".pyc", ".zip", ".exe", ".so", ".woff2", ".wasm", ".ttf")
+    refused = 0
+    for index, suffix in enumerate(suffixes):
+        repo = tmp_path / f"repo{index}"
+        _init(repo)
+        (repo / f"blob{suffix}").write_bytes(("value " + _token(40 + index)).encode("utf-16-le"))
+        _git(repo, "add", f"blob{suffix}")
+        _git(repo, "commit", "-q", "-m", "utf")
+        proc = _scan(repo, tmp_path / f"scan{index}")
+        if proc.returncode == 1 and "refusing UTF-16 text" in proc.stderr:
+            refused += 1
+    assert refused == len(suffixes)
+
+
 def test_bomless_utf16_with_a_binary_name_is_refused(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)
