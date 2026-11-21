@@ -49,7 +49,7 @@ LEETSPEAK_PHRASES = [
 
 HIDDEN_UNICODE: frozenset[int] = frozenset(
     set(range(0x200B, 0x2010))      # ZWSP, ZWNJ, ZWJ, LRM, RLM
-    | set(range(0x2028, 0x2030))    # line/para separators, bidi embeds/overrides/pop
+    | set(range(0x2028, 0x202F))    # line/para separators, bidi embeds/overrides/pop
     | set(range(0x2060, 0x2065))    # word joiner, invisible operators
     | set(range(0x2066, 0x2070))    # bidi isolates, deprecated formatting
     | set(range(0xFE00, 0xFE10))    # variation selectors 1-16
@@ -183,6 +183,8 @@ _TAG_CHAR_END = 0xE007F
 _B64_MAX_LAYERS = 3
 # Bounded decode depth for nested URL/HTML evasion (#12 curated).
 _CANONICALIZATION_MAX_LAYERS = 8
+_HTML_COMMENT_SOURCE_MAX_LAYERS = 8
+_HTML_ENTITY_CANDIDATE_RE = re.compile(r"&[#A-Za-z0-9]+;")
 
 
 def _strip_null_bytes(text: str) -> str:
@@ -974,6 +976,34 @@ def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
     return findings
 
 
+def scan_embedded_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
+    """Source-order fallback for phrases glued to surrounding text by markup."""
+    findings: list[tuple[int, str, str, str]] = []
+    for phrase, severity in _tool_poison_entries():
+        stripped = phrase.strip()
+        if len(stripped) >= 3 and stripped[0] == "<" and stripped[-1] == ">":
+            pattern = re.compile(re.escape(stripped), re.IGNORECASE)
+        else:
+            pattern = re.compile(re.escape(stripped).replace(r"\ ", r"\s+"), re.IGNORECASE)
+        for match in pattern.finditer(text):
+            findings.append((match.start(), match.group(0), phrase, severity))
+    return findings
+
+
+def _find_html_comment_close(text: str, body_start: int) -> tuple[int, int] | None:
+    """Return (close_index, close_width) for supported HTML comment closers."""
+    i = body_start
+    length = len(text)
+    while i + 2 < length:
+        if text[i] == "-" and text[i + 1] == "-":
+            if text[i + 2] == ">":
+                return i, 3
+            if i + 3 < length and text[i + 2] == "!" and text[i + 3] == ">":
+                return i, 4
+        i += 1
+    return None
+
+
 def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
     """Split ``<!-- ... -->`` comments out of text.
 
@@ -993,13 +1023,241 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
             parts.append(text[cursor:])
             break
         parts.append(text[cursor:start])
-        close = text.find("-->", start + 4)
-        if close < 0:
+        if text.startswith("<!-->", start):
+            comments.append((start, ""))
+            cursor = start + 5
+            continue
+        if text.startswith("<!--->", start):
+            comments.append((start, ""))
+            cursor = start + 6
+            continue
+        close = _find_html_comment_close(text, start + 4)
+        if close is None:
             comments.append((start, text[start + 4 :]))
             break
-        comments.append((start, text[start + 4 : close]))
-        cursor = close + 3
+        close_index, close_width = close
+        comments.append((start, text[start + 4 : close_index]))
+        cursor = close_index + close_width
     return "".join(parts), comments
+
+
+def _visible_comment_boundaries(text: str) -> set[int]:
+    """Offsets in rendered-visible text where raw HTML comments were removed."""
+    boundaries: set[int] = set()
+    cursor = 0
+    out_len = 0
+    length = len(text)
+    while cursor < length:
+        start = text.find("<!--", cursor)
+        if start < 0:
+            break
+        out_len += start - cursor
+        boundaries.add(out_len)
+        if text.startswith("<!-->", start):
+            cursor = start + 5
+            continue
+        if text.startswith("<!--->", start):
+            cursor = start + 6
+            continue
+        close = _find_html_comment_close(text, start + 4)
+        if close is None:
+            break
+        close_index, close_width = close
+        cursor = close_index + close_width
+    return boundaries
+
+
+def _has_boundary_between(boundaries: list[int], start: int, end: int) -> bool:
+    index = bisect.bisect_right(boundaries, start)
+    return index < len(boundaries) and boundaries[index] < end
+
+
+def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int], list[int]]:
+    """Remove markup delimiters and record output offsets where markup was removed."""
+    if "<" not in text:
+        return text, set(), list(range(len(text)))
+    parts: list[str] = []
+    boundaries: set[int] = set()
+    source_map: list[int] = []
+    cursor = 0
+    out_len = 0
+    length = len(text)
+
+    def add(segment: str, source_start: int) -> None:
+        nonlocal out_len
+        if segment:
+            parts.append(segment)
+            source_map.extend(range(source_start, source_start + len(segment)))
+            out_len += len(segment)
+
+    def mark_boundary() -> None:
+        boundaries.add(out_len)
+
+    while cursor < length:
+        start = text.find("<", cursor)
+        if start < 0:
+            add(text[cursor:], cursor)
+            break
+        if text.startswith("<!--", start):
+            add(text[cursor:start], cursor)
+            if text.startswith("<!-->", start):
+                mark_boundary()
+                cursor = start + 5
+                continue
+            if text.startswith("<!--->", start):
+                mark_boundary()
+                cursor = start + 6
+                continue
+            close = _find_html_comment_close(text, start + 4)
+            if close is None:
+                mark_boundary()
+                add(text[start + 4 :], start + 4)
+                break
+            close_index, close_width = close
+            mark_boundary()
+            add(text[start + 4 : close_index], start + 4)
+            mark_boundary()
+            cursor = close_index + close_width
+            continue
+        if text.startswith("<![CDATA[", start):
+            add(text[cursor:start], cursor)
+            close_index = text.find(">", start + 9)
+            if close_index < 0:
+                mark_boundary()
+                break
+            if close_index >= 2 and text[close_index - 2 : close_index] == "]]":
+                mark_boundary()
+                add(text[start + 9 : close_index - 2], start + 9)
+                mark_boundary()
+                cursor = close_index + 1
+                continue
+            mark_boundary()
+            cursor = close_index + 1
+            continue
+        if text.startswith("<?", start):
+            add(text[cursor:start], cursor)
+            close_index = text.find(">", start + 2)
+            if close_index < 0:
+                mark_boundary()
+                break
+            mark_boundary()
+            cursor = close_index + 1
+            continue
+        if text.startswith("<!", start):
+            add(text[cursor:start], cursor)
+            close_index = text.find(">", start + 2)
+            if close_index < 0:
+                mark_boundary()
+                break
+            mark_boundary()
+            cursor = close_index + 1
+            continue
+        add(text[cursor : start + 1], cursor)
+        cursor = start + 1
+    return "".join(parts), boundaries, source_map
+
+
+def _strip_html_comment_markers(text: str) -> str:
+    """Remove markup delimiters while preserving source-order content."""
+    stripped, _, _ = _strip_html_comment_markers_with_boundaries(text)
+    return stripped
+
+
+def _decode_url_html_with_map(text: str, source_map: list[int]) -> tuple[str, list[int]]:
+    chars: list[str] = []
+    mapped: list[int] = []
+    i = 0
+    while i < len(text):
+        if (
+            text[i] == "%"
+            and i + 2 < len(text)
+            and all(c in "0123456789abcdefABCDEF" for c in text[i + 1 : i + 3])
+        ):
+            chars.append(chr(int(text[i + 1 : i + 3], 16)))
+            mapped.append(source_map[i])
+            i += 3
+            continue
+        match = _HTML_ENTITY_CANDIDATE_RE.match(text, i)
+        if match:
+            decoded = html.unescape(match.group(0))
+            if decoded != match.group(0):
+                for char in decoded:
+                    chars.append(char)
+                    mapped.append(source_map[i])
+                i = match.end()
+                continue
+        chars.append(text[i])
+        mapped.append(source_map[i])
+        i += 1
+    return "".join(chars), mapped
+
+
+def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int], list[int]]:
+    """Return source-order text and whether bounded decoding found more markup."""
+    current = text
+    source_map = list(range(len(text)))
+    for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
+        decoded, decoded_map = _decode_url_html_with_map(current, source_map)
+        if decoded == current:
+            break
+        current = decoded
+        source_map = decoded_map
+    else:
+        decoded, _ = _decode_url_html_with_map(current, source_map)
+        if decoded != current:
+            return text, True, set(), list(range(len(text)))
+
+    stripped_any = False
+    boundaries: set[int] = set()
+    for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
+        stripped, stripped_boundaries, stripped_map = _strip_html_comment_markers_with_boundaries(current)
+        if stripped == current:
+            break
+        stripped_any = True
+        boundaries = {bisect.bisect_left(stripped_map, b) for b in boundaries} | stripped_boundaries
+        source_map = [source_map[index] for index in stripped_map]
+        current = stripped
+    else:
+        stripped, stripped_boundaries, stripped_map = _strip_html_comment_markers_with_boundaries(current)
+        if stripped != current:
+            boundaries = {bisect.bisect_left(stripped_map, b) for b in boundaries} | stripped_boundaries
+            source_map = [source_map[index] for index in stripped_map]
+            return stripped, True, boundaries, source_map
+    return (current if stripped_any else text), False, boundaries, (source_map if stripped_any else list(range(len(text))))
+
+
+def _html_comment_source_order_text(text: str) -> str:
+    """Decode comment delimiters and strip them until source-order text settles."""
+    source_order, _, _, _ = _html_comment_source_order_scan(text)
+    return source_order
+
+
+def _decode_for_comment_visibility(text: str) -> str:
+    current = text
+    source_map = list(range(len(text)))
+    for _ in range(_HTML_COMMENT_SOURCE_MAX_LAYERS):
+        decoded, decoded_map = _decode_url_html_with_map(current, source_map)
+        if decoded == current:
+            break
+        current = decoded
+        source_map = decoded_map
+    return current
+
+
+def _normalize_source_order_for_tool_scan(text: str) -> tuple[str, list[int]]:
+    """Normalize source-order text and map each normalized char to source text."""
+    chars: list[str] = []
+    source_indexes: list[int] = []
+    for index, char in enumerate(text):
+        normalized = unicodedata.normalize("NFKC", char)
+        normalized = _strip_invisible_unicode(normalized)
+        normalized = _normalize_confusable_whitespace(normalized)
+        for out_char in normalized:
+            if out_char == "\x00":
+                continue
+            chars.append(out_char)
+            source_indexes.append(index)
+    return "".join(chars), source_indexes
 
 
 def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
@@ -1059,7 +1317,10 @@ def reconcile_severity(result: dict) -> None:
 
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
+    lower_text = text.lower()
     visible, comments = extract_html_comments(text)
+    visible_comment_boundaries = _visible_comment_boundaries(text)
+    visible_comment_boundary_list = sorted(visible_comment_boundaries)
     segments: list[tuple[str, int, str]] = [("text", 0, visible)]
     for start, body in comments:
         if body.strip():
@@ -1077,6 +1338,16 @@ def classify(text: str) -> dict:
             severity = base if segment == "text" else _severity_for_concealment(base, key)
             category = _FINDING_CATEGORY[key]
             for offset, phrase in hits:
+                if (
+                    segment == "text"
+                    and comments
+                    and _has_boundary_between(
+                        visible_comment_boundary_list,
+                        offset,
+                        offset + len(str(phrase)),
+                    )
+                ):
+                    severity = _severity_for_concealment(base, key)
                 legacy[key].append((offset, str(phrase)))
                 severities.append(severity)
                 if segment == "html_comment":
@@ -1093,6 +1364,12 @@ def classify(text: str) -> dict:
                     )
         for offset, match, phrase, base in scan_tool_poisoning(prepared):
             severity = base if segment == "text" else _severity_for_concealment(base, "tool_poisoning")
+            if (
+                segment == "text"
+                and comments
+                    and match.lower() not in lower_text
+            ):
+                severity = _severity_for_concealment(base, "tool_poisoning")
             note = _location_record(
                 category="tool_poisoning",
                 offset=offset,
@@ -1107,6 +1384,127 @@ def classify(text: str) -> dict:
             severities.append(severity)
             if segment == "html_comment":
                 concealed_notes.append(note)
+
+    (
+        source_order,
+        source_order_bound_hit,
+        source_order_boundaries,
+        source_order_source_map,
+    ) = _html_comment_source_order_scan(text)
+    text_segment_phrases = {
+        note.get("phrase")
+        for note in poison_notes
+        if note.get("segment") == "text"
+    }
+    source_order_boundary_list = sorted(source_order_boundaries)
+    if source_order_bound_hit:
+        legacy["encoding_blocks"].append((0, "html_comment_decode_bound"))
+        severities.append("high")
+    if source_order != text:
+        prepared = _prepare_text_for_scan(source_order)
+        for key, hits in _scan_finding_groups(source_order, prepared).items():
+            base = _base_severity_for_key(key)
+            for offset, phrase in hits:
+                item = (offset, str(phrase))
+                if item not in legacy[key]:
+                    legacy[key].append(item)
+                    end = offset + len(str(phrase))
+                    if _has_boundary_between(source_order_boundary_list, offset, end):
+                        severity = _severity_for_concealment(base, key)
+                    else:
+                        severity = base
+                    severities.append(severity)
+        tool_text, tool_source_indexes = _normalize_source_order_for_tool_scan(source_order)
+        source_order_hits = scan_tool_poisoning(tool_text)
+        seen_source_order_hits = {(offset, phrase) for offset, _, phrase, _ in source_order_hits}
+        for hit in scan_embedded_tool_poisoning(tool_text):
+            embedded_offset, embedded_match, embedded_phrase, _ = hit
+            embedded_indexes = tool_source_indexes[
+                embedded_offset : embedded_offset + len(embedded_match)
+            ]
+            if embedded_indexes:
+                embedded_start = min(embedded_indexes)
+                embedded_end = max(embedded_indexes) + 1
+            else:
+                embedded_start = embedded_offset
+                embedded_end = embedded_offset + len(embedded_match)
+            touches_markup = (
+                embedded_start in source_order_boundaries
+                or (embedded_start - 1) in source_order_boundaries
+                or embedded_end in source_order_boundaries
+                or _has_boundary_between(source_order_boundary_list, embedded_start, embedded_end)
+            )
+            if touches_markup and (hit[0], hit[2]) not in seen_source_order_hits:
+                source_order_hits.append(hit)
+                seen_source_order_hits.add((hit[0], hit[2]))
+        for offset, match, phrase, base in source_order_hits:
+            match_indexes = tool_source_indexes[offset : offset + len(match)]
+            if match_indexes:
+                source_start = min(match_indexes)
+                source_end = max(match_indexes) + 1
+            else:
+                source_start = offset
+                source_end = offset + len(match)
+            if source_start < len(source_order_source_map):
+                original_start = source_order_source_map[source_start]
+            else:
+                original_start = source_start
+            visible_same_phrase = phrase in text_segment_phrases
+            crosses_markup = (
+                source_start in source_order_boundaries
+                or source_end in source_order_boundaries
+                or _has_boundary_between(source_order_boundary_list, source_start, source_end)
+            )
+            if visible_same_phrase and not crosses_markup:
+                continue
+            if crosses_markup or not visible_same_phrase:
+                severity = _severity_for_concealment(base, "tool_poisoning")
+            else:
+                severity = base
+            poison_notes.append(
+                _location_record(
+                    category="tool_poisoning",
+                    offset=offset,
+                    match=match,
+                    segment="html_comment_source",
+                    source_offset=original_start,
+                    severity=severity,
+                    base_severity=base,
+                    phrase=phrase,
+                )
+            )
+            severities.append(severity)
+
+    decoded_visible_source = _decode_for_comment_visibility(text)
+    if decoded_visible_source != text:
+        decoded_visible, decoded_comments = extract_html_comments(decoded_visible_source)
+        decoded_boundaries = _visible_comment_boundaries(decoded_visible_source)
+        decoded_boundary_list = sorted(decoded_boundaries)
+        if decoded_comments:
+            prepared = _prepare_text_for_scan(decoded_visible)
+            for key, hits in _scan_finding_groups(decoded_visible, prepared).items():
+                base = _base_severity_for_key(key)
+                for offset, phrase in hits:
+                    end = offset + len(str(phrase))
+                    if _has_boundary_between(decoded_boundary_list, offset, end):
+                        legacy[key].append((offset, str(phrase)))
+                        severities.append(_severity_for_concealment(base, key))
+            for offset, match, phrase, base in scan_tool_poisoning(prepared):
+                end = offset + len(match)
+                if _has_boundary_between(decoded_boundary_list, offset, end):
+                    poison_notes.append(
+                        _location_record(
+                            category="tool_poisoning",
+                            offset=offset,
+                            match=match,
+                            segment="decoded_html_comment_visible",
+                            source_offset=offset,
+                            severity=_severity_for_concealment(base, "tool_poisoning"),
+                            base_severity=base,
+                            phrase=phrase,
+                        )
+                    )
+                    severities.append(_severity_for_concealment(base, "tool_poisoning"))
 
     injection_any = any(legacy[key] for key in _INJECTION_FINDING_KEYS) or any(
         severity in ("high", "critical") for severity in severities

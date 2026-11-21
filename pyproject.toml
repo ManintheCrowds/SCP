@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "html5lib>=1.1"]
 # Antigen P0 (SCP-ANT1): stronger schnorr + schema validation. Both are OPTIONAL —
 # antigen.py falls back to a bundled pure-Python BIP-340 impl and manual validation
 # when these are absent, so a bare install still passes the antigen test suite.
