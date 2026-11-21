@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   gitleaks:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,11 +21,206 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Select the base gitleaks config
+        id: gitleaks-config
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ -z "${BASE_SHA}" ] || ! git cat-file -e "${BASE_SHA}:.gitleaks.toml" 2>/dev/null; then
+              echo "base revision has no gitleaks config; failing closed" >&2
+              exit 1
+            fi
+            git show "${BASE_SHA}:.gitleaks.toml" > "${RUNNER_TEMP}/gitleaks.base.toml"
+            echo "path=${RUNNER_TEMP}/gitleaks.base.toml" >> "${GITHUB_OUTPUT}"
+          else
+            if [ ! -f .gitleaks.toml ]; then
+              echo "gitleaks config missing; failing closed" >&2
+              exit 1
+            fi
+            echo "path=.gitleaks.toml" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_CONFIG: ${{ steps.gitleaks-config.outputs.path }}
           GITLEAKS_ENABLE_COMMENTS: false
           GITLEAKS_ENABLE_SUMMARY: true
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+
+      # gitleaks 8.30.1 reads ./.gitleaksignore from the scanned worktree even
+      # when --gitleaks-ignore-path is set. Check out a worktree, delete that
+      # file, and scan the copy with the base ignore file only.
+      # This step does not repeat the full base..head range scan.
+      - name: Scan with the base ignore file
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITLEAKS_CONFIG: ${{ steps.gitleaks-config.outputs.path }}
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          set -euo pipefail
+          expected_version="8.30.1"
+          expected_sha="88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509"
+          if [ "${GITLEAKS_VERSION}" != "${expected_version}" ]; then
+            echo "refusing GITLEAKS_VERSION=${GITLEAKS_VERSION}" >&2
+            exit 1
+          fi
+          bin="$(command -v gitleaks)"
+          # Hash the file before executing it. A cached binary must not run
+          # in order to report its version.
+          actual_sha="$(sha256sum "${bin}" | awk '{print $1}')"
+          if [ "${actual_sha}" != "${expected_sha}" ]; then
+            echo "refusing gitleaks binary digest" >&2
+            exit 1
+          fi
+          actual_version="$("${bin}" version | tr -d '[:space:]')"
+          if [ "${actual_version}" != "${expected_version}" ]; then
+            echo "refusing gitleaks version ${actual_version}" >&2
+            exit 1
+          fi
+          dest="${RUNNER_TEMP}/gitleaks.base.ignore"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ -n "${BASE_SHA:-}" ] && git cat-file -e "${BASE_SHA}:.gitleaksignore" 2>/dev/null; then
+              git show "${BASE_SHA}:.gitleaksignore" > "$dest"
+            else
+              : > "$dest"
+            fi
+          elif [ -f .gitleaksignore ]; then
+            cp .gitleaksignore "$dest"
+          else
+            : > "$dest"
+          fi
+          scan="${RUNNER_TEMP}/gitleaks-worktree"
+          rm -rf "${scan}"
+          git worktree add --detach "${scan}" HEAD
+          cleanup() {
+            git worktree remove --force "${scan}" >/dev/null 2>&1 || rm -rf "${scan}"
+          }
+          trap cleanup EXIT
+          rm -f "${scan}/.gitleaksignore"
+          # git's attributes and binary detection hide patches. The log options
+          # force a text diff and show a merge commit's own changes, without
+          # walking refs other than the history of this checkout.
+          # Blob exemptions come from the base revision, not from this pull request.
+          blob_allow="${RUNNER_TEMP}/gitleaks.blob-allow"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ -n "${BASE_SHA:-}" ] && git cat-file -e "${BASE_SHA}:scripts/gitleaks_blob_allow.txt" 2>/dev/null; then
+              git show "${BASE_SHA}:scripts/gitleaks_blob_allow.txt" > "${blob_allow}"
+            else
+              : > "${blob_allow}"
+            fi
+          elif [ -f scripts/gitleaks_blob_allow.txt ]; then
+            cp scripts/gitleaks_blob_allow.txt "${blob_allow}"
+          else
+            : > "${blob_allow}"
+          fi
+          python3 - "${scan}" "${blob_allow}" << 'PY'
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          allowed_blobs = set()
+          allow_path = Path(sys.argv[2])
+          if allow_path.is_file():
+              for raw in allow_path.read_text(encoding="utf-8").splitlines():
+                  item = raw.strip()
+                  if item and not item.startswith("#"):
+                      allowed_blobs.add(item)
+          # Content signatures. The file name is not an exemption.
+          _MAGICS = (
+              b"\x89PNG\r\n\x1a\n",
+              b"\xff\xd8\xff",
+              b"GIF87a",
+              b"GIF89a",
+              b"%PDF-",
+              b"\x7fELF",
+              b"PK\x03\x04",
+              b"\x1f\x8b",
+          )
+
+          def known_binary(data: bytes) -> bool:
+              if any(data.startswith(magic) for magic in _MAGICS):
+                  return True
+              return len(data) >= 4 and data[1:4] == b"\r\r\n"
+
+          def utf16_text(data: bytes) -> bool:
+              if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+                  return True
+              sample = data[:512]
+              if len(sample) < 16:
+                  return False
+              if len(sample) % 2:
+                  sample = sample[:-1]
+              pairs = len(sample) // 2
+              le = sum(1 for index in range(1, len(sample), 2) if sample[index] == 0)
+              be = sum(1 for index in range(0, len(sample), 2) if sample[index] == 0)
+              return le >= int(pairs * 0.8) or be >= int(pairs * 0.8)
+
+          def ascii_after_nul(data: bytes) -> bool:
+              start = data.find(b"\x00")
+              if start < 0:
+                  return False
+              run = 0
+              for byte in data[start + 1 :]:
+                  if 48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122:
+                      run += 1
+                      if run >= 20:
+                          return True
+                  else:
+                      run = 0
+              return False
+
+          listed = subprocess.run(
+              ["git", "rev-list", "--objects", "HEAD"],
+              cwd=root,
+              capture_output=True,
+          )
+          if listed.returncode != 0:
+              sys.stderr.write("refusing to scan: git object list failed\n")
+              sys.exit(1)
+          for line in listed.stdout.splitlines():
+              if b" " not in line:
+                  continue
+              oid, _, path = line.partition(b" ")
+              kind = subprocess.run(
+                  ["git", "cat-file", "-t", oid],
+                  cwd=root,
+                  capture_output=True,
+              ).stdout.strip()
+              if kind != b"blob":
+                  continue
+              if oid.decode("ascii") in allowed_blobs:
+                  continue
+              data = subprocess.run(
+                  ["git", "cat-file", "blob", oid],
+                  cwd=root,
+                  capture_output=True,
+              ).stdout
+              name = path.decode("utf-8", "replace")
+              if utf16_text(data):
+                  sys.stderr.write(f"refusing UTF-16 text: {name}\n")
+                  sys.exit(1)
+              if b"\x00" not in data:
+                  continue
+              if ascii_after_nul(data):
+                  sys.stderr.write(f"refusing text hidden after a NUL byte: {name}\n")
+                  sys.exit(1)
+              if not known_binary(data):
+                  sys.stderr.write(f"refusing NUL byte in text file: {name}\n")
+                  sys.exit(1)
+          PY
+          (
+            cd "${scan}"
+            gitleaks detect --redact --exit-code=2 \
+              --config "${GITLEAKS_CONFIG}" \
+              --gitleaks-ignore-path "${dest}" \
+              --ignore-gitleaks-allow \
+              --log-opts="--diff-merges=first-parent --text"
+          )

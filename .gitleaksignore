@@ -1,0 +1,20 @@
+# Synthetic example in the appsec gate test. Exact commit that introduced
+# the line. Rule generic-api-key, tests/test_appsec_antigen_mcp_gates.py:250.
+67c651da93fc759b016e981c7b8b5b2d277a23a5:tests/test_appsec_antigen_mcp_gates.py:generic-api-key:250
+
+# The same line is diffed again when merge commits are scanned. This is
+# the merge commit, not a second value. Rule generic-api-key, same path
+# and line.
+5cc2ecd173c7afd46a34fe4d7ee04aecf7e9fc79:tests/test_appsec_antigen_mcp_gates.py:generic-api-key:250
+
+# PEM-shaped detector text in the redaction source. Historical commit on
+# main. Rule private-key, src/scp/mask_secrets.py:91.
+8e1410f772621122d629ce678f4f190ab82810fb:src/scp/mask_secrets.py:private-key:91
+
+# Synthetic prompt in the wave-3 mask corpus. Rule generic-api-key,
+# tests/fixtures/scp_corpus_wave3.json:330.
+5be4c70bdb0fe76b49e4ed77215b4014a34dfa9f:tests/fixtures/scp_corpus_wave3.json:generic-api-key:330
+
+# Synthetic PEM block in that same corpus fixture. Rule private-key,
+# tests/fixtures/scp_corpus_wave3.json:347.
+5be4c70bdb0fe76b49e4ed77215b4014a34dfa9f:tests/fixtures/scp_corpus_wave3.json:private-key:347

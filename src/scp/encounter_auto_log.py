@@ -11,9 +11,15 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import mask_secrets
+
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MAX_CONTENT_LENGTH = 10_000
 _MAX_SOURCE_LENGTH = 256
+# Mask a bounded prefix. A token that crosses the cut is included whole
+# so a partial value cannot be stored.
+_LOG_MASK_CHARS = 4_000
+_LOG_TOKEN_EXTEND = 2_048
 
 _INJECTION_CFG = {
     "encounter_type": "prompt_injection_attempt",
@@ -58,15 +64,80 @@ def _encounter_dir() -> Path | None:
     return resolved
 
 
-def _sanitize_for_log(content: str, tier: str) -> str:
-    """Redact secrets then truncate for durable encounter logs."""
-    from . import mask_secrets
+_TOKEN_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
 
-    redacted = mask_secrets.mask(content)
+
+def _skip_indent(content: str, index: int, cap: int) -> int:
+    while index < cap and content[index] in " \t":
+        index += 1
+    return index
+
+
+def _run_continues_token(content: str, index: int, cap: int) -> bool:
+    """True when the next line is still the token, not a prose word."""
+    if index >= cap:
+        return False
+    end = index
+    while end < cap and content[end] not in " \t\r\n":
+        end += 1
+    run = content[index:end]
+    if not run or any(char not in _TOKEN_CHARS for char in run):
+        return False
+    if len(run) >= 2 and run.isalpha() and run[0].isupper() and run[1:].islower():
+        return False
+    if run.islower() and len(run) >= 4 and len(set(run)) > 1:
+        return False
+    return True
+
+
+def _prefix_for_mask(content: str) -> str:
+    """Prefix to mask. Finish a token that straddles the cut, or drop that run.
+
+    A newline is not the end of the token when the next line continues it.
+    """
+    if len(content) <= _LOG_MASK_CHARS:
+        return content
+    end = _LOG_MASK_CHARS
+    cap = min(len(content), _LOG_MASK_CHARS + _LOG_TOKEN_EXTEND)
+    while end < cap:
+        char = content[end]
+        if char in " \t":
+            cursor = end
+            while cursor > 0 and content[cursor - 1] in " \t":
+                cursor -= 1
+            if cursor > 0 and content[cursor - 1] in "\r\n":
+                resumed = _skip_indent(content, end, cap)
+                if _run_continues_token(content, resumed, cap):
+                    end = resumed
+                    continue
+            break
+        if char in "\r\n":
+            nxt = end + 1
+            if char == "\r" and nxt < len(content) and content[nxt] == "\n":
+                nxt += 1
+            elif char == "\r":
+                break
+            resumed = _skip_indent(content, nxt, cap)
+            if not _run_continues_token(content, resumed, cap):
+                break
+            end = resumed
+            continue
+        end += 1
+    if end < len(content) and content[end] not in " \t\r\n":
+        while end > 0 and content[end - 1] not in " \t\r\n":
+            end -= 1
+    return content[:end]
+
+
+def _sanitize_for_log(content: str, tier: str) -> str:
+    """Mask a boundary-safe prefix, then truncate the redacted text."""
+    redacted = mask_secrets.mask(_prefix_for_mask(content))
     if tier == "injection":
         preview = redacted[:500]
         return f"[auto] SCP injection-tier detection (preview truncated)\n{preview}"
-    return f"[auto] SCP reversal-tier detection\n{redacted[:2000]}"
+    return f"[auto] SCP reversal-tier detection\n{redacted[:_LOG_MASK_CHARS]}"
 
 
 def maybe_log_encounter(
