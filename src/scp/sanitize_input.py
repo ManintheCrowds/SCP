@@ -1317,6 +1317,7 @@ def reconcile_severity(result: dict) -> None:
 
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
+    lower_text = text.lower()
     visible, comments = extract_html_comments(text)
     visible_comment_boundaries = _visible_comment_boundaries(text)
     visible_comment_boundary_list = sorted(visible_comment_boundaries)
@@ -1366,7 +1367,7 @@ def classify(text: str) -> dict:
             if (
                 segment == "text"
                 and comments
-                and match.lower() not in text.lower()
+                    and match.lower() not in lower_text
             ):
                 severity = _severity_for_concealment(base, "tool_poisoning")
             note = _location_record(
@@ -1390,6 +1391,11 @@ def classify(text: str) -> dict:
         source_order_boundaries,
         source_order_source_map,
     ) = _html_comment_source_order_scan(text)
+    text_segment_phrases = {
+        note.get("phrase")
+        for note in poison_notes
+        if note.get("segment") == "text"
+    }
     source_order_boundary_list = sorted(source_order_boundaries)
     if source_order_bound_hit:
         legacy["encoding_blocks"].append((0, "html_comment_decode_bound"))
@@ -1443,10 +1449,7 @@ def classify(text: str) -> dict:
                 original_start = source_order_source_map[source_start]
             else:
                 original_start = source_start
-            visible_same_phrase = any(
-                note.get("segment") == "text" and note.get("phrase") == phrase
-                for note in poison_notes
-            )
+            visible_same_phrase = phrase in text_segment_phrases
             crosses_markup = (
                 source_start in source_order_boundaries
                 or source_end in source_order_boundaries
