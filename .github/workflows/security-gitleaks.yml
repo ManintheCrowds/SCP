@@ -102,10 +102,58 @@ jobs:
           }
           trap cleanup EXIT
           rm -f "${scan}/.gitleaksignore"
+          # git's attributes and binary detection hide patches. The log options
+          # force a text diff and show a merge commit's own changes, without
+          # walking refs other than the history of this checkout.
+          python3 - "${scan}" << 'PY'
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          binary_suffixes = {
+              ".pyc", ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".webp",
+              ".ico", ".zip", ".gz", ".woff", ".woff2", ".wasm", ".ttf",
+              ".otf", ".eot", ".so", ".dll", ".exe",
+          }
+          listed = subprocess.run(
+              ["git", "rev-list", "--objects", "HEAD"],
+              cwd=root,
+              capture_output=True,
+          )
+          if listed.returncode != 0:
+              sys.stderr.write("refusing to scan: git object list failed\n")
+              sys.exit(1)
+          for line in listed.stdout.splitlines():
+              if b" " not in line:
+                  continue
+              oid, _, path = line.partition(b" ")
+              kind = subprocess.run(
+                  ["git", "cat-file", "-t", oid],
+                  cwd=root,
+                  capture_output=True,
+              ).stdout.strip()
+              if kind != b"blob":
+                  continue
+              data = subprocess.run(
+                  ["git", "cat-file", "blob", oid],
+                  cwd=root,
+                  capture_output=True,
+              ).stdout
+              name = path.decode("utf-8", "replace")
+              if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+                  sys.stderr.write(f"refusing UTF-16 BOM file: {name}\n")
+                  sys.exit(1)
+              suffix = Path(name).suffix.lower()
+              if b"\x00" in data and suffix not in binary_suffixes:
+                  sys.stderr.write(f"refusing NUL byte in text file: {name}\n")
+                  sys.exit(1)
+          PY
           (
             cd "${scan}"
             gitleaks detect --redact --exit-code=2 \
               --config "${GITLEAKS_CONFIG}" \
               --gitleaks-ignore-path "${dest}" \
-              --ignore-gitleaks-allow
+              --ignore-gitleaks-allow \
+              --log-opts="--diff-merges=first-parent --text"
           )

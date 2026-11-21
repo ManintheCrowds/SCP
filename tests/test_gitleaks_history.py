@@ -1,0 +1,224 @@
+# PURPOSE: Attributes, merge commits, NUL bytes, and UTF-16 cannot hide a leak.
+# Uses the real gitleaks 8.30.1 binary.
+
+from __future__ import annotations
+
+import hashlib
+import os
+import stat
+import subprocess
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parents[1]
+_VERSION = "8.30.1"
+_BINARY_SHA = "88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509"
+
+
+def _workflow() -> str:
+    return (_REPO / ".github" / "workflows" / "security-gitleaks.yml").read_text(encoding="utf-8")
+
+
+def _run_block(step_name: str) -> str:
+    lines = _workflow().splitlines()
+    name_line = f"name: {step_name}"
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped != name_line and stripped != f"- {name_line}":
+            continue
+        for cursor in range(index + 1, min(index + 120, len(lines))):
+            if lines[cursor].strip() != "run: |":
+                continue
+            body: list[str] = []
+            base_indent: int | None = None
+            for raw in lines[cursor + 1 :]:
+                if raw.strip() == "":
+                    body.append("")
+                    continue
+                indent = len(raw) - len(raw.lstrip(" "))
+                if base_indent is None:
+                    base_indent = indent
+                if indent < base_indent:
+                    break
+                body.append(raw[base_indent:])
+            if base_indent is None:
+                raise AssertionError(f"empty run block for {step_name}")
+            return "\n".join(body).strip() + "\n"
+    raise AssertionError(f"missing run block for {step_name}")
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.email=ci@example.com", "-c", "user.name=ci", *args],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+
+def _token(salt: int) -> str:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    state = salt & 0xFFFFFFFF
+    chars: list[str] = []
+    for index in range(36):
+        state = (state * 1664525 + 1013904223 + index) & 0xFFFFFFFF
+        chars.append(alphabet[state % len(alphabet)])
+    return "".join(("gh", "p_")) + "".join(chars)
+
+
+def _binary(dest_dir: Path) -> Path:
+    cached = Path("/tmp/gitleaks-bin/gitleaks")
+    digest = hashlib.sha256(cached.read_bytes()).hexdigest()
+    if digest != _BINARY_SHA:
+        raise AssertionError("pinned gitleaks binary is not available")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    binary = dest_dir / "gitleaks"
+    binary.write_bytes(cached.read_bytes())
+    binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
+    return binary
+
+
+def _init(repo: Path) -> None:
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "rules.toml").write_text("[extend]\nuseDefault = true\n", encoding="utf-8")
+
+
+def _scan(repo: Path, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    binary = _binary(tmp_path / "bin")
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    env = os.environ.copy()
+    env["PATH"] = f"{binary.parent}{os.pathsep}{env.get('PATH', '')}"
+    env["RUNNER_TEMP"] = str(runner)
+    env["GITHUB_EVENT_NAME"] = "pull_request"
+    env["BASE_SHA"] = ""
+    env["GITLEAKS_CONFIG"] = str(repo / "rules.toml")
+    env["GITLEAKS_VERSION"] = _VERSION
+    return subprocess.run(
+        ["bash", "-c", _run_block("Scan with the base ignore file")],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_log_opts_do_not_walk_other_branches() -> None:
+    script = _run_block("Scan with the base ignore file")
+    assert "--diff-merges=first-parent" in script
+    assert "--text" in script
+    assert "--all" not in script
+
+
+def test_binary_attribute_cannot_hide_a_leak(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "leak.py").write_text("value " + _token(21) + "\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text("*.py binary\n", encoding="utf-8")
+    _git(repo, "add", "leak.py", ".gitattributes")
+    _git(repo, "commit", "-q", "-m", "leak")
+    proc = _scan(repo, tmp_path)
+    assert proc.returncode == 2
+
+
+def test_nodiff_attribute_cannot_hide_a_leak(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "leak.py").write_text("value " + _token(22) + "\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text("*.py -diff\n", encoding="utf-8")
+    _git(repo, "add", "leak.py", ".gitattributes")
+    _git(repo, "commit", "-q", "-m", "leak")
+    assert _scan(repo, tmp_path).returncode == 2
+
+
+def test_subdirectory_attributes_cannot_hide_a_leak(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "sub").mkdir()
+    (repo / "sub" / "leak.py").write_text("value " + _token(23) + "\n", encoding="utf-8")
+    (repo / "sub" / ".gitattributes").write_text("* binary\n", encoding="utf-8")
+    _git(repo, "add", "sub")
+    _git(repo, "commit", "-q", "-m", "leak")
+    assert _scan(repo, tmp_path).returncode == 2
+
+
+def test_attributes_added_later_cannot_hide_an_older_leak(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "leak.py").write_text("value " + _token(24) + "\n", encoding="utf-8")
+    _git(repo, "add", "leak.py")
+    _git(repo, "commit", "-q", "-m", "leak")
+    (repo / ".gitattributes").write_text("*.py binary\n", encoding="utf-8")
+    _git(repo, "add", ".gitattributes")
+    _git(repo, "commit", "-q", "-m", "hide")
+    assert _scan(repo, tmp_path).returncode == 2
+
+
+def test_merge_resolution_cannot_hide_a_leak(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "f.txt").write_text("main-line\n", encoding="utf-8")
+    _git(repo, "add", "f.txt")
+    _git(repo, "commit", "-q", "-m", "base")
+    _git(repo, "checkout", "-q", "-b", "side")
+    (repo / "f.txt").write_text("side-line\n", encoding="utf-8")
+    _git(repo, "add", "f.txt")
+    _git(repo, "commit", "-q", "-m", "side")
+    _git(repo, "checkout", "-q", "main")
+    (repo / "f.txt").write_text("other-line\n", encoding="utf-8")
+    _git(repo, "add", "f.txt")
+    _git(repo, "commit", "-q", "-m", "diverge")
+    merged = subprocess.run(["git", "merge", "side"], cwd=repo, capture_output=True, text=True)
+    assert merged.returncode != 0
+    (repo / "f.txt").write_text("resolved\nvalue " + _token(25) + "\n", encoding="utf-8")
+    _git(repo, "add", "f.txt")
+    _git(repo, "commit", "-q", "-m", "resolve")
+    assert _scan(repo, tmp_path).returncode == 2
+
+
+def test_clean_merge_cannot_smuggle_a_leak(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "a.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-q", "-m", "base")
+    _git(repo, "checkout", "-q", "-b", "side")
+    (repo / "b.txt").write_text("side\n", encoding="utf-8")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-q", "-m", "side")
+    _git(repo, "checkout", "-q", "main")
+    subprocess.run(
+        ["git", "merge", "--no-ff", "--no-commit", "side"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (repo / "hidden.py").write_text("value " + _token(26) + "\n", encoding="utf-8")
+    _git(repo, "add", "hidden.py")
+    _git(repo, "commit", "-q", "-m", "merge")
+    assert _scan(repo, tmp_path).returncode == 2
+
+
+def test_nul_byte_in_a_text_file_is_refused(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "note.txt").write_bytes(b"\x00\nvalue " + _token(27).encode("ascii") + b"\n")
+    _git(repo, "add", "note.txt")
+    _git(repo, "commit", "-q", "-m", "nul")
+    proc = _scan(repo, tmp_path)
+    assert proc.returncode == 1
+    assert "refusing NUL byte in text file" in proc.stderr
+
+
+def test_utf16_bom_file_is_refused(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "note.txt").write_bytes(("value " + _token(28) + "\n").encode("utf-16"))
+    _git(repo, "add", "note.txt")
+    _git(repo, "commit", "-q", "-m", "utf")
+    proc = _scan(repo, tmp_path)
+    assert proc.returncode == 1
+    assert "refusing UTF-16 BOM file" in proc.stderr
