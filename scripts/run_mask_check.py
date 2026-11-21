@@ -13,15 +13,16 @@ from scp import mask_secrets
 
 _SKIP_PARTS = {
     ".git",
-    "tests",
-    "docs",
     "node_modules",
     "__pycache__",
     ".venv",
-    "fixtures",
     "build",
     "dist",
 }
+
+# Trees the checker used to skip. Source modules stay out of the scan
+# because assignment patterns also match ordinary `key = name` code.
+_CHECK_PARTS = frozenset({"docs", "fixtures", "tests", ".cursor"})
 
 
 def _skipped(path: Path, root: Path) -> bool:
@@ -43,8 +44,9 @@ def iter_targets(root: Path) -> list[Path]:
             continue
         rel_parts = path.relative_to(root).parts
         name = path.name.lower()
-        in_state = "state" in rel_parts or ".cursor" in rel_parts
-        if name.startswith(".env") or name in {"handoff.md", "handoff.txt"} or in_state:
+        in_checked_tree = any(part in _CHECK_PARTS for part in rel_parts)
+        in_state = "state" in rel_parts
+        if name.startswith(".env") or name in {"handoff.md", "handoff.txt"} or in_state or in_checked_tree:
             chosen.append(path)
     return chosen
 
