@@ -88,9 +88,32 @@ def test_encounter_log_truncates_before_masking(tmp_path, monkeypatch: pytest.Mo
     body = head + ("n" * (encounter_auto_log._LOG_MASK_CHARS + 50)) + tail
     meta = encounter_auto_log.maybe_log_encounter(body, "reversal")
     assert meta is not None
-    assert seen and seen[0] <= encounter_auto_log._LOG_MASK_CHARS
+    assert seen and seen[0] <= (
+        encounter_auto_log._LOG_MASK_CHARS + encounter_auto_log._LOG_TOKEN_EXTEND
+    )
     logged = list((tmp_path / "docs" / "encounter_bestiary").glob("*_encounters.md"))[0].read_text(
         encoding="utf-8"
     )
     assert "pwd=zzzz" not in logged
     assert tail not in logged
+
+
+def test_token_straddling_the_log_boundary_is_not_stored(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    token = "".join(("gh", "p_")) + ("A" * 36)
+    assert len(token) == 40
+    monkeypatch.setenv("SCP_ENCOUNTER_AUTO_LOG", "1")
+    monkeypatch.setenv("ENCOUNTER_BESTIARY_DIR", str(tmp_path / "docs" / "encounter_bestiary"))
+    (tmp_path / "docs" / "encounter_bestiary").mkdir(parents=True)
+    # 35 token characters sit inside the 4,000-character cut and 5 sit past it.
+    start = encounter_auto_log._LOG_MASK_CHARS - 35
+    head = ("n" * (start - 1)) + " "
+    body = head + token + " tail"
+    assert body[start : start + len(token)] == token
+    meta = encounter_auto_log.maybe_log_encounter(body, "reversal")
+    assert meta is not None
+    logged = list((tmp_path / "docs" / "encounter_bestiary").glob("*_encounters.md"))[0].read_text(
+        encoding="utf-8"
+    )
+    assert token not in logged
+    assert token[:35] not in logged
+    assert token[35:] not in logged

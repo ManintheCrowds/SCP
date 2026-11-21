@@ -16,8 +16,10 @@ from . import mask_secrets
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MAX_CONTENT_LENGTH = 10_000
 _MAX_SOURCE_LENGTH = 256
-# Mask only a bounded prefix. The rest of a huge note is not scanned.
+# Mask a bounded prefix. A token that crosses the cut is included whole
+# so a partial value cannot be stored.
 _LOG_MASK_CHARS = 4_000
+_LOG_TOKEN_EXTEND = 2_048
 
 _INJECTION_CFG = {
     "encounter_type": "prompt_injection_attempt",
@@ -62,13 +64,27 @@ def _encounter_dir() -> Path | None:
     return resolved
 
 
+def _prefix_for_mask(content: str) -> str:
+    """Prefix to mask. Finish a token that straddles the cut, or drop that run."""
+    if len(content) <= _LOG_MASK_CHARS:
+        return content
+    end = _LOG_MASK_CHARS
+    cap = min(len(content), _LOG_MASK_CHARS + _LOG_TOKEN_EXTEND)
+    while end < cap and content[end] not in " \t\r\n":
+        end += 1
+    if end < len(content) and content[end] not in " \t\r\n":
+        while end > 0 and content[end - 1] not in " \t\r\n":
+            end -= 1
+    return content[:end]
+
+
 def _sanitize_for_log(content: str, tier: str) -> str:
-    """Truncate first, then redact, so a huge note cannot blow the mask budget."""
-    redacted = mask_secrets.mask(content[:_LOG_MASK_CHARS])
+    """Mask a boundary-safe prefix, then truncate the redacted text."""
+    redacted = mask_secrets.mask(_prefix_for_mask(content))
     if tier == "injection":
         preview = redacted[:500]
         return f"[auto] SCP injection-tier detection (preview truncated)\n{preview}"
-    return f"[auto] SCP reversal-tier detection\n{redacted[:2000]}"
+    return f"[auto] SCP reversal-tier detection\n{redacted[:_LOG_MASK_CHARS]}"
 
 
 def maybe_log_encounter(
