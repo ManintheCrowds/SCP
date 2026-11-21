@@ -19,6 +19,8 @@ _FILLER_CATEGORIES = frozenset({"Cf", "Zl", "Zp", "Mn"})
 _TOKEN_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 )
+# Assignment values may wrap through these as well as the token alphabet.
+_ASSIGN_CHARS = _TOKEN_CHARS | {"/", "+"}
 
 
 def _charge(steps: int, budget: int, count: int = 1) -> int:
@@ -233,15 +235,24 @@ def _trailing_stop(lines: list[str], index: int, head: str, seen_mark: bool, joi
     return True
 
 
+def _assignment_value(line: str) -> str:
+    """The value after the last '=' or ':' when every character may continue."""
+    stripped = line.rstrip(" \t")
+    cut = max(stripped.rfind("="), stripped.rfind(":"))
+    if cut < 0:
+        return ""
+    return stripped[cut + 1 :].lstrip(" \t")
+
+
 def _assignment_open(prev: str) -> bool:
-    """A label ending in ':' or '=', including a trailing space and a 1-7 char tail."""
+    """A label ending in ':' or '=', including a wrapped value that contains '/' or '+'."""
     stripped = prev.rstrip(" \t")
     if not stripped:
         return False
     if stripped.endswith(("=", ":")):
         return True
-    before, tail = _split_tail(stripped)
-    return bool(tail) and before.rstrip(" \t").endswith(("=", ":"))
+    value = _assignment_value(stripped)
+    return bool(value) and all(char in _ASSIGN_CHARS for char in value)
 
 
 def _bearer_open(prev: str) -> bool:
@@ -376,12 +387,16 @@ def _split_tail(line: str) -> tuple[str, str]:
     return line[:start], line[start:]
 
 
-def _continuation_head(nxt: str) -> str:
+def _continuation_head(nxt: str, *, assign: bool = False) -> str:
     """Token run at the start of a continuation, after indent and one dot."""
     continued = nxt.lstrip(" \t")
     if continued.startswith("."):
         continued = continued[1:]
-    return _leading_token(continued)
+    allowed = _ASSIGN_CHARS if assign else _TOKEN_CHARS
+    end = 0
+    while end < len(continued) and continued[end] in allowed:
+        end += 1
+    return continued[:end]
 
 
 def should_join(prev: str, nxt: str) -> bool:
@@ -437,7 +452,8 @@ def _bridges(lines: list[str]) -> list[bool]:
             seen_mark = any(char in _MARK_CHARS for char in run)
             continue
         continued = nxt.lstrip(" \t")
-        head = _continuation_head(nxt)
+        assigning = open_kind == "assign" or _assignment_open(prev)
+        head = _continuation_head(nxt, assign=assigning)
         dot_only = continued == "."
         if not head and not dot_only:
             bridges.append(False)
