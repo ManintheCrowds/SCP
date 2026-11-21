@@ -94,6 +94,27 @@ def _cases() -> list[tuple[str, str, str]]:
     ]
     for width in range(17, 24):
         samples.append((f"wrap-{width}", line[:width] + "\n" + line[width:], token))
+    samples.append(
+        (
+            "wrap-3-lines",
+            "export GH_TOKEN=" + token[:4] + "\n" + token[4:8] + "\n" + token[8:],
+            token,
+        )
+    )
+    filler = "Note. " * 12
+    samples.append(("label-80", filler + "GH_TOK\nEN=" + token, token))
+    samples.append(("label-space-token", "token: \n" + token, token))
+    samples.append(("label-space-key", "key = \n" + token, token))
+    bearer = "B" * 24
+    samples.append(("label-space-bearer", "Bearer \n" + bearer, bearer))
+    samples.append(("label-tail-3", "token: " + token[:3] + "\n" + token[3:], token))
+    samples.append(
+        (
+            "jwt-inside-segments",
+            jwt[:25] + "\n" + jwt[25:33] + "\n" + jwt[33:42] + "\n" + jwt[42:],
+            jwt,
+        )
+    )
     samples.extend(_pii_cases())
     return samples
 

@@ -149,13 +149,82 @@ def fold_unjoined(text: str) -> str:
 def _prose_word(word: str) -> bool:
     """Words such as Thanks, Notes, and before.
 
-    Uppercase runs and long dot-separated segments are token text, not prose.
+    A repeated character is a token fragment, not a word.
     """
     if len(word) < 2 or not word.isalpha():
         return False
     if word[:1].isupper() and word[1:].islower():
         return True
-    return word.islower() and len(word) <= 20
+    return word.islower() and len(word) <= 20 and len(set(word)) > 1
+
+
+def _assignment_open(prev: str) -> bool:
+    """A label ending in ':' or '=', including a trailing space and a 1-7 char tail."""
+    stripped = prev.rstrip(" \t")
+    if not stripped:
+        return False
+    if stripped.endswith(("=", ":")):
+        return True
+    before, tail = _split_tail(stripped)
+    return bool(tail) and before.rstrip(" \t").endswith(("=", ":"))
+
+
+def _bearer_open(prev: str) -> bool:
+    """'Bearer' alone, or with a space and a short visible tail."""
+    stripped = prev.rstrip(" \t")
+    if not stripped:
+        return False
+    lower = stripped.lower()
+    marker = "bearer"
+    if lower == marker or lower.endswith(" " + marker):
+        return True
+    idx = lower.rfind(marker)
+    if idx < 0 or (idx > 0 and lower[idx - 1] not in " \t"):
+        return False
+    rest = stripped[idx + len(marker) :]
+    if not rest or rest[0] not in " \t":
+        return False
+    tail = rest.lstrip(" \t")
+    return 1 <= len(tail) <= 12 and all(char in _TOKEN_CHARS for char in tail)
+
+
+def _jwt_open(prev: str) -> bool:
+    """A dot between segments, or a break inside segment 2 or 3."""
+    stripped = prev.rstrip(" \t")
+    if not stripped or "." not in stripped:
+        return False
+    if stripped.endswith("."):
+        body = stripped[:-1]
+        parts = body.split(".") if body else []
+    else:
+        parts = stripped.split(".")
+    if not parts or not (1 <= len(parts) <= 3):
+        return False
+    if not all(part and all(char in _TOKEN_CHARS for char in part) for part in parts):
+        return False
+    if len(parts[0]) < 8:
+        return False
+    if len(parts) < 3:
+        return True
+    return len(parts[2]) < 16
+
+
+def _hard_wrap(prev: str) -> bool:
+    """An 80-column line that ends inside a label or a token."""
+    stripped = prev.rstrip(" \t")
+    return len(stripped) >= 72 and bool(stripped) and stripped[-1] in _TOKEN_CHARS
+
+
+def _kind(prev: str) -> str:
+    if _bearer_open(prev):
+        return "bearer"
+    if _assignment_open(prev):
+        return "assign"
+    if _jwt_open(prev):
+        return "jwt"
+    if _hard_wrap(prev):
+        return "wrap"
+    return "none"
 
 
 def _leading_token(line: str) -> str:
@@ -173,29 +242,24 @@ def _split_tail(line: str) -> tuple[str, str]:
     return line[:start], line[start:]
 
 
-def should_join(prev: str, nxt: str) -> bool:
-    """Decide a wrap from the end of `prev` only.
-
-    Leading spaces and tabs on the continuation are ignored here and stripped
-    by the joiner. A following prose word is not glued on. One to seven key
-    characters after '=' still count, and a line that ends in '.' continues
-    a JWT segment.
-    """
+def _continuation_head(nxt: str) -> str:
+    """Token run at the start of a continuation, after indent and one dot."""
     continued = nxt.lstrip(" \t")
-    if not continued:
+    if continued.startswith("."):
+        continued = continued[1:]
+    return _leading_token(continued)
+
+
+def should_join(prev: str, nxt: str) -> bool:
+    """Decide one pair from the end of `prev`.
+
+    Leading spaces and tabs on the continuation are ignored. A following
+    prose word is not glued on.
+    """
+    head = _continuation_head(nxt)
+    if not head or _prose_word(head):
         return False
-    head = _leading_token(continued)
-    if not head:
-        return False
-    _before, tail = _split_tail(prev)
-    dot_continue = prev.endswith(".") and not tail
-    if _prose_word(head) and not (dot_continue and head.islower() and len(head) >= 16):
-        return False
-    if prev.endswith("=") or prev.endswith(":"):
-        return True
-    if tail and (_before.endswith("=") or _before.endswith(":")):
-        return True
-    return dot_continue
+    return _kind(prev) != "none"
 
 
 def _line_ranges(text: str) -> list[tuple[int, int]]:
@@ -210,12 +274,42 @@ def _line_ranges(text: str) -> list[tuple[int, int]]:
 
 
 def _bridges(lines: list[str]) -> list[bool]:
+    """Join every continuation of an open label, bearer, or JWT.
+
+    The carry is a flag, not a growing copy of the line, so a 3-line wrap
+    stays linear and does not glue a later prose word.
+    """
     steps = 0
     budget = _budget_for(sum(len(line) for line in lines) + len(lines))
     bridges: list[bool] = []
+    open_kind = "none"
     for index in range(len(lines) - 1):
-        steps = _charge(steps, budget, len(lines[index]) + len(lines[index + 1]) + 1)
-        bridges.append(should_join(lines[index], lines[index + 1]))
+        prev = lines[index]
+        nxt = lines[index + 1]
+        steps = _charge(steps, budget, len(prev) + len(nxt) + 1)
+        continued = nxt.lstrip(" \t")
+        head = _continuation_head(nxt)
+        if not head or _prose_word(head):
+            bridges.append(False)
+            open_kind = "none"
+            continue
+        if open_kind in {"assign", "bearer", "jwt"}:
+            kind = open_kind
+            join = True
+        else:
+            kind = _kind(prev)
+            join = kind != "none"
+        bridges.append(join)
+        if not join:
+            open_kind = "none"
+            continue
+        if kind == "wrap":
+            open_kind = _kind(continued)
+            if open_kind == "wrap":
+                open_kind = "none"
+            continue
+        nxt_kind = _kind(continued)
+        open_kind = nxt_kind if nxt_kind in {"assign", "bearer", "jwt"} else kind
     return bridges
 
 

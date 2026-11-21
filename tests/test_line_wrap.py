@@ -78,6 +78,49 @@ def test_jwt_split_at_dots_is_masked() -> None:
     assert "Thanks" in mask_secrets.mask(secret + "\nThanks")
 
 
+def test_three_or_more_continuation_lines() -> None:
+    secret = _token()
+    text = "export GH_TOKEN=" + secret[:4] + "\n" + secret[4:8] + "\n" + secret[8:12] + "\n" + secret[12:]
+    masked = _assert_masked(text, secret)
+    followed = text + "\nThanks"
+    assert "Thanks" in mask_secrets.mask(followed)
+    assert secret not in masked
+
+
+def test_label_split_across_an_eighty_column_wrap() -> None:
+    secret = _token()
+    filler = "Note. " * 12
+    text = filler + "GH_TOK\nEN=" + secret
+    assert len(filler + "GH_TOK") >= 72
+    _assert_masked(text, secret)
+
+
+def test_label_then_space_leaves_the_token_visible() -> None:
+    secret = _token()
+    bearer = "B" * 24
+    samples = (
+        ("token: \n" + secret, secret),
+        ("key = \n" + secret, secret),
+        ("Bearer \n" + bearer, bearer),
+    )
+    for text, hidden in samples:
+        _assert_masked(text, hidden)
+
+
+def test_one_to_seven_chars_after_a_spaced_label() -> None:
+    secret = _token()
+    for count in range(1, 8):
+        for label in ("token: ", "key = "):
+            text = label + secret[:count] + "\n" + secret[count:]
+            _assert_masked(text, secret)
+
+
+def test_jwt_split_inside_segments_two_and_three() -> None:
+    secret = _jwt()
+    text = secret[:25] + "\n" + secret[25:33] + "\n" + secret[33:42] + "\n" + secret[42:]
+    _assert_masked(text, secret)
+
+
 def test_line_separator_between_every_character() -> None:
     secret = _token()
     text = _assignment("\u2028".join(secret))
