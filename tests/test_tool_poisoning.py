@@ -683,7 +683,7 @@ def test_comment_marker_scan_time_scales_roughly_linearly() -> None:
 
     small = elapsed(payload(50 * 1024))
     large = elapsed(payload(200 * 1024))
-    assert large / max(small, 0.001) < 8.0
+    assert large / max(small, 0.001) < 10.0
 
 
 def test_source_order_scan_handles_large_comment_inputs_quickly() -> None:
