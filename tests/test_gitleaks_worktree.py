@@ -294,6 +294,45 @@ def test_checksum_mismatch_exits_on_its_own(tmp_path: Path) -> None:
     assert "refusing gitleaks binary digest" in proc.stderr
 
 
+def test_digest_is_checked_before_the_binary_runs(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    (repo / "clean.txt").write_text("plain\n", encoding="utf-8")
+    _git(repo, "add", "clean.txt")
+    _git(repo, "commit", "-m", "clean")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "calls"
+    stub = bindir / "gitleaks"
+    stub.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$GITLEAKS_CALLS\"\n"
+        "if [ \"$1\" = version ]; then echo 8.30.1; exit 0; fi\nexit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    env = os.environ.copy()
+    env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
+    env["GITLEAKS_CALLS"] = str(log)
+    env["RUNNER_TEMP"] = str(tmp_path / "runner")
+    (tmp_path / "runner").mkdir()
+    env["GITHUB_EVENT_NAME"] = "pull_request"
+    env["BASE_SHA"] = ""
+    env["GITLEAKS_CONFIG"] = str(repo / "clean.txt")
+    env["GITLEAKS_VERSION"] = _VERSION
+    proc = subprocess.run(
+        ["bash", "-c", _scan_script()],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 1
+    assert "refusing gitleaks binary digest" in proc.stderr
+    assert not log.exists() or log.read_text(encoding="utf-8") == ""
+
+
 def test_wrong_gitleaks_binary_is_refused(tmp_path: Path) -> None:
     bindir = tmp_path / "bin"
     bindir.mkdir()

@@ -72,14 +72,16 @@ jobs:
             exit 1
           fi
           bin="$(command -v gitleaks)"
-          actual_version="$("${bin}" version | tr -d '[:space:]')"
-          if [ "${actual_version}" != "${expected_version}" ]; then
-            echo "refusing gitleaks version ${actual_version}" >&2
-            exit 1
-          fi
+          # Hash the file before executing it. A cached binary must not run
+          # in order to report its version.
           actual_sha="$(sha256sum "${bin}" | awk '{print $1}')"
           if [ "${actual_sha}" != "${expected_sha}" ]; then
             echo "refusing gitleaks binary digest" >&2
+            exit 1
+          fi
+          actual_version="$("${bin}" version | tr -d '[:space:]')"
+          if [ "${actual_version}" != "${expected_version}" ]; then
+            echo "refusing gitleaks version ${actual_version}" >&2
             exit 1
           fi
           dest="${RUNNER_TEMP}/gitleaks.base.ignore"
