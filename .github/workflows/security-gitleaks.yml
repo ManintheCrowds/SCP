@@ -8,23 +8,56 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
-  security-events: write
 
 jobs:
   gitleaks:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
-          GITLEAKS_ENABLE_COMMENTS: false
-          GITLEAKS_ENABLE_SUMMARY: true
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+      - name: Install gitleaks 8.30.1
+        run: |
+          set -euo pipefail
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          chmod 0755 "$RUNNER_TEMP/gitleaks-bin/gitleaks"
+          test "$("$RUNNER_TEMP/gitleaks-bin/gitleaks" version)" = "8.30.1"
+          echo "GITLEAKS_BIN=$RUNNER_TEMP/gitleaks-bin/gitleaks" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+
+      # Pull requests and pushes both use scripts/gitleaks_scan.sh. That
+      # script checks the endpoints, rejects an empty range, and scans
+      # with the base commit's config and ignore file. The binary is the
+      # checksum-verified path, not whatever else is first on PATH.
+      - name: Scan commits
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.event.after }}"
+          else
+            echo "unsupported event" >&2
+            exit 1
+          fi
+          bash scripts/gitleaks_scan.sh "$GITLEAKS_BIN" "$GITHUB_WORKSPACE" "$BASE" "$HEAD"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run gitleaks config regression
+        run: |
+          set -euo pipefail
+          python -m pip install pytest
+          python -m pytest tests/test_gitleaks_config.py -v
