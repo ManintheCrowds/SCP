@@ -166,6 +166,55 @@ def test_narrow_wrapped_bare_jwts_stay_under_the_old_leak_count() -> None:
     assert leaked <= 80
 
 
+def test_punctuation_prefixes_do_not_emit_the_signature() -> None:
+    header, payload, signature = _parts((36, 48, 43, True))
+    prefixes = (
+        "- ",
+        '"',
+        "'",
+        "# ",
+        "// ",
+        "(",
+        "[",
+        "> ",
+        "`",
+        'token="',
+    )
+    leaked = 0
+    total = 0
+    for prefix in prefixes:
+        shapes = (
+            prefix + header + ".\n" + payload + ".\n" + signature,
+            prefix + header + "\n." + payload + "\n." + signature,
+            prefix + header + "." + payload + ".\n" + signature,
+        )
+        for text in shapes:
+            total += 1
+            if _signature_visible(text, signature):
+                leaked += 1
+    yaml_list = "- " + header + ".\n  " + payload + ".\n  " + signature
+    json_string = '{"id_token":"' + header + ".\n" + payload + ".\n" + signature
+    bullet = "* " + header + ".\n" + payload + ".\n" + signature
+    for text in (yaml_list, json_string, bullet):
+        total += 1
+        if _signature_visible(text, signature):
+            leaked += 1
+    assert total == 33
+    assert leaked == 0
+
+
+def test_a_word_line_after_a_jwt_survives() -> None:
+    header, payload, signature = _parts((36, 80, 43, True))
+    words = ("about", "other", "which", "would", "could", "their", "where", "while")
+    glued = 0
+    for word in words:
+        text = header + ".\n" + payload + ".\n" + signature + "\n" + word
+        masked = mask_secrets.mask(text)
+        if word not in masked or signature in masked:
+            glued += 1
+    assert glued == 0
+
+
 def test_jwt_scan_stays_linear_without_two_dots() -> None:
     marker = "".join(("ey", "J"))
     text = marker + ("a" * 100_000)

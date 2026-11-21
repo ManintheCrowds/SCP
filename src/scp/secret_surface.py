@@ -274,12 +274,30 @@ def _bearer_open(prev: str) -> bool:
     return 1 <= len(tail) <= 12 and all(char in _TOKEN_CHARS for char in tail)
 
 
+_JWT_LEAD = frozenset("\"'`#-*()[]{}<>")
+
+
+def _strip_jwt_lead(text: str) -> str:
+    """Drop a bullet, quote, comment, or bracket in front of a JWT."""
+    index = 0
+    length = len(text)
+    while index < length:
+        if text.startswith("//", index):
+            index += 2
+            continue
+        if text[index] in _JWT_LEAD or text[index] in " \t":
+            index += 1
+            continue
+        break
+    return text[index:]
+
+
 def _jwt_subject(prev: str) -> str:
     """The token tail after a label, assignment, or bearer marker."""
-    stripped = prev.strip(" \t")
+    stripped = _strip_jwt_lead(prev.strip(" \t"))
     cut = max(stripped.rfind("="), stripped.rfind(":"))
     if cut >= 0:
-        stripped = stripped[cut + 1 :].lstrip(" \t")
+        stripped = _strip_jwt_lead(stripped[cut + 1 :])
     lower = stripped.lower()
     marker = "bearer"
     idx = lower.rfind(marker)
@@ -292,7 +310,7 @@ def _jwt_subject(prev: str) -> str:
 
 def _eyj_piece(line: str) -> bool:
     """A wrapped piece that still begins with the JWT marker."""
-    stripped = line.strip(" \t").lstrip(".")
+    stripped = _jwt_subject(line).lstrip(".")
     marker = "".join(("ey", "J"))
     if not stripped.startswith(marker):
         return False
@@ -470,7 +488,11 @@ def _bridges(lines: list[str]) -> list[bool]:
             and 4 <= len(head) <= 8
             and head not in _JWT_FRAGMENT_WORDS
         )
-        if head and _prose_word(head) and not (inside_jwt and lowercase_piece):
+        # A finished JWT line is longer than a narrow wrap and does not end
+        # on a dot. The next line, when it is only a word, stays prose.
+        prev_body = prev.strip(" \t")
+        jwt_finished = jwt_dots >= 2 and not prev_body.endswith(".") and len(prev_body) > 8
+        if head and _prose_word(head) and not (inside_jwt and lowercase_piece and not jwt_finished):
             bridges.append(False)
             open_kind = "none"
             joined_len = 0
@@ -493,6 +515,11 @@ def _bridges(lines: list[str]) -> list[bool]:
             else:
                 base_len = 0
                 base_mark = False
+        if not join and (_eyj_piece(prev) or (jwt_run and (dot_only or bool(head)))):
+            kind = "jwt"
+            join = True
+            base_len = 0
+            base_mark = False
         if not join and continued.startswith(".") and _bearer_header(prev):
             kind = "jwt"
             join = True
