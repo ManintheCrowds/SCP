@@ -294,6 +294,74 @@ def test_token_after_a_nul_in_a_png_is_refused(tmp_path: Path) -> None:
     assert "refusing text hidden after a NUL byte" in proc.stderr
 
 
+def _oid(repo: Path, path: str) -> str:
+    proc = subprocess.run(
+        ["git", "rev-parse", f"HEAD:{path}"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+def _scan_at_base(repo: Path, tmp_path: Path, base_sha: str) -> subprocess.CompletedProcess[str]:
+    binary = _binary(tmp_path / "bin")
+    runner = tmp_path / "runner"
+    runner.mkdir(exist_ok=True)
+    env = os.environ.copy()
+    env["PATH"] = f"{binary.parent}{os.pathsep}{env.get('PATH', '')}"
+    env["RUNNER_TEMP"] = str(runner)
+    env["GITHUB_EVENT_NAME"] = "pull_request"
+    env["BASE_SHA"] = base_sha
+    env["GITLEAKS_CONFIG"] = str(repo / "rules.toml")
+    env["GITLEAKS_VERSION"] = _VERSION
+    return subprocess.run(
+        ["bash", "-c", _run_block("Scan with the base ignore file")],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_base_blob_exemption_is_exact_and_ignores_the_pull_request(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    blob = b"\x00" + bytes(range(1, 32))
+    (repo / "clean.bin").write_bytes(blob)
+    _git(repo, "add", "clean.bin")
+    _git(repo, "commit", "-q", "-m", "blob")
+    bare = _scan(repo, tmp_path / "bare")
+    assert bare.returncode == 1
+    oid = _oid(repo, "clean.bin")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "gitleaks_blob_allow.txt").write_text(oid + "\n", encoding="utf-8")
+    _git(repo, "add", "scripts/gitleaks_blob_allow.txt")
+    _git(repo, "commit", "-q", "-m", "allow on the branch only")
+    ignored = _scan_at_base(repo, tmp_path / "pr", base)
+    assert ignored.returncode == 1
+    listed = _scan_at_base(repo, tmp_path / "base", subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True, capture_output=True, check=True
+    ).stdout.strip())
+    assert listed.returncode == 0
+    (repo / "clean.bin").write_bytes(blob + b"\x7f")
+    _git(repo, "add", "clean.bin")
+    _git(repo, "commit", "-q", "-m", "changed")
+    changed = _scan_at_base(repo, tmp_path / "changed", subprocess.run(
+        ["git", "rev-parse", "HEAD^"], cwd=repo, text=True, capture_output=True, check=True
+    ).stdout.strip())
+    assert changed.returncode == 1
+
+
 def test_a_real_png_header_without_text_is_not_refused(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)

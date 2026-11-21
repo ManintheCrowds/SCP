@@ -107,12 +107,32 @@ jobs:
           # git's attributes and binary detection hide patches. The log options
           # force a text diff and show a merge commit's own changes, without
           # walking refs other than the history of this checkout.
-          python3 - "${scan}" << 'PY'
+          # Blob exemptions come from the base revision, not from this pull request.
+          blob_allow="${RUNNER_TEMP}/gitleaks.blob-allow"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ -n "${BASE_SHA:-}" ] && git cat-file -e "${BASE_SHA}:scripts/gitleaks_blob_allow.txt" 2>/dev/null; then
+              git show "${BASE_SHA}:scripts/gitleaks_blob_allow.txt" > "${blob_allow}"
+            else
+              : > "${blob_allow}"
+            fi
+          elif [ -f scripts/gitleaks_blob_allow.txt ]; then
+            cp scripts/gitleaks_blob_allow.txt "${blob_allow}"
+          else
+            : > "${blob_allow}"
+          fi
+          python3 - "${scan}" "${blob_allow}" << 'PY'
           import subprocess
           import sys
           from pathlib import Path
 
           root = Path(sys.argv[1])
+          allowed_blobs = set()
+          allow_path = Path(sys.argv[2])
+          if allow_path.is_file():
+              for raw in allow_path.read_text(encoding="utf-8").splitlines():
+                  item = raw.strip()
+                  if item and not item.startswith("#"):
+                      allowed_blobs.add(item)
           # Content signatures. The file name is not an exemption.
           _MAGICS = (
               b"\x89PNG\r\n\x1a\n",
@@ -175,6 +195,8 @@ jobs:
                   capture_output=True,
               ).stdout.strip()
               if kind != b"blob":
+                  continue
+              if oid.decode("ascii") in allowed_blobs:
                   continue
               data = subprocess.run(
                   ["git", "cat-file", "blob", oid],
