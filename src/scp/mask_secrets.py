@@ -226,6 +226,16 @@ _PEM_KINDS = (
 )
 
 
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _without_sgr(text: str) -> str:
+    """Drop well-formed CSI SGR sequences. Other controls stay in place."""
+    if "\x1b[" not in text:
+        return text
+    return _SGR.sub("", text)
+
+
 def _pem_spans(text: str) -> list[tuple[int, int, str]]:
     """Private-key blocks, including a missing END line. One forward scan."""
     spans: list[tuple[int, int, str]] = []
@@ -235,10 +245,10 @@ def _pem_spans(text: str) -> list[tuple[int, int, str]]:
         at = text.find(begin, cursor)
         if at < 0:
             return spans
-        rest = text[at + len(begin) :]
+        offset = at + len(begin)
         kind = None
         for candidate in _PEM_KINDS:
-            if rest.startswith(candidate + "-----"):
+            if text.startswith(candidate + "-----", offset):
                 kind = candidate
                 break
         if kind is None:
@@ -377,6 +387,7 @@ def _without_controls(text: str) -> str:
 
 def mask(text: str) -> str:
     """Detect on the shared unjoined and joined surfaces. Fail closed on budget."""
+    text = _without_sgr(text)
     if _over_cap(text):
         return "[REDACTED]"
     try:
@@ -411,6 +422,7 @@ def has_secrets(text: str) -> bool:
     normalization budget or an over-cap input fails closed. Email addresses
     alone do not count.
     """
+    text = _without_sgr(text)
     if _over_cap(text) or secret_surface.has_refused_control(text):
         return True
     try:
@@ -424,6 +436,7 @@ def has_secrets(text: str) -> bool:
 
 def prepare_outbound(text: str) -> str:
     """Mask, then rescan both surfaces. Any failure raises and the CLI writes nothing."""
+    text = _without_sgr(text)
     if _over_cap(text):
         raise EgressMaskError(["input-cap"])
     if secret_surface.has_refused_control(text):
