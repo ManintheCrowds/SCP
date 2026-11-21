@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+from urllib.parse import urlparse
 
 import requests
 
@@ -13,8 +14,14 @@ from scp import http_policy
 from scp.ollama_url_guard import validate_ollama_base_url
 
 
-def _post_ollama(endpoint: str, body: dict, headers: dict) -> requests.Response:
-    session = http_policy.outbound_session()
+def _post_ollama(
+    endpoint: str,
+    body: dict,
+    headers: dict,
+    *,
+    allowed_private_hosts: set[str] | None = None,
+) -> requests.Response:
+    session = http_policy.outbound_session(allowed_private_hosts=allowed_private_hosts)
     try:
         return session.post(
             endpoint,
@@ -50,6 +57,7 @@ Text:
     prompt += content[:4000] + "\n---" if len(content) > 4000 else content + "\n---"
 
     endpoint = f"{base}/api/generate"
+    host = urlparse(base).hostname
     body = {"model": model, "prompt": prompt, "stream": False}
     headers = {"Content-Type": "application/json"}
     token = os.environ.get("OLLAMA_API_KEY")
@@ -57,7 +65,12 @@ Text:
         headers["Authorization"] = f"Bearer {token}"
 
     try:
-        r = _post_ollama(endpoint, body, headers)
+        r = _post_ollama(
+            endpoint,
+            body,
+            headers,
+            allowed_private_hosts={host} if host else None,
+        )
         if 300 <= r.status_code < 400:
             return {"suspicious": False, "reason": "Ollama redirect not allowed; judge skipped (fail-open)"}
         r.raise_for_status()
