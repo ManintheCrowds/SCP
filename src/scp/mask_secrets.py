@@ -165,7 +165,7 @@ REDACT_PATTERNS = [
     ),
     (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[SSN_REDACTED]"),
     (re.compile(r"\b\d{3}([-. ])\d{2}\1\d{4}\b"), "[SSN_REDACTED]"),
-    (re.compile(r"(?<!\d)\d{9}(?!\d)"), "[SSN_REDACTED]"),
+    (re.compile(r"(?<![A-Za-z0-9])\d{9}(?![A-Za-z0-9])"), "[SSN_REDACTED]"),
     (
         re.compile(r"\b(?:\+?1[\s.-])?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b"),
         "[PHONE_REDACTED]",

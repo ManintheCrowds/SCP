@@ -27,6 +27,10 @@ _TEMPLATES = (
     "<p>Ordinary paragraph {n}. Nothing to hide.</p>",
     "Version 1.2.{n} shipped on 12 March. See the changelog.",
     '"Hello," she said, "item {n} is ready for review."',
+    "The key to the shed is on the hook for item {n}.",
+    "Build {n} uses digest " + ("ab" * 32) + " in the log.",
+    "Record {n} id " + "12345678-1234-1234-1234-123456789abc" + " stays.",
+    "Ticket {n} ref " + ("id" + ("x" * 48)) + " is public.",
 )
 
 
@@ -149,6 +153,19 @@ def _benign_lines() -> list[str]:
 def test_benign_flags_stay_under_the_ceiling() -> None:
     flagged = [line for line in _benign_lines() if mask_secrets.has_secrets(line)]
     assert len(flagged) <= _BENIGN_FLAG_CEILING
+
+
+def test_sha_uuid_long_ids_and_key_in_prose_are_not_secrets() -> None:
+    samples = (
+        "The key to the shed is on the hook.",
+        "digest " + ("ab" * 32),
+        "id 12345678-1234-1234-1234-123456789abc",
+        "ref " + ("id" + ("x" * 48)),
+        "plain " + ("0" * 9),
+    )
+    for text in samples[:-1]:
+        assert mask_secrets.has_secrets(text) is False
+    assert mask_secrets.has_secrets(samples[-1]) is True
 
 
 def test_prose_mask_trace_stays_under_the_old_map_cost() -> None:
