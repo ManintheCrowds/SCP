@@ -68,6 +68,16 @@ def _github_fine_grained() -> str:
     return "github_pat_" + "".join(secrets.choice(_ALNUM) for _ in range(82))
 
 
+def _generic_api_key() -> str:
+    value = "".join(secrets.choice(_ALNUM) for _ in range(40))
+    return f'api_token = "{value}"'
+
+
+def _private_key() -> str:
+    body = "".join(secrets.choice(_ALNUM) for _ in range(80))
+    return "-----BEGIN PRIVATE KEY-----\n" + body + "\n-----END PRIVATE KEY-----"
+
+
 def _slack_bot() -> str:
     def digits(count: int) -> str:
         return "".join(secrets.choice(string.digits) for _ in range(count))
@@ -401,6 +411,9 @@ def test_config_detects_synthetic_tokens() -> None:
         "src/scp/mask_secrets.py": "aws-access-token",
         "tests/fixtures/hazard.txt": "slack-bot-token",
         "leak.md": "aws-access-token",
+        "generic.txt": "generic-api-key",
+        "key.pem": "private-key",
+        "src/scp/ordinary.py": "aws-access-token",
     }
     with _repo() as root:
         _write(root, "cloud.txt", _sample(_aws) + "\n")
@@ -415,6 +428,9 @@ def test_config_detects_synthetic_tokens() -> None:
         _write(root, "elsewhere/tests/fixtures/hazard.txt", _sample(_jwt) + "\n")
         _write(root, "leak.md", _sample(_aws) + "\n")
         _write(root, "leak.md.txt", _sample(_github_pat) + "\n")
+        _write(root, "generic.txt", _sample(_generic_api_key) + "\n")
+        _write(root, "key.pem", _sample(_private_key) + "\n")
+        _write(root, "src/scp/ordinary.py", _sample(_aws) + "\n")
         _commit(root)
         summary = _scan(root)
 
@@ -437,7 +453,6 @@ def test_workflow_pins_action_and_scans_full_range() -> None:
     assert "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb" in text
     job = text.split("jobs:", 1)[1]
     assert re.search(r"(?m)^    timeout-minutes:\s*[1-9]\d*\s*$", job)
-    assert "if: github.event_name == 'pull_request'" in job
     assert "scripts/gitleaks_scan.sh" in job
     assert "${{ github.event.pull_request.base.sha }}" in job
     assert "${{ github.event.pull_request.head.sha }}" in job
@@ -506,6 +521,31 @@ def test_pr_allow_comment_cannot_hide_a_leak() -> None:
         _commit(root)
         head = _sha(root)
         assert _run_scan_script(root, base, head) == 2
+
+
+def test_workflow_cannot_skip_the_scan() -> None:
+    text = WORKFLOW.read_text()
+    assert "continue-on-error" not in text
+    assert "--exit-code=0" not in text
+    assert "--exit-code 0" not in text
+    steps = re.split(r"\n      - name: ", text)[1:]
+    guarded = []
+    for step in steps:
+        name, _, body = step.partition("\n")
+        if name.startswith("Scan") or "regression" in name.lower():
+            guarded.append(body)
+            assert not re.search(r"(?m)^        if:", body), name
+    assert len(guarded) == 2
+    run_blocks = re.findall(r"(?m)^        run: \|\n((?:          .*\n)+)", text)
+    assert len(run_blocks) >= 3
+    for block in run_blocks:
+        first = next(line.strip() for line in block.splitlines() if line.strip())
+        assert first == "set -euo pipefail"
+    script = SCAN_SCRIPT.read_text()
+    assert 'worktree add --detach "$work" "$BASE"' in script
+    assert '--config "$work/.gitleaks.toml"' in script
+    assert "${{ github.event.before }}" in text
+    assert "${{ github.event.after }}" in text
 
 
 def test_benign_sample_passes() -> None:

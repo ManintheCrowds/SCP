@@ -35,6 +35,7 @@ jobs:
       - name: Select the base gitleaks config
         id: gitleaks-config
         run: |
+          set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git show "${{ github.event.pull_request.base.sha }}:.gitleaks.toml" > "$RUNNER_TEMP/gitleaks.base.toml"
             echo "path=$RUNNER_TEMP/gitleaks.base.toml" >> "$GITHUB_OUTPUT"
@@ -54,14 +55,21 @@ jobs:
 
       # The pinned action scans with --no-merges --first-parent. The script
       # scans the full base..head range, including merge commits, using the
-      # base commit's config and ignore file.
-      - name: Scan every pull request commit
-        if: github.event_name == 'pull_request'
+      # base commit's config and ignore file. Push uses the same guards.
+      - name: Scan commits
         run: |
           set -euo pipefail
-          bash scripts/gitleaks_scan.sh "$(command -v gitleaks)" "$GITHUB_WORKSPACE" \
-            "${{ github.event.pull_request.base.sha }}" \
-            "${{ github.event.pull_request.head.sha }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.event.after }}"
+          else
+            echo "unsupported event" >&2
+            exit 1
+          fi
+          bash scripts/gitleaks_scan.sh "$(command -v gitleaks)" "$GITHUB_WORKSPACE" "$BASE" "$HEAD"
 
       - name: Set up Python
         uses: actions/setup-python@v5
