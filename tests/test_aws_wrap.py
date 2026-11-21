@@ -37,6 +37,24 @@ def test_slash_at_the_split_does_not_leave_the_second_half() -> None:
     assert leaked == 0
 
 
+def test_quoted_secret_access_key_forms_are_masked() -> None:
+    leaked = 0
+    total = 0
+    for salt in range(20):
+        value = _chunk(40, salt + 3, "A")
+        forms = (
+            '{"SecretAccessKey": "' + value + '"}',
+            "SecretAccessKey: " + value,
+            "SecretAccessKey: '" + value + "'",
+        )
+        for text in forms:
+            total += 1
+            if _leaks(text, value):
+                leaked += 1
+    assert total == 60
+    assert leaked == 0
+
+
 def test_random_slash_and_plus_splits_stay_masked() -> None:
     leaked = 0
     total = 0
