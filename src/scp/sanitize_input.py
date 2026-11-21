@@ -1211,8 +1211,11 @@ def _html_comment_source_order_scan(text: str) -> tuple[str, bool, set[int], lis
         source_map = [source_map[index] for index in stripped_map]
         current = stripped
     else:
-        if _strip_html_comment_markers(current) != current:
-            return text, True, set(), list(range(len(text)))
+        stripped, stripped_boundaries, stripped_map = _strip_html_comment_markers_with_boundaries(current)
+        if stripped != current:
+            boundaries = {bisect.bisect_left(stripped_map, b) for b in boundaries} | stripped_boundaries
+            source_map = [source_map[index] for index in stripped_map]
+            return stripped, True, boundaries, source_map
     return (current if stripped_any else text), False, boundaries, (source_map if stripped_any else list(range(len(text))))
 
 
