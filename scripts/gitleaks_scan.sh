@@ -21,6 +21,14 @@ if [ ! -x "$GITLEAKS" ]; then
   exit 1
 fi
 
+git -C "$REPO" cat-file -e "${BASE}^{commit}"
+git -C "$REPO" cat-file -e "${HEAD}^{commit}"
+range_count=$(git -C "$REPO" rev-list --count "${BASE}..${HEAD}")
+if [ "$range_count" -eq 0 ]; then
+  echo "gitleaks scan range is empty" >&2
+  exit 1
+fi
+
 work=""
 cleanup() {
   if [ -n "$work" ]; then

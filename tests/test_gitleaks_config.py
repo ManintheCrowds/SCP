@@ -380,6 +380,34 @@ def test_pr_ignore_file_cannot_hide_a_leak() -> None:
         assert _run_scan_script(root, base, head) == 2
 
 
+def test_scan_fails_closed_on_a_missing_sha() -> None:
+    script = SCAN_SCRIPT.read_text()
+    assert 'git -C "$REPO" cat-file -e "${BASE}^{commit}"' in script
+    assert 'git -C "$REPO" cat-file -e "${HEAD}^{commit}"' in script
+    assert 'rev-list --count "${BASE}..${HEAD}"' in script
+    with _repo() as root:
+        _write(root, ".gitleaks.toml", CONFIG.read_text())
+        _write(root, "readme.txt", "clean sample\n")
+        _commit(root)
+        base = _sha(root)
+        missing = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        assert _run_scan_script(root, base, missing) != 0
+        assert _run_scan_script(root, missing, base) != 0
+
+
+def test_scan_fails_closed_on_an_empty_range() -> None:
+    with _repo() as root:
+        _write(root, ".gitleaks.toml", CONFIG.read_text())
+        _write(root, "readme.txt", "clean sample\n")
+        _commit(root)
+        base = _sha(root)
+        _write(root, "leak.txt", _sample(_aws) + "\n")
+        _commit(root)
+        head = _sha(root)
+        assert _run_scan_script(root, head, head) == 1
+        assert _run_scan_script(root, base, head) == 2
+
+
 def test_pr_allow_comment_cannot_hide_a_leak() -> None:
     with _repo() as root:
         _write(root, ".gitleaks.toml", CONFIG.read_text())
