@@ -20,6 +20,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = REPO_ROOT / ".gitleaks.toml"
 IGNORE = REPO_ROOT / ".gitleaksignore"
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "security-gitleaks.yml"
 
 _AWS_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 _ALNUM = string.ascii_letters + string.digits
@@ -269,6 +270,26 @@ def test_config_detects_synthetic_tokens() -> None:
         assert rule in found.get(path, set()), path
     for path in hidden:
         assert path not in found, path
+
+
+def test_workflow_pins_action_and_scans_full_range() -> None:
+    text = WORKFLOW.read_text()
+    assert "gitleaks/gitleaks-action@v2" not in text
+    assert (
+        "uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7"
+        in text
+    )
+    assert 'GITLEAKS_VERSION: "8.30.1"' in text
+    assert "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb" in text
+    job = text.split("jobs:", 1)[1]
+    assert re.search(r"(?m)^    timeout-minutes:\s*[1-9]\d*\s*$", job)
+    assert "if: github.event_name == 'pull_request'" in job
+    log_opts = (
+        '--log-opts="-m ${{ github.event.pull_request.base.sha }}'
+        '..${{ github.event.pull_request.head.sha }}"'
+    )
+    assert log_opts in job
+    assert "tests/test_gitleaks_config.py" in job
 
 
 def test_benign_sample_passes() -> None:
