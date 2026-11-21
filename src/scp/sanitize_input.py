@@ -1067,6 +1067,11 @@ def _visible_comment_boundaries(text: str) -> set[int]:
     return boundaries
 
 
+def _has_boundary_between(boundaries: list[int], start: int, end: int) -> bool:
+    index = bisect.bisect_right(boundaries, start)
+    return index < len(boundaries) and boundaries[index] < end
+
+
 def _strip_html_comment_markers_with_boundaries(text: str) -> tuple[str, set[int], list[int]]:
     """Remove markup delimiters and record output offsets where markup was removed."""
     if "<" not in text:
@@ -1314,6 +1319,7 @@ def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
     visible, comments = extract_html_comments(text)
     visible_comment_boundaries = _visible_comment_boundaries(text)
+    visible_comment_boundary_list = sorted(visible_comment_boundaries)
     segments: list[tuple[str, int, str]] = [("text", 0, visible)]
     for start, body in comments:
         if body.strip():
@@ -1334,9 +1340,10 @@ def classify(text: str) -> dict:
                 if (
                     segment == "text"
                     and comments
-                    and any(
-                        offset < boundary < offset + len(str(phrase))
-                        for boundary in visible_comment_boundaries
+                    and _has_boundary_between(
+                        visible_comment_boundary_list,
+                        offset,
+                        offset + len(str(phrase)),
                     )
                 ):
                     severity = _severity_for_concealment(base, key)
@@ -1383,6 +1390,7 @@ def classify(text: str) -> dict:
         source_order_boundaries,
         source_order_source_map,
     ) = _html_comment_source_order_scan(text)
+    source_order_boundary_list = sorted(source_order_boundaries)
     if source_order_bound_hit:
         legacy["encoding_blocks"].append((0, "html_comment_decode_bound"))
         severities.append("high")
@@ -1395,7 +1403,7 @@ def classify(text: str) -> dict:
                 if item not in legacy[key]:
                     legacy[key].append(item)
                     end = offset + len(str(phrase))
-                    if any(offset < boundary < end for boundary in source_order_boundaries):
+                    if _has_boundary_between(source_order_boundary_list, offset, end):
                         severity = _severity_for_concealment(base, key)
                     else:
                         severity = base
@@ -1418,10 +1426,7 @@ def classify(text: str) -> dict:
                 embedded_start in source_order_boundaries
                 or (embedded_start - 1) in source_order_boundaries
                 or embedded_end in source_order_boundaries
-                or any(
-                    embedded_start < boundary < embedded_end
-                    for boundary in source_order_boundaries
-                )
+                or _has_boundary_between(source_order_boundary_list, embedded_start, embedded_end)
             )
             if touches_markup and (hit[0], hit[2]) not in seen_source_order_hits:
                 source_order_hits.append(hit)
@@ -1442,9 +1447,10 @@ def classify(text: str) -> dict:
                 note.get("segment") == "text" and note.get("phrase") == phrase
                 for note in poison_notes
             )
-            crosses_markup = any(
-                source_start <= boundary <= source_end
-                for boundary in source_order_boundaries
+            crosses_markup = (
+                source_start in source_order_boundaries
+                or source_end in source_order_boundaries
+                or _has_boundary_between(source_order_boundary_list, source_start, source_end)
             )
             if visible_same_phrase and not crosses_markup:
                 continue
@@ -1470,18 +1476,19 @@ def classify(text: str) -> dict:
     if decoded_visible_source != text:
         decoded_visible, decoded_comments = extract_html_comments(decoded_visible_source)
         decoded_boundaries = _visible_comment_boundaries(decoded_visible_source)
+        decoded_boundary_list = sorted(decoded_boundaries)
         if decoded_comments:
             prepared = _prepare_text_for_scan(decoded_visible)
             for key, hits in _scan_finding_groups(decoded_visible, prepared).items():
                 base = _base_severity_for_key(key)
                 for offset, phrase in hits:
                     end = offset + len(str(phrase))
-                    if any(offset < boundary < end for boundary in decoded_boundaries):
+                    if _has_boundary_between(decoded_boundary_list, offset, end):
                         legacy[key].append((offset, str(phrase)))
                         severities.append(_severity_for_concealment(base, key))
             for offset, match, phrase, base in scan_tool_poisoning(prepared):
                 end = offset + len(match)
-                if any(offset < boundary < end for boundary in decoded_boundaries):
+                if _has_boundary_between(decoded_boundary_list, offset, end):
                     poison_notes.append(
                         _location_record(
                             category="tool_poisoning",
