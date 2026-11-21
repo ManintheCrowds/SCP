@@ -53,16 +53,35 @@ jobs:
           GITLEAKS_ENABLE_SUMMARY: true
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
 
-      # The pinned action does not take --ignore-gitleaks-allow and reads the
-      # worktree ignore file. This step uses the base ignore file only.
-      # It does not repeat the full base..head range scan.
+      # gitleaks 8.30.1 reads ./.gitleaksignore from the scanned worktree even
+      # when --gitleaks-ignore-path is set. Check out a worktree, delete that
+      # file, and scan the copy with the base ignore file only.
+      # This step does not repeat the full base..head range scan.
       - name: Scan with the base ignore file
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITLEAKS_CONFIG: ${{ steps.gitleaks-config.outputs.path }}
+          GITLEAKS_VERSION: "8.30.1"
         run: |
           set -euo pipefail
+          expected_version="8.30.1"
+          expected_sha="88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509"
+          if [ "${GITLEAKS_VERSION}" != "${expected_version}" ]; then
+            echo "refusing GITLEAKS_VERSION=${GITLEAKS_VERSION}" >&2
+            exit 1
+          fi
+          bin="$(command -v gitleaks)"
+          actual_version="$("${bin}" version | tr -d '[:space:]')"
+          if [ "${actual_version}" != "${expected_version}" ]; then
+            echo "refusing gitleaks version ${actual_version}" >&2
+            exit 1
+          fi
+          actual_sha="$(sha256sum "${bin}" | awk '{print $1}')"
+          if [ "${actual_sha}" != "${expected_sha}" ]; then
+            echo "refusing gitleaks binary digest" >&2
+            exit 1
+          fi
           dest="${RUNNER_TEMP}/gitleaks.base.ignore"
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             if [ -n "${BASE_SHA:-}" ] && git cat-file -e "${BASE_SHA}:.gitleaksignore" 2>/dev/null; then
@@ -75,7 +94,18 @@ jobs:
           else
             : > "$dest"
           fi
-          gitleaks detect --redact --exit-code=2 \
-            --config "${GITLEAKS_CONFIG}" \
-            --gitleaks-ignore-path "$dest" \
-            --ignore-gitleaks-allow
+          scan="${RUNNER_TEMP}/gitleaks-worktree"
+          rm -rf "${scan}"
+          git worktree add --detach "${scan}" HEAD
+          cleanup() {
+            git worktree remove --force "${scan}" >/dev/null 2>&1 || rm -rf "${scan}"
+          }
+          trap cleanup EXIT
+          rm -f "${scan}/.gitleaksignore"
+          (
+            cd "${scan}"
+            gitleaks detect --redact --exit-code=2 \
+              --config "${GITLEAKS_CONFIG}" \
+              --gitleaks-ignore-path "${dest}" \
+              --ignore-gitleaks-allow
+          )
