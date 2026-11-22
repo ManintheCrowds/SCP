@@ -395,6 +395,34 @@ def test_utf16_after_a_long_magic_header_is_refused(tmp_path: Path) -> None:
     assert refused == len(magics)
 
 
+def test_blob_exemption_list_is_read_from_the_base_not_the_head(tmp_path: Path) -> None:
+    block = _run_block("Scan with the base ignore file")
+    pull_request, _, _push = block.partition("elif [ -f scripts/gitleaks_blob_allow.txt ]")
+    assert 'git show "${BASE_SHA}:scripts/gitleaks_blob_allow.txt"' in pull_request
+    assert "cp scripts/gitleaks_blob_allow.txt" not in pull_request
+    repo = tmp_path / "repo"
+    _init(repo)
+    blob = b"\x00" + bytes(range(1, 40))
+    (repo / "clean.bin").write_bytes(blob)
+    _git(repo, "add", "clean.bin")
+    _git(repo, "commit", "-q", "-m", "blob")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    oid = _oid(repo, "clean.bin")
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "gitleaks_blob_allow.txt").write_text(oid + "\n", encoding="utf-8")
+    _git(repo, "add", "scripts/gitleaks_blob_allow.txt")
+    _git(repo, "commit", "-q", "-m", "exemption only on the pull request")
+    proc = _scan_at_base(repo, tmp_path / "scan", base)
+    assert proc.returncode == 1
+    assert "refusing" in proc.stderr
+
+
 def test_a_real_png_header_without_text_is_not_refused(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)
