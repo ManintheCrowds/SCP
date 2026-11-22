@@ -150,6 +150,33 @@ jobs:
                   return True
               return len(data) >= 4 and data[1:4] == b"\r\r\n"
 
+          def cpython_bytecode(data: bytes) -> bool:
+              """A CPython 3.7+ code object, not a magic prefix before text.
+
+              The header is the version magic, a 0 or 1 flag word, and eight
+              more header bytes. The payload starts with a code object: five
+              small counts, then a sized bytecode string. UTF-16 text after
+              the magic does not have that layout, so it is still refused.
+              """
+              if len(data) < 42 or data[1:4] != b"\r\r\n":
+                  return False
+              flags = int.from_bytes(data[4:8], "little")
+              if flags not in (0, 1):
+                  return False
+              if data[16] not in (0x63, 0xE3):
+                  return False
+              pos = 17
+              for _ in range(5):
+                  value = int.from_bytes(data[pos : pos + 4], "little")
+                  if value > 1048575:
+                      return False
+                  pos += 4
+              if (data[pos] & 0x7F) != 0x73:
+                  return False
+              size = int.from_bytes(data[pos + 1 : pos + 5], "little")
+              start = pos + 5
+              return 1 <= size <= len(data) - start
+
           def _utf16_window(sample: bytes) -> bool:
               if len(sample) < 16:
                   return False
@@ -220,7 +247,7 @@ jobs:
                   capture_output=True,
               ).stdout
               name = path.decode("utf-8", "replace")
-              if utf16_text(data):
+              if utf16_text(data) and not cpython_bytecode(data):
                   sys.stderr.write(f"refusing UTF-16 text: {name}\n")
                   sys.exit(1)
               if b"\x00" not in data:

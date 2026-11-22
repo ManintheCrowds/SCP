@@ -377,6 +377,77 @@ def test_base_blob_exemption_is_exact_and_ignores_the_pull_request(tmp_path: Pat
     assert changed.returncode == 1
 
 
+def _cpython_blob(code: bytes) -> bytes:
+    """A synthetic CPython 3.7+ bytecode image. The name is irrelevant."""
+    header = bytes((0xF3, 0x0D, 0x0D, 0x0A)) + (0).to_bytes(4, "little")
+    header += (1).to_bytes(4, "little") + (len(code)).to_bytes(4, "little")
+    counts = b"".join(value.to_bytes(4, "little") for value in (0, 0, 0, 8, 0))
+    payload = bytes((0xE3,)) + counts + bytes((0xF3,)) + len(code).to_bytes(4, "little") + code
+    return header + payload
+
+
+def test_a_cpython_bytecode_blob_is_not_refused_as_utf16(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    # Odd bytes are NUL, which is what the UTF-16 window flags in real bytecode.
+    code = bytes((0x95, 0x00)) * 40
+    (repo / "notes.bin").write_bytes(_cpython_blob(code))
+    _git(repo, "add", "notes.bin")
+    _git(repo, "commit", "-q", "-m", "bytecode")
+    proc = _scan(repo, tmp_path)
+    assert proc.returncode == 0
+
+
+def test_a_pyc_header_in_front_of_utf16_is_refused(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    magic = bytes((0xF3, 0x0D, 0x0D, 0x0A)) + bytes(12)
+    text = ("value " + _token(71)).encode("utf-16-le")
+    (repo / "blob.pyc").write_bytes(magic + text)
+    _git(repo, "add", "blob.pyc")
+    _git(repo, "commit", "-q", "-m", "fake")
+    proc = _scan(repo, tmp_path)
+    assert proc.returncode == 1
+    assert "refusing UTF-16 text" in proc.stderr
+
+
+def test_this_repo_history_scan_passes(tmp_path: Path) -> None:
+    base = subprocess.run(
+        ["git", "rev-parse", "origin/main"],
+        cwd=_REPO,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    config = tmp_path / "base.toml"
+    shown = subprocess.run(
+        ["git", "show", f"{base}:.gitleaks.toml"],
+        cwd=_REPO,
+        capture_output=True,
+        check=True,
+    )
+    config.write_bytes(shown.stdout)
+    binary = _binary(tmp_path / "bin")
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    env = os.environ.copy()
+    env["PATH"] = f"{binary.parent}{os.pathsep}{env.get('PATH', '')}"
+    env["RUNNER_TEMP"] = str(runner)
+    env["GITHUB_EVENT_NAME"] = "pull_request"
+    env["BASE_SHA"] = base
+    env["GITLEAKS_CONFIG"] = str(config)
+    env["GITLEAKS_VERSION"] = _VERSION
+    proc = subprocess.run(
+        ["bash", "-c", _run_block("Scan with the base ignore file")],
+        cwd=_REPO,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_utf16_after_a_long_magic_header_is_refused(tmp_path: Path) -> None:
     hidden = ("value " + _token(70)).encode("utf-16-le")
     padding = bytes((index % 251) + 1 for index in range(600))

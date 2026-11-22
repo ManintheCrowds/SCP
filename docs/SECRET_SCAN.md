@@ -6,7 +6,7 @@ The gitleaks job and `mask` / egress share two fail-closed corners that need an 
 
 The scan refuses a blob when its bytes look like UTF-16, or when a NUL byte hides text. The file name is not an exemption. A PNG, JPEG, GIF, PDF, ELF, zip, gzip, or historical pyc header is accepted only when the rest of the blob is not UTF-16 and does not carry a token after a NUL.
 
-That heuristic also refuses many real binaries. ELF objects and executables are mostly zeros, so they look like UTF-16. PDFs often have text after a NUL. `.pyc` files and fonts (TTF and similar) trip the same checks. The repository has no binaries today. The first commit that adds one stays red until the base branch lists that blob.
+That heuristic also refuses many real binaries. ELF objects and executables are mostly zeros, so they look like UTF-16. PDFs often have text after a NUL. Fonts (TTF and similar) trip the same checks. A CPython `.pyc` is accepted only when the header and the code-object layout are real: version magic, a 0 or 1 flag, five small counts, and a sized bytecode string. A `.pyc` magic prefix in front of UTF-16 text is still refused. The repository has no binaries today. The first commit that adds an ELF, PDF, or font stays red until the base branch lists that blob.
 
 To allow one blob:
 
