@@ -158,6 +158,27 @@ def test_control_character_sweep_does_not_leak() -> None:
     assert leaked == 0
 
 
+def test_eight_bit_csi_is_refused() -> None:
+    prose = "\x9b31m" + "Thanks for the note."
+    assert mask_secrets.has_secrets(prose) is True
+    with pytest.raises(mask_secrets.EgressMaskError):
+        mask_secrets.prepare_outbound(prose)
+    token = _token()
+    painted = "\x9b31m" + token + "\x9b0m"
+    assert mask_secrets.has_secrets(painted) is True
+    with pytest.raises(mask_secrets.EgressMaskError):
+        mask_secrets.prepare_outbound(painted)
+    assert _eight_visible(token, mask_secrets.mask(painted)) is False
+    checked = subprocess.run(
+        [sys.executable, "-m", "scp.mask_secrets", "--egress-prepare", "-"],
+        input=painted.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+    assert checked.returncode != 0
+    assert checked.stdout == b""
+
+
 def test_bare_esc_and_esc_inside_a_token_are_still_refused() -> None:
     token = _token()
     for text in ("\x1b", "\x1b[31", token[:8] + "\x1b" + token[8:]):

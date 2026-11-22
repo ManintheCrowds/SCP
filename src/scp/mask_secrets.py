@@ -234,6 +234,8 @@ _PEM_KINDS = (
 
 # Final byte is m (SGR), K (erase in line), or J (erase in display).
 # Anything else, including an unfinished sequence, stays and is refused.
+# U+009B (8-bit CSI, for example \x9b31m) is not stripped. It stays a C1
+# byte so mask, has_secrets, and egress refuse it.
 # The final letter is captured so a second view can keep it: a token's own
 # m, K, or J must not be what finishes the sequence.
 _CSI = re.compile(r"\x1b\[[0-9;:]*([mKJ])")
