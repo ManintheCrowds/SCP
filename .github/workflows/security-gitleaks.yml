@@ -21,6 +21,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      # marshal.load of bytecode is version-specific. 3.13 is the version
+      # that consumes every historical bytecode blob on main exactly.
+      - name: Pin the bytecode parser
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - name: Select the base gitleaks config
         id: gitleaks-config
         env:
@@ -121,6 +128,8 @@ jobs:
             : > "${blob_allow}"
           fi
           python3 - "${scan}" "${blob_allow}" << 'PY'
+          import io
+          import marshal
           import subprocess
           import sys
           from pathlib import Path
@@ -151,31 +160,23 @@ jobs:
               return len(data) >= 4 and data[1:4] == b"\r\r\n"
 
           def cpython_bytecode(data: bytes) -> bool:
-              """A CPython 3.7+ code object, not a magic prefix before text.
+              """True when marshal.load consumes data[16:] with nothing left.
 
-              The header is the version magic, a 0 or 1 flag word, and eight
-              more header bytes. The payload starts with a code object: five
-              small counts, then a sized bytecode string. UTF-16 text after
-              the magic does not have that layout, so it is still refused.
+              A 42-byte header in front of more bytes is not bytecode. The
+              parser is Python 3.13, pinned on this job. Dropping the
+              end-of-buffer check accepts a real code object with a tail.
               """
-              if len(data) < 42 or data[1:4] != b"\r\r\n":
+              if len(data) < 16 or data[1:4] != b"\r\r\n":
                   return False
               flags = int.from_bytes(data[4:8], "little")
               if flags not in (0, 1):
                   return False
-              if data[16] not in (0x63, 0xE3):
+              buffer = io.BytesIO(data[16:])
+              try:
+                  marshal.load(buffer)
+              except (ValueError, EOFError, TypeError):
                   return False
-              pos = 17
-              for _ in range(5):
-                  value = int.from_bytes(data[pos : pos + 4], "little")
-                  if value > 1048575:
-                      return False
-                  pos += 4
-              if (data[pos] & 0x7F) != 0x73:
-                  return False
-              size = int.from_bytes(data[pos + 1 : pos + 5], "little")
-              start = pos + 5
-              return 1 <= size <= len(data) - start
+              return buffer.tell() == len(data) - 16
 
           def _utf16_window(sample: bytes) -> bool:
               if len(sample) < 16:

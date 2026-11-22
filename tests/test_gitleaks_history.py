@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import py_compile
 import stat
 import subprocess
 import urllib.request
@@ -377,24 +378,84 @@ def test_base_blob_exemption_is_exact_and_ignores_the_pull_request(tmp_path: Pat
     assert changed.returncode == 1
 
 
-def _cpython_blob(code: bytes) -> bytes:
-    """A synthetic CPython 3.7+ bytecode image. The name is irrelevant."""
-    header = bytes((0xF3, 0x0D, 0x0D, 0x0A)) + (0).to_bytes(4, "little")
-    header += (1).to_bytes(4, "little") + (len(code)).to_bytes(4, "little")
-    counts = b"".join(value.to_bytes(4, "little") for value in (0, 0, 0, 8, 0))
-    payload = bytes((0xE3,)) + counts + bytes((0xF3,)) + len(code).to_bytes(4, "little") + code
-    return header + payload
+def _compiled(directory: Path) -> bytes:
+    source = directory / "sample.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    dest = directory / "sample.pyc"
+    py_compile.compile(str(source), cfile=str(dest), doraise=True)
+    return dest.read_bytes()
+
+
+def _loose_header() -> bytes:
+    """Forty-two bytes that used to pass the header check and ignore the tail."""
+    header = bytes((0xF3, 0x0D, 0x0D, 0x0A)) + (0).to_bytes(4, "little") + bytes(8)
+    counts = b"".join((0).to_bytes(4, "little") for _ in range(5))
+    return header + bytes((0xE3,)) + counts + bytes((0x73,)) + (1).to_bytes(4, "little") + b"\x00"
 
 
 def test_a_cpython_bytecode_blob_is_not_refused_as_utf16(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)
-    # Odd bytes are NUL, which is what the UTF-16 window flags in real bytecode.
-    code = bytes((0x95, 0x00)) * 40
-    (repo / "notes.bin").write_bytes(_cpython_blob(code))
+    (repo / "notes.bin").write_bytes(_compiled(tmp_path))
     _git(repo, "add", "notes.bin")
     _git(repo, "commit", "-q", "-m", "bytecode")
     proc = _scan(repo, tmp_path)
+    assert proc.returncode == 0
+
+
+def test_a_pyc_header_or_tail_does_not_hide_utf16(tmp_path: Path) -> None:
+    hidden = ("value " + _token(71)).encode("utf-16-le")
+    payloads = (
+        _loose_header() + hidden,
+        _loose_header() + ("value " + _token(72)).encode("utf-16"),
+        _loose_header() + ("value " + _token(73)).encode("utf-16-be"),
+        _compiled(tmp_path) + hidden,
+    )
+    names = ("blob.pyc", "config.txt", "README.md", "extra.pyc")
+    refused = 0
+    for index, (name, payload) in enumerate(zip(names, payloads, strict=True)):
+        repo = tmp_path / f"repo{index}"
+        _init(repo)
+        (repo / name).write_bytes(payload)
+        _git(repo, "add", name)
+        _git(repo, "commit", "-q", "-m", "tail")
+        proc = _scan(repo, tmp_path / f"scan{index}")
+        if proc.returncode == 1 and "refusing UTF-16 text" in proc.stderr:
+            refused += 1
+    assert refused == len(payloads)
+    script = _run_block("Scan with the base ignore file")
+    assert "marshal.load" in script
+    assert "buffer.tell()" in script
+    assert 'python-version: "3.13"' in _workflow()
+
+
+def test_historical_bytecode_on_main_is_consumed_exactly(tmp_path: Path) -> None:
+    listed = subprocess.run(
+        ["git", "rev-list", "--objects", "origin/main"],
+        cwd=_REPO,
+        capture_output=True,
+        check=True,
+    )
+    blobs = []
+    for line in listed.stdout.splitlines():
+        if b" " not in line or not line.endswith(b".pyc"):
+            continue
+        oid, _, _path = line.partition(b" ")
+        blobs.append(oid.decode("ascii"))
+    assert len(blobs) == 7
+    repo = tmp_path / "repo"
+    _init(repo)
+    for index, oid in enumerate(blobs):
+        data = subprocess.run(
+            ["git", "cat-file", "blob", oid],
+            cwd=_REPO,
+            capture_output=True,
+            check=True,
+        ).stdout
+        (repo / f"blob{index}.bin").write_bytes(data)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "history")
+    proc = _scan(repo, tmp_path / "scan")
     assert proc.returncode == 0
 
 
