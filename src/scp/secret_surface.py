@@ -274,21 +274,28 @@ def _bearer_open(prev: str) -> bool:
     return 1 <= len(tail) <= 12 and all(char in _TOKEN_CHARS for char in tail)
 
 
-_JWT_LEAD = frozenset("\"'`#-*()[]{}<>")
-
-
 def _strip_jwt_lead(text: str) -> str:
-    """Drop a bullet, quote, comment, or bracket in front of a JWT."""
+    """Drop list markers and punctuation in front of a JWT.
+
+    Digits are a marker only when a dot or a closing paren follows them, as
+    in ``1.`` or ``2)``. The token alphabet itself is left in place.
+    """
     index = 0
     length = len(text)
     while index < length:
-        if text.startswith("//", index):
-            index += 2
-            continue
-        if text[index] in _JWT_LEAD or text[index] in " \t":
-            index += 1
-            continue
-        break
+        char = text[index]
+        if char in "0123456789":
+            end = index
+            while end < length and text[end] in "0123456789":
+                end += 1
+            if end < length and text[end] in ".)":
+                index = end
+                continue
+            break
+        # A leading hyphen is a bullet. A hyphen later in the token stays.
+        if char in _TOKEN_CHARS and char != "-":
+            break
+        index += 1
     return text[index:]
 
 

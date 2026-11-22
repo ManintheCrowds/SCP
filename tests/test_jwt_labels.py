@@ -203,6 +203,40 @@ def test_punctuation_prefixes_do_not_emit_the_signature() -> None:
     assert leaked == 0
 
 
+def test_list_table_and_punctuation_prefixes_do_not_emit_the_signature() -> None:
+    header, payload, signature = _parts((36, 48, 43, True))
+    prefixes = (
+        "1. ",
+        "2) ",
+        "| ",
+        "; ",
+        "~ ",
+        "! ",
+        "@ ",
+        "$ ",
+        "% ",
+        "& ",
+        "+ ",
+        ", ",
+        "\\ ",
+        "12. ",
+    )
+    leaked = 0
+    total = 0
+    for prefix in prefixes:
+        shapes = (
+            prefix + header + ".\n" + payload + ".\n" + signature,
+            prefix + header + "\n." + payload + "\n." + signature,
+            prefix + header + "." + payload + ".\n" + signature,
+        )
+        for text in shapes:
+            total += 1
+            if _signature_visible(text, signature):
+                leaked += 1
+    assert total == 42
+    assert leaked == 0
+
+
 def test_a_word_line_after_a_jwt_survives() -> None:
     header, payload, signature = _parts((36, 80, 43, True))
     words = ("about", "other", "which", "would", "could", "their", "where", "while")
