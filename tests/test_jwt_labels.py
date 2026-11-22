@@ -249,6 +249,17 @@ def test_a_word_line_after_a_jwt_survives() -> None:
     assert glued == 0
 
 
+def test_bearer_without_the_marker_still_joins_a_leading_dot() -> None:
+    header, payload, signature = _parts((16, 16, 16, False))
+    header = "Q" + header[1:]
+    visible = 0
+    for label in ("Bearer ", "Authorization: Bearer "):
+        text = label + header + "\n." + payload + "\n." + signature
+        if _signature_visible(text, signature):
+            visible += 1
+    assert visible == 0
+
+
 def test_a_word_after_a_one_line_jwt_survives() -> None:
     header, payload, signature = _parts((36, 80, 43, True))
     words = (
