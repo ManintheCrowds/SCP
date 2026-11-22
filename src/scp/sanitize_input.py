@@ -1002,6 +1002,42 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
     return "".join(parts), comments
 
 
+def _html_comment_runs(
+    text: str, comments: list[tuple[int, str]]
+) -> list[tuple[int, str]]:
+    """Return comment-body runs for payloads split across hidden comments."""
+    runs: list[tuple[int, str]] = []
+    if len(comments) < 2:
+        return runs
+
+    run_start, run_body = comments[0]
+    run_count = 1
+    previous_start, previous_body = comments[0]
+
+    for start, body in comments[1:]:
+        previous_end = previous_start + 4 + len(previous_body)
+        if text.startswith("-->", previous_end):
+            previous_end += 3
+        else:
+            previous_end = len(text)
+
+        gap = text[previous_end:start]
+        if start == previous_end or not gap.strip():
+            run_body += body
+            run_count += 1
+        else:
+            if run_count > 1 and run_body.strip():
+                runs.append((run_start, run_body))
+            run_start = start
+            run_body = body
+            run_count = 1
+        previous_start, previous_body = start, body
+
+    if run_count > 1 and run_body.strip():
+        runs.append((run_start, run_body))
+    return runs
+
+
 def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
     return {
         "override_phrases": scan_override_phrases(prepared),
@@ -1064,6 +1100,8 @@ def classify(text: str) -> dict:
     for start, body in comments:
         if body.strip():
             segments.append(("html_comment", start, body))
+    for start, body in _html_comment_runs(text, comments):
+        segments.append(("html_comment", start, body))
 
     legacy: dict[str, list[tuple[int, str]]] = {key: [] for key in _FINDING_CATEGORY}
     poison_notes: list[dict[str, object]] = []
