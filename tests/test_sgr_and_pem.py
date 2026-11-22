@@ -225,6 +225,33 @@ def test_a_benign_control_does_not_blank_the_paragraph() -> None:
     assert blanked == 0
 
 
+def test_param_bytes_inside_a_token_do_not_survive_in_mask_or_the_log() -> None:
+    sequences = ("\x9b31", "\x1b[?25l")
+    leaked = 0
+    total = 0
+    for sequence in sequences:
+        for salt in range(30):
+            token = _token_with("A", salt + 200)
+            for at in range(len(token) + 1):
+                text = token[:at] + sequence + token[at:]
+                total += 1
+                masked = mask_secrets.mask(text)
+                logged = encounter_auto_log._sanitize_for_log(text, "reversal")
+                if _eight_visible(token, masked) or _eight_visible(token, logged):
+                    leaked += 1
+        for salt in range(40):
+            token = _token_with("K", salt + 400)
+            at = (salt * 7) % (len(token) + 1)
+            text = token[:at] + sequence + token[at:]
+            total += 1
+            masked = mask_secrets.mask(text)
+            logged = encounter_auto_log._sanitize_for_log(text, "reversal")
+            if _eight_visible(token, masked) or _eight_visible(token, logged):
+                leaked += 1
+    assert leaked == 0
+    assert total == 2 * (30 * 41 + 40)
+
+
 def test_a_control_inside_a_token_still_fails_closed() -> None:
     token = _token()
     leaked = 0

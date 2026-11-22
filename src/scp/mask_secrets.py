@@ -412,37 +412,37 @@ def _without_controls(text: str) -> str:
     return "".join(char for char in text if not secret_surface.is_refused_control(char))
 
 
-def _control_splits_a_token(text: str) -> bool:
-    """A refused control against a token run can hide a credential.
-
-    Eight token characters on both sides, or a 20-character run starting at
-    the control, blanks the view. A cursor command or a C1 byte in prose does
-    not.
-    """
+def _token_side(text: str, *, reverse: bool) -> int:
+    """Token characters on one side of a control. Parameter bytes are glue."""
     alphabet = secret_surface._TOKEN_CHARS
-    run = 0
-    armed = False
-    skipping_params = False
-    at_control = False
-    for char in text:
-        if secret_surface.is_refused_control(char):
-            if run >= 8:
-                armed = True
-            skipping_params = True
-            at_control = True
-            run = 0
+    params = set("[];:?0123456789")
+    count = 0
+    started = False
+    chars = reversed(text) if reverse else text
+    for char in chars:
+        if char in params and not started:
             continue
-        if skipping_params and char in "[];:?0123456789":
-            continue
-        skipping_params = False
         if char in alphabet:
-            run += 1
-            if (armed and run >= 8) or (at_control and run >= 20):
-                return True
+            started = True
+            count += 1
             continue
-        run = 0
-        armed = False
-        at_control = False
+        break
+    return count
+
+
+def _control_splits_a_token(text: str) -> bool:
+    """A refused control next to a token run can hide a credential.
+
+    Parameter digits stay in the text when the control itself is dropped, so
+    one long side is enough. A cursor command in prose has no such side.
+    """
+    for index, char in enumerate(text):
+        if not secret_surface.is_refused_control(char):
+            continue
+        if _token_side(text[:index], reverse=True) >= 8:
+            return True
+        if _token_side(text[index + 1 :], reverse=False) >= 8:
+            return True
     return False
 
 
