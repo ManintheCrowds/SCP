@@ -150,18 +150,34 @@ jobs:
                   return True
               return len(data) >= 4 and data[1:4] == b"\r\r\n"
 
-          def utf16_text(data: bytes) -> bool:
-              if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
-                  return True
-              sample = data[:512]
+          def _utf16_window(sample: bytes) -> bool:
               if len(sample) < 16:
                   return False
               if len(sample) % 2:
                   sample = sample[:-1]
               pairs = len(sample) // 2
+              if pairs == 0:
+                  return False
+              limit = int(pairs * 0.8)
               le = sum(1 for index in range(1, len(sample), 2) if sample[index] == 0)
               be = sum(1 for index in range(0, len(sample), 2) if sample[index] == 0)
-              return le >= int(pairs * 0.8) or be >= int(pairs * 0.8)
+              return le >= limit or be >= limit
+
+          def utf16_text(data: bytes) -> bool:
+              if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+                  return True
+              # The whole blob, not only the first 512 bytes. A magic header
+              # plus a page of padding must not hide UTF-16 text after it.
+              window = 64
+              if len(data) <= window:
+                  return _utf16_window(data)
+              start = 0
+              last = len(data) - 16
+              while start <= last:
+                  if _utf16_window(data[start : start + window]):
+                      return True
+                  start += 16
+              return False
 
           def ascii_after_nul(data: bytes) -> bool:
               start = data.find(b"\x00")

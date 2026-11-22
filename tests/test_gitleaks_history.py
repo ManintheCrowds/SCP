@@ -377,6 +377,24 @@ def test_base_blob_exemption_is_exact_and_ignores_the_pull_request(tmp_path: Pat
     assert changed.returncode == 1
 
 
+def test_utf16_after_a_long_magic_header_is_refused(tmp_path: Path) -> None:
+    secret = ("value " + _token(70)).encode("utf-16-le")
+    padding = bytes((index % 251) + 1 for index in range(600))
+    refused = 0
+    magics = (b"\x89PNG\r\n\x1a\n", b"%PDF-")
+    for index, magic in enumerate(magics):
+        repo = tmp_path / f"pad{index}"
+        _init(repo)
+        name = "blob.png" if magic.startswith(b"\x89") else "blob.pdf"
+        (repo / name).write_bytes(magic + padding + secret)
+        _git(repo, "add", name)
+        _git(repo, "commit", "-q", "-m", "padded")
+        proc = _scan(repo, tmp_path / f"pad-scan{index}")
+        if proc.returncode == 1 and "refusing UTF-16 text" in proc.stderr:
+            refused += 1
+    assert refused == len(magics)
+
+
 def test_a_real_png_header_without_text_is_not_refused(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)
