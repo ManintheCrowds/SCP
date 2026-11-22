@@ -249,6 +249,28 @@ def test_a_word_line_after_a_jwt_survives() -> None:
     assert glued == 0
 
 
+def test_a_word_after_a_one_line_jwt_survives() -> None:
+    header, payload, signature = _parts((36, 80, 43, True))
+    words = (
+        "about", "other", "which", "their", "there", "would", "could", "should",
+        "these", "those", "where", "while", "after", "before", "under", "again",
+        "being", "every", "first", "found", "great", "house", "large", "never",
+        "place", "small", "still", "water",
+    )
+    glued = 0
+    for word in words:
+        shapes = (
+            header + "." + payload + "." + signature + "\n" + word,
+            header + "." + payload + "." + signature + " \n" + word,
+            "  " + header + "." + payload + "." + signature + "\n" + word,
+        )
+        for text in shapes:
+            masked = mask_secrets.mask(text)
+            if word not in masked or signature in masked:
+                glued += 1
+    assert glued == 0
+
+
 def test_jwt_scan_stays_linear_without_two_dots() -> None:
     marker = "".join(("ey", "J"))
     text = marker + ("a" * 100_000)

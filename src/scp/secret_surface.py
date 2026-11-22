@@ -339,6 +339,19 @@ def _bearer_header(prev: str) -> bool:
     return len(tail) >= 8 and all(char in _TOKEN_CHARS for char in tail)
 
 
+def _jwt_complete(prev: str) -> bool:
+    """A single line that already holds header, payload, and signature."""
+    subject = _jwt_subject(prev).lstrip(".")
+    if subject.endswith(".") or subject.count(".") < 2:
+        return False
+    parts = subject.split(".")
+    if len(parts) < 3:
+        return False
+    if not all(part and all(char in _TOKEN_CHARS for char in part) for part in parts[:3]):
+        return False
+    return len(parts[0]) >= 8 and len(parts[2]) >= 8
+
+
 def _jwt_open(prev: str) -> bool:
     """A dot between segments, including after a label on the same line."""
     stripped = _jwt_subject(prev).lstrip(".")
@@ -498,7 +511,12 @@ def _bridges(lines: list[str]) -> list[bool]:
         # A finished JWT line is longer than a narrow wrap and does not end
         # on a dot. The next line, when it is only a word, stays prose.
         prev_body = prev.strip(" \t")
-        jwt_finished = jwt_dots >= 2 and not prev_body.endswith(".") and len(prev_body) > 8
+        steps = _charge(steps, budget, len(prev_body))
+        jwt_finished = (
+            (jwt_dots >= 2 or _jwt_complete(prev))
+            and not prev_body.endswith(".")
+            and len(prev_body) > 8
+        )
         if head and _prose_word(head) and not (inside_jwt and lowercase_piece and not jwt_finished):
             bridges.append(False)
             open_kind = "none"
