@@ -158,6 +158,44 @@ def test_control_character_sweep_does_not_leak() -> None:
     assert leaked == 0
 
 
+def test_a_benign_control_does_not_blank_the_paragraph() -> None:
+    samples = (
+        "The report is fine.\x1b[A The meeting continues.",
+        "The report is fine.\x1b[?25l The meeting continues.",
+        "The report is fine.\x1b[H The meeting continues.",
+        "The report is fine.\x85 The meeting continues.",
+        "The report is fine.\x80 The meeting continues.",
+    )
+    blanked = 0
+    for text in samples:
+        masked = mask_secrets.mask(text)
+        if masked == "[REDACTED]" or "report" not in masked or "meeting" not in masked:
+            blanked += 1
+        try:
+            mask_secrets.prepare_outbound(text)
+        except mask_secrets.EgressMaskError:
+            pass
+        else:
+            blanked += 1
+    assert blanked == 0
+
+
+def test_a_control_inside_a_token_still_fails_closed() -> None:
+    token = _token()
+    leaked = 0
+    for mark in ("\x1b", "\x9b", "\x00", "\x1b[31"):
+        text = token[:8] + mark + token[8:]
+        if _eight_visible(token, mask_secrets.mask(text)):
+            leaked += 1
+        try:
+            mask_secrets.prepare_outbound(text)
+        except mask_secrets.EgressMaskError:
+            pass
+        else:
+            leaked += 1
+    assert leaked == 0
+
+
 def test_eight_bit_csi_is_refused() -> None:
     prose = "\x9b31m" + "Thanks for the note."
     assert mask_secrets.has_secrets(prose) is True
@@ -168,7 +206,8 @@ def test_eight_bit_csi_is_refused() -> None:
     assert mask_secrets.has_secrets(painted) is True
     with pytest.raises(mask_secrets.EgressMaskError):
         mask_secrets.prepare_outbound(painted)
-    assert _eight_visible(token, mask_secrets.mask(painted)) is False
+    if _eight_visible(token, mask_secrets.mask(painted)):
+        raise AssertionError("eight-bit CSI left a token run visible")
     checked = subprocess.run(
         [sys.executable, "-m", "scp.mask_secrets", "--egress-prepare", "-"],
         input=painted.encode("utf-8"),

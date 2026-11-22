@@ -412,10 +412,46 @@ def _without_controls(text: str) -> str:
     return "".join(char for char in text if not secret_surface.is_refused_control(char))
 
 
+def _control_splits_a_token(text: str) -> bool:
+    """A refused control against a token run can hide a credential.
+
+    Eight token characters on both sides, or a 20-character run starting at
+    the control, blanks the view. A cursor command or a C1 byte in prose does
+    not.
+    """
+    alphabet = secret_surface._TOKEN_CHARS
+    run = 0
+    armed = False
+    skipping_params = False
+    at_control = False
+    for char in text:
+        if secret_surface.is_refused_control(char):
+            if run >= 8:
+                armed = True
+            skipping_params = True
+            at_control = True
+            run = 0
+            continue
+        if skipping_params and char in "[];:?0123456789":
+            continue
+        skipping_params = False
+        if char in alphabet:
+            run += 1
+            if (armed and run >= 8) or (at_control and run >= 20):
+                return True
+            continue
+        run = 0
+        armed = False
+        at_control = False
+    return False
+
+
 def _mask_chosen(text: str) -> str:
-    """Mask one view. A refused control still blanks this view."""
+    """Mask one view. A control inside a token blanks that view; prose stays."""
     if secret_surface.has_refused_control(text):
-        return "[REDACTED]"
+        if _control_splits_a_token(text):
+            return "[REDACTED]"
+        text = _without_controls(text)
     if _over_cap(text):
         return "[REDACTED]"
     try:
