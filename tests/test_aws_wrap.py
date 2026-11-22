@@ -55,6 +55,34 @@ def test_quoted_secret_access_key_forms_are_masked() -> None:
     assert leaked == 0
 
 
+def test_shell_and_powershell_secrets_survive_every_slash_and_plus() -> None:
+    leaked = 0
+    total = 0
+    shell = "export " + "AWS_" + "SECRET_" + "ACCESS_" + "KEY='"
+    powershell = "$env:" + "AWS_" + "SECRET_" + "ACCESS_" + "KEY='"
+    for salt, prefix in enumerate((shell, powershell)):
+        for mark in ("/", "+"):
+            for position in range(40):
+                value = _chunk(40, salt * 80 + position, "A")
+                chars = list(value)
+                chars[position] = mark
+                secret = "".join(chars)
+                text = prefix + secret + "'"
+                total += 1
+                masked = mask_secrets.mask(text)
+                try:
+                    outbound = mask_secrets.prepare_outbound(text)
+                except mask_secrets.EgressMaskError:
+                    outbound = ""
+                if any(
+                    secret[index : index + 8] in masked or secret[index : index + 8] in outbound
+                    for index in range(0, len(secret) - 7)
+                ):
+                    leaked += 1
+    assert total == 160
+    assert leaked == 0
+
+
 def test_random_slash_and_plus_splits_stay_masked() -> None:
     leaked = 0
     total = 0
