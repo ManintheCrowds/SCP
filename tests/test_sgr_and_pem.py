@@ -100,6 +100,51 @@ def test_a_token_letter_cannot_finish_an_sgr_sequence() -> None:
     assert leaked == 0
 
 
+def _other_secret(salt: int) -> str:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    state = salt & 0xFFFFFFFF
+    chars: list[str] = []
+    for index in range(16):
+        state = (state * 1664525 + 1013904223 + index) & 0xFFFFFFFF
+        chars.append(alphabet[state % len(alphabet)])
+    return "password=" + "".join(chars)
+
+
+def test_a_second_secret_does_not_unmask_a_broken_token() -> None:
+    leaked = 0
+    total = 0
+    for salt in range(20):
+        token = _token_with("m", salt + 4)
+        other = _token_with("A", salt + 80)
+        broken = token[:16] + "\x1b[31" + token[16:]
+        shapes = (
+            broken + "\n" + other,
+            broken + "\n" + _other_secret(salt + 5),
+            broken + "\n" + "111-22-" + f"{salt:04d}",
+        )
+        for text in shapes:
+            total += 1
+            if _eight_leaked(token, text):
+                leaked += 1
+    assert total == 60
+    assert leaked == 0
+
+
+def test_multiparam_sgr_does_not_leak_a_token() -> None:
+    leaked = 0
+    total = 0
+    for sequence in ("\x1b[1;3", "\x1b[38:5:"):
+        for letter in ("m", "K", "J"):
+            for salt in range(20):
+                token = _token_with(letter, salt + 30)
+                text = token[:16] + sequence + token[16:]
+                total += 1
+                if _eight_leaked(token, text):
+                    leaked += 1
+    assert total == 120
+    assert leaked == 0
+
+
 def test_a_random_unfinished_csi_does_not_leak() -> None:
     leaked = 0
     for salt in range(250):

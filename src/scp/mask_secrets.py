@@ -501,24 +501,80 @@ def _pattern_secret(text: str) -> bool:
     return joined != unjoined and _view_has_secret(joined)
 
 
-def _csi_hides_a_token(text: str) -> bool:
-    """True when stripping a CSI removes part of a token instead of a color code."""
-    stripped, kept = _sgr_views(text)
-    if stripped == kept or _pattern_secret(stripped):
+def _run_ending(text: str) -> int:
+    alphabet = secret_surface._TOKEN_CHARS
+    count = 0
+    for char in reversed(text):
+        if char in alphabet:
+            count += 1
+            continue
+        break
+    return count
+
+
+def _run_starting(text: str) -> int:
+    alphabet = secret_surface._TOKEN_CHARS
+    count = 0
+    for char in text:
+        if char in alphabet:
+            count += 1
+            continue
+        break
+    return count
+
+
+def _letter_view(text: str) -> str:
+    """Drop a finished CSI but keep the final letter."""
+    if "\x1b" not in text:
+        return text
+    return _CSI.sub(r"\1", _OSC.sub("", text))
+
+
+def _slice_visible(piece: str, masked: str) -> bool:
+    if len(piece) < 8:
         return False
-    return _longest_token_run(kept) >= _CSI_TOKEN_RUN
+    return any(piece[index : index + 8] in masked for index in range(len(piece) - 7))
+
+
+def _csi_hides_a_token(text: str) -> bool:
+    """A finished CSI ate part of a token, on either view, whatever else is present.
+
+    Semicolons and colons are parameters, so they stay inside the match and
+    do not split the token runs on either side. Each CSI is judged on its own.
+    """
+    if "\x1b" not in text:
+        return False
+    stripped, _kept = _sgr_views(text)
+    masked = _mask_chosen(stripped)
+    for match in _CSI.finditer(text):
+        pre = _run_ending(text[: match.start()])
+        post = _run_starting(text[match.end() :])
+        if pre < 4 and post < 8 and pre + post < 8:
+            continue
+        before = text[match.start() - pre : match.start()]
+        after = text[match.end() : match.end() + post]
+        # The final letter is kept in one candidate and dropped in the other,
+        # so a parameter semicolon or colon cannot hide either shape.
+        candidates = (before + match.group(1) + after, before + after)
+        if any(_slice_visible(candidate, masked) for candidate in candidates):
+            return True
+    return False
 
 
 def mask(text: str) -> str:
     """Detect on the shared unjoined and joined surfaces. Fail closed on budget.
 
-    An unfinished CSI that a token digit or m/K/J completes is refused, so
-    that letter is not stripped out of the token.
+    The stripped view and the view that keeps a CSI final letter are both
+    scanned. A token character that finished the sequence is not emitted.
     """
     stripped, _kept = _sgr_views(text)
     if _csi_hides_a_token(text):
         return "[REDACTED]"
-    return _mask_chosen(stripped)
+    letter = _letter_view(text)
+    masked = _mask_chosen(stripped)
+    if letter != stripped and _pattern_secret(letter) and not _pattern_secret(masked):
+        return _mask_chosen(letter)
+    return masked
 
 
 def _view_has_secret(text: str) -> bool:
