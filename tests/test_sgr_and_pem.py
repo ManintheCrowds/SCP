@@ -55,6 +55,62 @@ def test_complete_sgr_erase_and_osc_do_not_hide_a_token() -> None:
     assert leaked == 0
 
 
+def _token_with(letter: str, salt: int) -> str:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    state = salt & 0xFFFFFFFF
+    chars: list[str] = []
+    for index in range(35):
+        state = (state * 1664525 + 1013904223 + index) & 0xFFFFFFFF
+        chars.append(alphabet[state % len(alphabet)])
+    body = "".join(chars[:12]) + letter + "".join(chars[12:])
+    return "".join(("gh", "p_")) + body
+
+
+def _eight_leaked(token: str, text: str) -> bool:
+    masked = mask_secrets.mask(text)
+    logged = encounter_auto_log._sanitize_for_log(text, "reversal")
+    try:
+        outbound = mask_secrets.prepare_outbound(text)
+    except mask_secrets.EgressMaskError:
+        outbound = ""
+    checked = subprocess.run(
+        [sys.executable, "-m", "scp.mask_secrets", "--egress-prepare", "-"],
+        input=text.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+    surfaces = (masked, outbound, logged, checked.stdout.decode("utf-8", "replace"))
+    return any(_eight_visible(token, surface) for surface in surfaces)
+
+
+def test_a_token_letter_cannot_finish_an_sgr_sequence() -> None:
+    sequences = ("\x1b[31", "\x1b[", "\x1b[1;", "\x1b[38:5:", "\x1b[3")
+    leaked = 0
+    total = 0
+    for sequence in sequences:
+        for letter in ("m", "K", "J"):
+            for salt in range(25):
+                token = _token_with(letter, salt + 17)
+                at = 4 + 12
+                text = token[:at] + sequence + token[at:]
+                total += 1
+                if _eight_leaked(token, text):
+                    leaked += 1
+    assert total == 375
+    assert leaked == 0
+
+
+def test_a_random_unfinished_csi_does_not_leak() -> None:
+    leaked = 0
+    for salt in range(250):
+        token = _token_with("A", salt + 90)
+        at = salt % (len(token) - 1)
+        text = token[:at] + "\x1b[31" + token[at:]
+        if _eight_leaked(token, text):
+            leaked += 1
+    assert leaked == 0
+
+
 def test_unfinished_escapes_do_not_leak_on_mask_egress_or_log() -> None:
     token = _token()
     sequences = ("\x1b[31", "\x1b[", "\x1b[?", "\x9b", "\x9b31")

@@ -234,15 +234,27 @@ _PEM_KINDS = (
 
 # Final byte is m (SGR), K (erase in line), or J (erase in display).
 # Anything else, including an unfinished sequence, stays and is refused.
-_CSI = re.compile(r"\x1b\[[0-9;:]*[mKJ]")
+# The final letter is captured so a second view can keep it: a token's own
+# m, K, or J must not be what finishes the sequence.
+_CSI = re.compile(r"\x1b\[[0-9;:]*([mKJ])")
 _OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
-def _without_sgr(text: str) -> str:
-    """Drop complete SGR, erase, and terminated OSC sequences."""
+# Params that belong to the sequence. Token digits use the same alphabet, so
+# the second view removes only the introducer and leaves those characters.
+_CSI_OPEN = re.compile(r"\x1b\[")
+
+
+def _sgr_views(text: str) -> tuple[str, str]:
+    """Strip a finished CSI, and also keep a view that retains its parameters.
+
+    The parameter view is what catches a token letter or digit that merely
+    completed an unfinished sequence.
+    """
     if "\x1b" not in text:
-        return text
-    return _OSC.sub("", _CSI.sub("", text))
+        return text, text
+    no_osc = _OSC.sub("", text)
+    return _CSI.sub("", no_osc), _CSI_OPEN.sub("", no_osc)
 
 
 def _pem_spans(text: str) -> list[tuple[int, int, str]]:
@@ -394,9 +406,8 @@ def _without_controls(text: str) -> str:
     return "".join(char for char in text if not secret_surface.is_refused_control(char))
 
 
-def mask(text: str) -> str:
-    """Detect on the shared unjoined and joined surfaces. Fail closed on budget."""
-    text = _without_sgr(text)
+def _mask_chosen(text: str) -> str:
+    """Mask one view. A refused control still blanks this view."""
     if secret_surface.has_refused_control(text):
         return "[REDACTED]"
     if _over_cap(text):
@@ -415,6 +426,59 @@ def mask(text: str) -> str:
     return _without_controls(masked)
 
 
+# A color code in front of a word is shorter than this. A token whose own
+# digits or final letter completed a CSI is longer, and the stripped view
+# no longer matches it.
+_CSI_TOKEN_RUN = 20
+
+
+def _longest_token_run(text: str) -> int:
+    alphabet = secret_surface._TOKEN_CHARS
+    best = 0
+    run = 0
+    for char in text:
+        if char in alphabet:
+            run += 1
+            if run > best:
+                best = run
+        else:
+            run = 0
+    return best
+
+
+def _pattern_secret(text: str) -> bool:
+    """A credential on this view. A refused control is not itself a credential."""
+    if _over_cap(text):
+        return True
+    try:
+        unjoined, joined = secret_surface.detection_views(text)
+    except secret_surface.NormalizationBudgetExceeded:
+        return True
+    if _view_has_secret(unjoined):
+        return True
+    return joined != unjoined and _view_has_secret(joined)
+
+
+def _csi_hides_a_token(text: str) -> bool:
+    """True when stripping a CSI removes part of a token instead of a color code."""
+    stripped, kept = _sgr_views(text)
+    if stripped == kept or _pattern_secret(stripped):
+        return False
+    return _longest_token_run(kept) >= _CSI_TOKEN_RUN
+
+
+def mask(text: str) -> str:
+    """Detect on the shared unjoined and joined surfaces. Fail closed on budget.
+
+    An unfinished CSI that a token digit or m/K/J completes is refused, so
+    that letter is not stripped out of the token.
+    """
+    stripped, _kept = _sgr_views(text)
+    if _csi_hides_a_token(text):
+        return "[REDACTED]"
+    return _mask_chosen(stripped)
+
+
 def _view_has_secret(text: str) -> bool:
     """True on the first hit. Does not compare matches against each other."""
     if _pem_spans(text):
@@ -426,14 +490,8 @@ def _view_has_secret(text: str) -> bool:
     return False
 
 
-def has_secrets(text: str) -> bool:
-    """True when a credential or personal-data value is visible.
-
-    Scans the unjoined surface and the joined surface. An exhausted
-    normalization budget or an over-cap input fails closed. Email addresses
-    alone do not count.
-    """
-    text = _without_sgr(text)
+def _detect(text: str) -> bool:
+    """True when this one view shows a secret, a control, or a budget failure."""
     if _over_cap(text) or secret_surface.has_refused_control(text):
         return True
     try:
@@ -445,15 +503,32 @@ def has_secrets(text: str) -> bool:
     return joined != unjoined and _view_has_secret(joined)
 
 
+def has_secrets(text: str) -> bool:
+    """True when a credential or personal-data value is visible.
+
+    Scans the unjoined surface and the joined surface, and the view that
+    keeps a CSI final letter. An exhausted normalization budget or an
+    over-cap input fails closed. Email addresses alone do not count.
+    """
+    stripped, kept = _sgr_views(text)
+    if _detect(stripped) or (kept != stripped and _detect(kept)):
+        return True
+    return _csi_hides_a_token(text)
+
+
 def prepare_outbound(text: str) -> str:
     """Mask, then rescan both surfaces. Any failure raises and the CLI writes nothing."""
-    text = _without_sgr(text)
-    if _over_cap(text):
+    stripped, kept = _sgr_views(text)
+    if _over_cap(stripped) or _over_cap(kept):
         raise EgressMaskError(["input-cap"])
-    if secret_surface.has_refused_control(text):
+    if secret_surface.has_refused_control(stripped) or secret_surface.has_refused_control(kept):
+        raise EgressMaskError(["control"])
+    if _csi_hides_a_token(text):
         raise EgressMaskError(["control"])
     try:
-        secret_surface.detection_views(text)
+        secret_surface.detection_views(stripped)
+        if kept != stripped:
+            secret_surface.detection_views(kept)
     except secret_surface.NormalizationBudgetExceeded as exc:
         raise EgressMaskError(["normalization-budget"]) from exc
     masked = mask(text)
