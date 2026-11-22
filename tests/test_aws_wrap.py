@@ -55,6 +55,32 @@ def test_quoted_secret_access_key_forms_are_masked() -> None:
     assert leaked == 0
 
 
+def test_sts_xml_and_escaped_json_are_masked() -> None:
+    leaked = 0
+    total = 0
+    label = "Secret" + "Access" + "Key"
+    for salt in range(10):
+        value = _chunk(40, salt + 11, "A")
+        forms = (
+            "<" + label + ">" + value + "</" + label + ">",
+            '\\"' + label + '\\": \\"' + value + '\\"',
+        )
+        for text in forms:
+            total += 1
+            masked = mask_secrets.mask(text)
+            try:
+                outbound = mask_secrets.prepare_outbound(text)
+            except mask_secrets.EgressMaskError:
+                outbound = ""
+            if any(
+                value[index : index + 8] in masked or value[index : index + 8] in outbound
+                for index in range(0, len(value) - 7)
+            ):
+                leaked += 1
+    assert total == 20
+    assert leaked == 0
+
+
 def test_shell_and_powershell_secrets_survive_every_slash_and_plus() -> None:
     leaked = 0
     total = 0

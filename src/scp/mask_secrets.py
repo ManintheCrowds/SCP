@@ -141,9 +141,13 @@ REDACT_PATTERNS = [
     (
         re.compile(
             r"(?i)(AWS_SECRET_ACCESS_KEY|SecretAccessKey)"
-            r"""["']?\s*[:=]\s*["']?[A-Za-z0-9/+][A-Za-z0-9/+=]{7,}"""
+            r"""(?:\\?["'])?\s*[:=]\s*\\?["']?[A-Za-z0-9/+][A-Za-z0-9/+=]{7,}"""
         ),
         r"\1=[REDACTED]",
+    ),
+    (
+        re.compile(r"(?i)<(SecretAccessKey)>\s*[A-Za-z0-9/+=]{8,}"),
+        r"<\1>[REDACTED]",
     ),
     (re.compile(r'(?i)(token|key)\s*[:=]\s*["\']?[a-zA-Z0-9._-]{16,}["\']?', re.IGNORECASE), r"\1=[REDACTED]"),
     (re.compile(r"(?i)AWS_ACCESS_KEY_ID\s*=\s*\S+"), "AWS_ACCESS_KEY_ID=[REDACTED]"),
