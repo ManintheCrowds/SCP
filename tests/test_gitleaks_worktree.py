@@ -387,7 +387,10 @@ def test_checker_forces_pythonsafepath(tmp_path: Path) -> None:
 
 
 def test_codeowners_covers_the_ignore_file_and_github_workflows() -> None:
-    text = (_REPO / "CODEOWNERS").read_text(encoding="utf-8")
+    # GitHub reads .github/CODEOWNERS before a root file. #101 also adds
+    # .github/CODEOWNERS, so the entries have to live here or they are ignored.
+    assert not (_REPO / "CODEOWNERS").exists()
+    text = (_REPO / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
     owners = {}
     for line in text.splitlines():
         stripped = line.strip()
@@ -402,4 +405,4 @@ def test_codeowners_covers_the_ignore_file_and_github_workflows() -> None:
     assert owners.get("scripts/run_mask_check.py") == "@ManintheCrowds"
     assert owners.get("scripts/mask_check_allow.txt") == "@ManintheCrowds"
     assert owners.get("scripts/gitleaks_blob_allow.txt") == "@ManintheCrowds"
-    assert owners.get("CODEOWNERS") == "@ManintheCrowds"
+    assert owners.get(".github/CODEOWNERS") == "@ManintheCrowds"
