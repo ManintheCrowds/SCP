@@ -55,6 +55,51 @@ def test_quoted_secret_access_key_forms_are_masked() -> None:
     assert leaked == 0
 
 
+def _key_id(salt: int) -> str:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    state = salt & 0xFFFFFFFF
+    chars: list[str] = []
+    for index in range(16):
+        state = (state * 1664525 + 1013904223 + index) & 0xFFFFFFFF
+        chars.append(alphabet[state % len(alphabet)])
+    return ("AK" + "IA") + "".join(chars)
+
+
+def _value_visible(text: str, value: str) -> bool:
+    masked = mask_secrets.mask(text)
+    try:
+        outbound = mask_secrets.prepare_outbound(text)
+    except mask_secrets.EgressMaskError:
+        outbound = ""
+    return any(
+        value[index : index + 8] in masked or value[index : index + 8] in outbound
+        for index in range(0, len(value) - 7)
+    )
+
+
+def test_shared_credentials_csv_and_tabs_are_masked() -> None:
+    leaked = 0
+    total = 0
+    label = "aws_secret_" + "access_key"
+    for salt in range(20):
+        chars = list(_chunk(40, salt + 21, "A"))
+        chars[20] = "/"
+        value = "".join(chars)
+        key_id = _key_id(salt + 4)
+        forms = (
+            "[profile]\n" + label + " = " + value + "\n",
+            "Access key ID,Secret access key\n" + key_id + "," + value + "\n",
+            key_id + "\t" + value + "\n",
+            label + "\t" + value + "\n",
+        )
+        for text in forms:
+            total += 1
+            if _value_visible(text, value):
+                leaked += 1
+    assert total == 80
+    assert leaked == 0
+
+
 def test_sts_xml_and_escaped_json_are_masked() -> None:
     leaked = 0
     total = 0
