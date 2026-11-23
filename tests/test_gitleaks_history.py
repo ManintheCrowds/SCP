@@ -701,6 +701,34 @@ def test_blob_exemption_list_is_read_from_the_base_not_the_head(tmp_path: Path) 
     assert "refusing" in proc.stderr
 
 
+def test_a_short_utf16_run_is_refused_in_a_binary_and_a_constant(tmp_path: Path) -> None:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+    state = 91
+    chars = []
+    for index in range(16):
+        state = (state * 1664525 + 1013904223 + index) & 0xFFFFFFFF
+        chars.append(alphabet[state % len(alphabet)])
+    key = "".join(("AK", "IA")) + "".join(chars)
+    hidden = key.encode("utf-16-le")
+    noise = bytes((index % 200) + 1 for index in range(40))
+    planted = noise + hidden + noise
+    png = tmp_path / "png"
+    _init(png)
+    (png / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + planted)
+    _git(png, "add", "shot.png")
+    _git(png, "commit", "-q", "-m", "png")
+    png_proc = _scan(png, tmp_path / "png-scan")
+    code = compile("x = 1\n", "m.py", "exec").replace(co_consts=(planted,))
+    pyc = tmp_path / "pyc"
+    _init(pyc)
+    (pyc / "m.pyc").write_bytes(_code_pyc(code))
+    _git(pyc, "add", "m.pyc")
+    _git(pyc, "commit", "-q", "-m", "pyc")
+    pyc_proc = _scan(pyc, tmp_path / "pyc-scan")
+    assert png_proc.returncode == 1 and "refusing UTF-16 text" in png_proc.stderr
+    assert pyc_proc.returncode == 1 and "refusing secret text inside bytecode" in pyc_proc.stderr
+
+
 def test_a_real_png_header_without_text_is_not_refused(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)
