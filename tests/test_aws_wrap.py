@@ -100,6 +100,32 @@ def test_shared_credentials_csv_and_tabs_are_masked() -> None:
     assert leaked == 0
 
 
+def test_quoted_and_reordered_aws_rows_are_masked() -> None:
+    leaked = 0
+    total = 0
+    user = "alice"
+    for salt in range(20):
+        chars = list(_chunk(40, salt + 40, "A"))
+        chars[20] = "/"
+        value = "".join(chars)
+        key_id = _key_id(salt + 70)
+        forms = (
+            '"' + key_id + '","' + value + '"',
+            '"' + key_id + '",' + value,
+            '"' + user + '","' + key_id + '","' + value + '","https://example.test/console","ok"',
+            value + "," + key_id,
+            key_id + "," + user + "," + value,
+            value + "\t" + key_id,
+            key_id + "\t" + user + "\t" + value,
+        )
+        for text in forms:
+            total += 1
+            if _value_visible(text, value):
+                leaked += 1
+    assert total == 140
+    assert leaked == 0
+
+
 def test_sts_xml_and_escaped_json_are_masked() -> None:
     leaked = 0
     total = 0

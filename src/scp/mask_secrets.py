@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import csv
 import heapq
+import io
 import re
 import sys
 from pathlib import Path
@@ -216,7 +218,48 @@ REDACT_PATTERNS = [
 ]
 
 
+_AWS_ID_FIELD = re.compile("^" + re.escape(_cat("AK", "IA")) + r"[A-Z0-9]{16}$")
+_AWS_SECRET_FIELD = re.compile(r"^[A-Za-z0-9/+][A-Za-z0-9/+=]{19,}$")
+
+
+def _mask_aws_row(line: str) -> str:
+    """Mask a secret field on a row that also holds an access key id.
+
+    Quotes, an extra column, and either field order are all the same row.
+    """
+    if "\t" in line:
+        delimiter = "\t"
+    elif "," in line:
+        delimiter = ","
+    else:
+        return line
+    try:
+        fields = next(csv.reader([line], delimiter=delimiter))
+    except csv.Error:
+        return line
+    if not any(_AWS_ID_FIELD.match(field.strip()) for field in fields):
+        return line
+    changed = False
+    rewritten: list[str] = []
+    for field in fields:
+        body = field.strip()
+        if _AWS_ID_FIELD.match(body):
+            rewritten.append(field)
+            continue
+        if _AWS_SECRET_FIELD.match(body):
+            rewritten.append("[REDACTED]")
+            changed = True
+            continue
+        rewritten.append(field)
+    if not changed:
+        return line
+    buffer = io.StringIO()
+    csv.writer(buffer, delimiter=delimiter, lineterminator="").writerow(rewritten)
+    return buffer.getvalue()
+
+
 def _mask_plain(text: str) -> str:
+    text = "\n".join(_mask_aws_row(line) for line in text.split("\n"))
     pem = _pem_spans(text)
     result = _apply_spans(text, pem) if pem else text
     for pattern, replacement in REDACT_PATTERNS:
