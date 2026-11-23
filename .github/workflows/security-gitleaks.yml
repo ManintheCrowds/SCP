@@ -21,12 +21,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      # marshal.load of bytecode is version-specific. 3.13 is the version
-      # that consumes every historical bytecode blob on main exactly.
+      # marshal.load of bytecode is version-specific. 3.13.18 consumes every
+      # historical bytecode blob on main. The patch is pinned so a job cannot
+      # drift onto an older 3.13 that crashes while walking a spliced code table.
       - name: Pin the bytecode parser
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.18"
 
       - name: Select the base gitleaks config
         id: gitleaks-config
@@ -269,6 +270,9 @@ jobs:
               """
               if not name.endswith(".pyc") or len(data) < 16 or data[1:4] != b"\r\r\n":
                   return False
+              # Do not load a blob that already looks like planted text.
+              if _utf16_pairs(data):
+                  return False
               flags = int.from_bytes(data[4:8], "little")
               if flags not in (0, 1):
                   return False
@@ -331,14 +335,17 @@ jobs:
               ).stdout
               name = path.decode("utf-8", "replace")
               if len(data) >= 16 and data[1:4] == b"\r\r\n":
+                  # A UTF-16 run is refused before marshal.load. Loading a
+                  # spliced code table can crash the interpreter.
+                  if _utf16_pairs(data):
+                      sys.stderr.write(f"refusing secret text inside bytecode: {name}\n")
+                      sys.exit(1)
                   status, obj = _load_marshal(data[16:])
                   if status == "error":
                       sys.stderr.write(f"refusing unreadable bytecode: {name}\n")
                       sys.exit(1)
                   try:
-                      hides = obj is not None and (
-                          _payload_hides_secret(obj, set()) or _utf16_pairs(data)
-                      )
+                      hides = obj is not None and _payload_hides_secret(obj, set())
                   except RecursionError:
                       sys.stderr.write(f"refusing unreadable bytecode: {name}\n")
                       sys.exit(1)

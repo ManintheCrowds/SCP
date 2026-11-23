@@ -443,7 +443,7 @@ def test_a_pyc_header_or_tail_does_not_hide_utf16(tmp_path: Path) -> None:
     script = _run_block("Scan with the base ignore file")
     assert "marshal.load" in script
     assert "buffer.tell()" in script
-    assert 'python-version: "3.13"' in _workflow()
+    assert 'python-version: "3.13.18"' in _workflow()
 
 
 def _header(payload: bytes) -> bytes:
@@ -517,9 +517,27 @@ def test_utf16_in_each_code_object_field_is_refused(tmp_path: Path) -> None:
         _git(repo, "add", "m.pyc")
         _git(repo, "commit", "-q", "-m", label)
         proc = _scan(repo, tmp_path / f"field-scan{index}")
-        if proc.returncode == 1 and "refusing secret text inside bytecode" in proc.stderr:
+        # A spliced code table can crash an older interpreter. Any nonzero
+        # exit still fails closed. The other fields must name the refusal.
+        if label == "co_code" and proc.returncode != 0:
+            refused += 1
+        elif proc.returncode == 1 and "refusing secret text inside bytecode" in proc.stderr:
             refused += 1
     assert refused == len(payloads)
+
+
+def test_a_spliced_code_table_is_refused_before_it_is_loaded(tmp_path: Path) -> None:
+    """The 3.13.5 crash shape: UTF-16 bytes written over the code table."""
+    hidden = _planted(90).encode("latin-1")
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "m.pyc").write_bytes(_pyc_with_planted_code(hidden))
+    _git(repo, "add", "m.pyc")
+    _git(repo, "commit", "-q", "-m", "splice")
+    proc = _scan(repo, tmp_path / "scan")
+    assert proc.returncode == 1
+    assert "refusing secret text inside bytecode" in proc.stderr
+    assert "Traceback" not in proc.stderr
 
 
 def test_bytecode_constants_and_renamed_files_do_not_hide_utf16(tmp_path: Path) -> None:
