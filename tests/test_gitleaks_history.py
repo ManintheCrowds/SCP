@@ -444,6 +444,68 @@ def _utf16(salt: int, codec: str) -> bytes:
     return ("value " + _token(salt)).encode(codec)
 
 
+def _code_pyc(code: object) -> bytes:
+    return _header(marshal.dumps(code))
+
+
+def _pyc_with_planted_code(secret: bytes) -> bytes:
+    """Put secret bytes in the marshalled code table.
+
+    The code-object constructor rewrites co_code, so a plant has to be
+    written into the marshal blob after that constructor has finished.
+    """
+    base = compile("x = 1\n" * 40, "m.py", "exec")
+    original = base.co_code
+    if len(secret) > len(original):
+        raise AssertionError("bytecode plant is longer than the host code")
+    planted = secret + original[len(secret) :]
+    blob = bytearray(marshal.dumps(base))
+    at = blob.find(original)
+    if at < 0:
+        raise AssertionError("code table missing from the marshal blob")
+    blob[at : at + len(original)] = planted
+    return _header(bytes(blob))
+
+
+def _planted(salt: int) -> str:
+    """UTF-16LE token text, decoded so the code object stores those bytes."""
+    return _utf16(salt, "utf-16-le").decode("latin-1")
+
+
+def test_utf16_in_each_code_object_field_is_refused(tmp_path: Path) -> None:
+    base = compile("x = 1\n", "m.py", "exec")
+    secret = _planted(90)
+    raw = secret.encode("latin-1")
+    nulled = "".join(char + "\x00" for char in _token(91))
+    nested = base.replace(co_consts=base.co_consts + (base.replace(co_filename=secret),))
+    cases = (
+        ("co_filename", base.replace(co_filename=secret)),
+        ("co_name", base.replace(co_name=secret)),
+        ("co_qualname", base.replace(co_qualname=secret)),
+        ("co_names", base.replace(co_names=base.co_names + (secret,))),
+        ("co_varnames", base.replace(co_varnames=(secret,), co_nlocals=1)),
+        ("co_freevars", base.replace(co_freevars=(secret,))),
+        ("co_cellvars", base.replace(co_cellvars=(secret,))),
+        ("co_linetable", base.replace(co_linetable=raw)),
+        ("co_exceptiontable", base.replace(co_exceptiontable=raw)),
+        ("nested_co_filename", nested),
+        ("co_filename_nul", base.replace(co_filename=nulled)),
+    )
+    payloads = [(label, _code_pyc(code)) for label, code in cases]
+    payloads.append(("co_code", _pyc_with_planted_code(raw)))
+    refused = 0
+    for index, (label, payload) in enumerate(payloads):
+        repo = tmp_path / f"field{index}"
+        _init(repo)
+        (repo / "m.pyc").write_bytes(payload)
+        _git(repo, "add", "m.pyc")
+        _git(repo, "commit", "-q", "-m", label)
+        proc = _scan(repo, tmp_path / f"field-scan{index}")
+        if proc.returncode == 1 and "refusing secret text inside bytecode" in proc.stderr:
+            refused += 1
+    assert refused == len(payloads)
+
+
 def test_bytecode_constants_and_renamed_files_do_not_hide_utf16(tmp_path: Path) -> None:
     token_text = "".join(char + "\x00" for char in _token(80))
     compiled = tmp_path / "built"

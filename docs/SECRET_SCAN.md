@@ -4,7 +4,7 @@ The gitleaks job and `mask` / egress share two fail-closed corners that need an 
 
 ## Blob exemptions
 
-The scan refuses a blob when its bytes look like UTF-16, or when a NUL byte hides text. A PNG, JPEG, GIF, PDF, ELF, zip, or gzip header is not enough: the rest of the blob is still checked. A `.pyc` is exempt only when the path ends in `.pyc` and the value is one `types.CodeType` whose constants, including nested code objects, contain no UTF-16 bytes or NUL-hidden text.
+The scan refuses a blob when its bytes look like UTF-16, or when a NUL byte hides text. A PNG, JPEG, GIF, PDF, ELF, zip, or gzip header is not enough: the rest of the blob is still checked. A `.pyc` is exempt only when the path ends in `.pyc` and the value is one `types.CodeType`. Every string on that code object is scanned, including nested code objects: constants, names, locals, free variables, cells, the filename, the name, and the qualified name. The code, line, and exception tables are scanned for a long UTF-16 run. Bytes and strings are still refused when they are UTF-16 or hide ASCII after a NUL.
 
 That heuristic also refuses many real binaries. ELF objects and executables are mostly zeros, so they look like UTF-16. PDFs often have text after a NUL. Fonts (TTF and similar) trip the same checks. `marshal.load` must consume the whole value. Any marshal error refuses the blob. A bytes or string constant, a tuple or dict of those, a compiled file that stores UTF-16, and the same bytes renamed to `.txt` are refused. The scan job runs that parser on Python 3.13. The repository has no binaries today. The first commit that adds an ELF, PDF, or font stays red until the base branch lists that blob.
 

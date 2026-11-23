@@ -160,13 +160,57 @@ jobs:
                   return True
               return len(data) >= 4 and data[1:4] == b"\r\r\n"
 
+          # String and tuple fields are ordinary text. The three byte fields are
+          # the interpreter's own tables, so only a long UTF-16 run is a plant.
+          _CODE_TEXT = (
+              "co_consts",
+              "co_names",
+              "co_varnames",
+              "co_freevars",
+              "co_cellvars",
+              "co_filename",
+              "co_name",
+              "co_qualname",
+          )
+          _CODE_BINARY = ("co_code", "co_linetable", "co_exceptiontable")
+
+          def _utf16_pairs(data: bytes, need: int = 16) -> bool:
+              """Printable text interleaved with NUL bytes, in either byte order."""
+
+              def scan(start: int) -> bool:
+                  little = 0
+                  big = 0
+                  index = start
+                  last = len(data) - 1
+                  while index < last:
+                      first = data[index]
+                      second = data[index + 1]
+                      if second == 0 and 32 <= first <= 126:
+                          little += 1
+                          if little >= need:
+                              return True
+                      else:
+                          little = 0
+                      if first == 0 and 32 <= second <= 126:
+                          big += 1
+                          if big >= need:
+                              return True
+                      else:
+                          big = 0
+                      index += 2
+                  return False
+
+              return bool(data) and (scan(0) or scan(1))
+
           def _payload_hides_secret(obj: object, seen: set[int]) -> bool:
               marker = id(obj)
               if marker in seen:
                   return False
               seen.add(marker)
               if isinstance(obj, types.CodeType):
-                  return any(_payload_hides_secret(const, seen) for const in obj.co_consts)
+                  if any(_payload_hides_secret(getattr(obj, name), seen) for name in _CODE_TEXT):
+                      return True
+                  return any(_utf16_pairs(getattr(obj, name)) for name in _CODE_BINARY)
               if isinstance(obj, (bytes, bytearray)):
                   raw = bytes(obj)
                   return utf16_text(raw) or ascii_after_nul(raw)
@@ -203,8 +247,10 @@ jobs:
           def cpython_bytecode(data: bytes, name: str) -> bool:
               """A .pyc whose marshal value is exactly one code object.
 
-              Constants are scanned, including nested code objects. Bytes and
-              strings are checked as UTF-16 and as text hidden by NUL bytes.
+              Every string field is scanned, including nested code objects.
+              Bytes and strings are checked as UTF-16 and as text hidden by
+              NUL bytes. The code and line tables are checked for a long
+              UTF-16 run.
               Any other marshal error refuses the blob. A non-.pyc name is
               never exempt.
               """
@@ -298,9 +344,11 @@ jobs:
                   if status == "error":
                       sys.stderr.write(f"refusing unreadable bytecode: {name}\n")
                       sys.exit(1)
-                  if obj is not None and _payload_hides_secret(obj, set()):
-                      sys.stderr.write(f"refusing secret text inside bytecode: {name}\n")
-                      sys.exit(1)
+              if obj is not None and (
+                  _payload_hides_secret(obj, set()) or _utf16_pairs(data)
+              ):
+                  sys.stderr.write(f"refusing secret text inside bytecode: {name}\n")
+                  sys.exit(1)
               if utf16_text(data) and not cpython_bytecode(data, name):
                   sys.stderr.write(f"refusing UTF-16 text: {name}\n")
                   sys.exit(1)
