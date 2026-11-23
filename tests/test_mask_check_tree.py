@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,30 @@ def test_head_tree_is_clean() -> None:
     )
     assert proc.returncode == 0
     assert proc.stderr == ""
+
+
+def test_allowlist_env_override_is_honored(tmp_path: Path) -> None:
+    token = "".join(("gh", "p_")) + ("C" * 36)
+    rel = "tests/override_case.py"
+    line = "value = " + token + "\n"
+    dest = tmp_path / rel
+    dest.parent.mkdir(parents=True)
+    dest.write_text(line, encoding="utf-8")
+    digest = hashlib.sha256(line[:-1].encode("utf-8")).hexdigest()
+    allow = tmp_path / "allow.txt"
+    allow.write_text(f"{rel}:{digest}:1\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["SCP_MASK_ALLOWLIST"] = str(allow)
+    env["SCP_MASK_CHECK_ROOT"] = str(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(_SCRIPT)],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_new_secret_in_tests_still_fails(tmp_path: Path) -> None:

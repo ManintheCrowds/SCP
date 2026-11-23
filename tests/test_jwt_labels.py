@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import time
 
-from scp import encounter_auto_log, mask_secrets
+from scp import encounter_auto_log, mask_secrets, secret_surface
 
 _ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 _LABELS = (
@@ -235,6 +235,14 @@ def test_list_table_and_punctuation_prefixes_do_not_emit_the_signature() -> None
                 leaked += 1
     assert total == 42
     assert leaked == 0
+
+
+def test_a_fragment_word_stays_off_an_open_jwt() -> None:
+    header = "".join(("ey", "J")) + ("A" * 20)
+    text = header + ".\n" + "before"
+    _unjoined, joined = secret_surface.detection_views(text)
+    assert "\nbefore" in joined
+    assert not joined.endswith(".before")
 
 
 def test_a_word_line_after_a_jwt_survives() -> None:
