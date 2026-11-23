@@ -237,6 +237,20 @@ def test_list_table_and_punctuation_prefixes_do_not_emit_the_signature() -> None
     assert leaked == 0
 
 
+def test_trailing_spaces_on_a_wrapped_jwt_do_not_leave_the_signature() -> None:
+    header = "".join(("ey", "J")) + ("A" * 20)
+    payload = "B" * 16
+    signature = "S" * 20
+    text = "token: " + header + "." + payload + "   \n" + signature
+    masked = mask_secrets.mask(text)
+    try:
+        outbound = mask_secrets.prepare_outbound(text)
+    except mask_secrets.EgressMaskError:
+        outbound = ""
+    assert signature not in masked and signature not in outbound
+    assert signature[:3] not in masked and signature[:3] not in outbound
+
+
 def test_a_known_prefix_inside_an_open_jwt_still_joins() -> None:
     header = "".join(("ey", "J")) + ("A" * 20)
     payload = "".join(("gh", "p_")) + ("B" * 16)
