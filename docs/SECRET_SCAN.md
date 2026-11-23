@@ -4,9 +4,9 @@ The gitleaks job and `mask` / egress share two fail-closed corners that need an 
 
 ## Blob exemptions
 
-The scan refuses a blob when its bytes look like UTF-16, or when a NUL byte hides text. The file name is not an exemption. A PNG, JPEG, GIF, PDF, ELF, zip, gzip, or historical pyc header is accepted only when the rest of the blob is not UTF-16 and does not carry a token after a NUL.
+The scan refuses a blob when its bytes look like UTF-16, or when a NUL byte hides text. A PNG, JPEG, GIF, PDF, ELF, zip, or gzip header is not enough: the rest of the blob is still checked. A `.pyc` is exempt only when the path ends in `.pyc` and the value is one `types.CodeType` whose constants, including nested code objects, contain no UTF-16 bytes or NUL-hidden text.
 
-That heuristic also refuses many real binaries. ELF objects and executables are mostly zeros, so they look like UTF-16. PDFs often have text after a NUL. Fonts (TTF and similar) trip the same checks. A CPython `.pyc` is accepted only when `marshal.load` on the bytes after the 16-byte header consumes the whole blob and leaves nothing. The scan job runs that parser on Python 3.13. A header in front of UTF-16 text, the same bytes under another name, or a real code object with UTF-16 appended is still refused. The repository has no binaries today. The first commit that adds an ELF, PDF, or font stays red until the base branch lists that blob.
+That heuristic also refuses many real binaries. ELF objects and executables are mostly zeros, so they look like UTF-16. PDFs often have text after a NUL. Fonts (TTF and similar) trip the same checks. `marshal.load` must consume the whole value. Any marshal error refuses the blob. A bytes or string constant, a tuple or dict of those, a compiled file that stores UTF-16, and the same bytes renamed to `.txt` are refused. The scan job runs that parser on Python 3.13. The repository has no binaries today. The first commit that adds an ELF, PDF, or font stays red until the base branch lists that blob.
 
 To allow one blob:
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import marshal
 import os
 import py_compile
 import stat
@@ -396,8 +397,8 @@ def _loose_header() -> bytes:
 def test_a_cpython_bytecode_blob_is_not_refused_as_utf16(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)
-    (repo / "notes.bin").write_bytes(_compiled(tmp_path))
-    _git(repo, "add", "notes.bin")
+    (repo / "notes.pyc").write_bytes(_compiled(tmp_path))
+    _git(repo, "add", "notes.pyc")
     _git(repo, "commit", "-q", "-m", "bytecode")
     proc = _scan(repo, tmp_path)
     assert proc.returncode == 0
@@ -420,13 +421,80 @@ def test_a_pyc_header_or_tail_does_not_hide_utf16(tmp_path: Path) -> None:
         _git(repo, "add", name)
         _git(repo, "commit", "-q", "-m", "tail")
         proc = _scan(repo, tmp_path / f"scan{index}")
-        if proc.returncode == 1 and "refusing UTF-16 text" in proc.stderr:
+        if proc.returncode == 1 and "refusing" in proc.stderr:
             refused += 1
     assert refused == len(payloads)
     script = _run_block("Scan with the base ignore file")
     assert "marshal.load" in script
     assert "buffer.tell()" in script
     assert 'python-version: "3.13"' in _workflow()
+
+
+def _header(payload: bytes) -> bytes:
+    return (
+        bytes((0xF3, 0x0D, 0x0D, 0x0A))
+        + (0).to_bytes(4, "little")
+        + (1).to_bytes(4, "little")
+        + (0).to_bytes(4, "little")
+        + payload
+    )
+
+
+def _utf16(salt: int, codec: str) -> bytes:
+    return ("value " + _token(salt)).encode(codec)
+
+
+def test_bytecode_constants_and_renamed_files_do_not_hide_utf16(tmp_path: Path) -> None:
+    token_text = "".join(char + "\x00" for char in _token(80))
+    compiled = tmp_path / "built"
+    compiled.mkdir()
+    source = compiled / "holds.py"
+    source.write_text("T = " + repr(_utf16(81, "utf-16-le")) + "\n", encoding="utf-8")
+    pyc = compiled / "holds.pyc"
+    py_compile.compile(str(source), cfile=str(pyc), doraise=True)
+    string_source = compiled / "holds_text.py"
+    string_source.write_text("T = " + repr(token_text) + "\n", encoding="utf-8")
+    string_pyc = compiled / "holds_text.pyc"
+    py_compile.compile(str(string_source), cfile=str(string_pyc), doraise=True)
+    payloads = (
+        _header(marshal.dumps(_utf16(82, "utf-16-le"))),
+        _header(marshal.dumps(_utf16(83, "utf-16"))),
+        _header(marshal.dumps(_utf16(84, "utf-16-be"))),
+        _header(marshal.dumps(token_text)),
+        _header(marshal.dumps((_utf16(85, "utf-16-le"),))),
+        _header(marshal.dumps({"k": _utf16(86, "utf-16-le")})),
+        pyc.read_bytes(),
+        string_pyc.read_bytes(),
+        pyc.read_bytes(),
+        _header(marshal.dumps(_utf16(87, "utf-16-le"))),
+        _header(marshal.dumps(_utf16(88, "utf-16-le"))),
+    )
+    names = (
+        "blob.pyc",
+        "blob.pyc",
+        "blob.pyc",
+        "blob.pyc",
+        "blob.pyc",
+        "blob.pyc",
+        "holds.pyc",
+        "holds_text.pyc",
+        "notes.txt",
+        "config.txt",
+        "README.md",
+    )
+    refused = 0
+    for index, (name, payload) in enumerate(zip(names, payloads, strict=True)):
+        repo = tmp_path / f"repo{index}"
+        _init(repo)
+        if "/" in name:
+            (repo / name).parent.mkdir()
+        (repo / name).write_bytes(payload)
+        _git(repo, "add", name)
+        _git(repo, "commit", "-q", "-m", "const")
+        proc = _scan(repo, tmp_path / f"scan{index}")
+        if proc.returncode == 1 and "refusing" in proc.stderr:
+            refused += 1
+    assert refused == len(payloads)
 
 
 def test_historical_bytecode_on_main_is_consumed_exactly(tmp_path: Path) -> None:
@@ -452,7 +520,7 @@ def test_historical_bytecode_on_main_is_consumed_exactly(tmp_path: Path) -> None
             capture_output=True,
             check=True,
         ).stdout
-        (repo / f"blob{index}.bin").write_bytes(data)
+        (repo / f"blob{index}.pyc").write_bytes(data)
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "history")
     proc = _scan(repo, tmp_path / "scan")
@@ -469,7 +537,7 @@ def test_a_pyc_header_in_front_of_utf16_is_refused(tmp_path: Path) -> None:
     _git(repo, "commit", "-q", "-m", "fake")
     proc = _scan(repo, tmp_path)
     assert proc.returncode == 1
-    assert "refusing UTF-16 text" in proc.stderr
+    assert "refusing" in proc.stderr
 
 
 def test_this_repo_history_scan_passes(tmp_path: Path) -> None:

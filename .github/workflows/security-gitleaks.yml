@@ -132,6 +132,7 @@ jobs:
           import marshal
           import subprocess
           import sys
+          import types
           from pathlib import Path
 
           root = Path(sys.argv[1])
@@ -159,24 +160,68 @@ jobs:
                   return True
               return len(data) >= 4 and data[1:4] == b"\r\r\n"
 
-          def cpython_bytecode(data: bytes) -> bool:
-              """True when marshal.load consumes data[16:] with nothing left.
+          def _payload_hides_secret(obj: object, seen: set[int]) -> bool:
+              marker = id(obj)
+              if marker in seen:
+                  return False
+              seen.add(marker)
+              if isinstance(obj, types.CodeType):
+                  return any(_payload_hides_secret(const, seen) for const in obj.co_consts)
+              if isinstance(obj, (bytes, bytearray)):
+                  raw = bytes(obj)
+                  return utf16_text(raw) or ascii_after_nul(raw)
+              if isinstance(obj, str):
+                  utf8 = obj.encode("utf-8", "surrogateescape")
+                  try:
+                      latin = obj.encode("latin-1")
+                  except UnicodeEncodeError:
+                      latin = b""
+                  return (
+                      utf16_text(utf8)
+                      or ascii_after_nul(utf8)
+                      or utf16_text(latin)
+                      or ascii_after_nul(latin)
+                  )
+              if isinstance(obj, dict):
+                  return any(_payload_hides_secret(item, seen) for item in obj) or any(
+                      _payload_hides_secret(item, seen) for item in obj.values()
+                  )
+              if isinstance(obj, (tuple, list, set, frozenset)):
+                  return any(_payload_hides_secret(item, seen) for item in obj)
+              return False
 
-              A 42-byte header in front of more bytes is not bytecode. The
-              parser is Python 3.13, pinned on this job. Dropping the
-              end-of-buffer check accepts a real code object with a tail.
+          def _load_marshal(payload: bytes) -> tuple[str, object]:
+              buffer = io.BytesIO(payload)
+              try:
+                  obj = marshal.load(buffer)
+              except Exception:
+                  return "error", None
+              if buffer.tell() != len(payload):
+                  return "partial", obj
+              return "ok", obj
+
+          def cpython_bytecode(data: bytes, name: str) -> bool:
+              """A .pyc whose marshal value is exactly one code object.
+
+              Constants are scanned, including nested code objects. Bytes and
+              strings are checked as UTF-16 and as text hidden by NUL bytes.
+              Any other marshal error refuses the blob. A non-.pyc name is
+              never exempt.
               """
-              if len(data) < 16 or data[1:4] != b"\r\r\n":
+              if not name.endswith(".pyc") or len(data) < 16 or data[1:4] != b"\r\r\n":
                   return False
               flags = int.from_bytes(data[4:8], "little")
               if flags not in (0, 1):
                   return False
-              buffer = io.BytesIO(data[16:])
-              try:
-                  marshal.load(buffer)
-              except (ValueError, EOFError, TypeError):
+              status, obj = _load_marshal(data[16:])
+              if status == "error":
+                  sys.stderr.write(f"refusing unreadable bytecode: {name}\n")
+                  sys.exit(1)
+              if status != "ok" or not isinstance(obj, types.CodeType):
                   return False
-              return buffer.tell() == len(data) - 16
+              if _payload_hides_secret(obj, set()):
+                  return False
+              return True
 
           def _utf16_window(sample: bytes) -> bool:
               if len(sample) < 16:
@@ -248,7 +293,15 @@ jobs:
                   capture_output=True,
               ).stdout
               name = path.decode("utf-8", "replace")
-              if utf16_text(data) and not cpython_bytecode(data):
+              if len(data) >= 16 and data[1:4] == b"\r\r\n":
+                  status, obj = _load_marshal(data[16:])
+                  if status == "error":
+                      sys.stderr.write(f"refusing unreadable bytecode: {name}\n")
+                      sys.exit(1)
+                  if obj is not None and _payload_hides_secret(obj, set()):
+                      sys.stderr.write(f"refusing secret text inside bytecode: {name}\n")
+                      sys.exit(1)
+              if utf16_text(data) and not cpython_bytecode(data, name):
                   sys.stderr.write(f"refusing UTF-16 text: {name}\n")
                   sys.exit(1)
               if b"\x00" not in data:
