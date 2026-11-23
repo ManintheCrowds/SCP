@@ -543,26 +543,6 @@ def _mask_chosen(text: str) -> str:
     return _without_controls(masked)
 
 
-# A color code in front of a word is shorter than this. A token whose own
-# digits or final letter completed a CSI is longer, and the stripped view
-# no longer matches it.
-_CSI_TOKEN_RUN = 20
-
-
-def _longest_token_run(text: str) -> int:
-    alphabet = secret_surface._TOKEN_CHARS
-    best = 0
-    run = 0
-    for char in text:
-        if char in alphabet:
-            run += 1
-            if run > best:
-                best = run
-        else:
-            run = 0
-    return best
-
-
 def _pattern_secret(text: str) -> bool:
     """A credential on this view. A refused control is not itself a credential."""
     if _over_cap(text):

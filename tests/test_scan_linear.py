@@ -63,6 +63,11 @@ def test_doubling_limit_rejects_an_n_to_the_1_5_loop() -> None:
     assert _ratio(run, 4_000) > _RATIO_LIMIT
 
 
+def test_retired_token_run_helpers_are_gone() -> None:
+    assert not hasattr(mask_secrets, "_CSI_TOKEN_RUN")
+    assert not hasattr(mask_secrets, "_longest_token_run")
+
+
 def test_control_heavy_input_stays_under_two_seconds() -> None:
     samples = (
         "\x9b" * 1_000_000,
