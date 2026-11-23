@@ -350,7 +350,7 @@ jobs:
                   sys.exit(1)
               if b"\x00" not in data:
                   continue
-              if ascii_after_nul(data):
+              if ascii_after_nul(data) and not cpython_bytecode(data, name):
                   sys.stderr.write(f"refusing text hidden after a NUL byte: {name}\n")
                   sys.exit(1)
               if not known_binary(data):

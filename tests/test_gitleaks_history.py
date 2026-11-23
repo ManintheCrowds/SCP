@@ -701,6 +701,30 @@ def test_blob_exemption_list_is_read_from_the_base_not_the_head(tmp_path: Path) 
     assert "refusing" in proc.stderr
 
 
+def test_a_long_bytecode_filename_is_not_refused(tmp_path: Path) -> None:
+    code = compile("x = 1\n", "m.py", "exec").replace(co_filename=("p" * 80) + ".py")
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "m.pyc").write_bytes(_code_pyc(code))
+    _git(repo, "add", "m.pyc")
+    _git(repo, "commit", "-q", "-m", "filename")
+    proc = _scan(repo, tmp_path / "scan")
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_ascii_after_a_nul_in_a_constant_is_still_refused(tmp_path: Path) -> None:
+    secret = b"\x00" + (b"A" * 24)
+    code = compile("x = 1\n", "m.py", "exec").replace(co_consts=(secret,))
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "m.pyc").write_bytes(_code_pyc(code))
+    _git(repo, "add", "m.pyc")
+    _git(repo, "commit", "-q", "-m", "nul")
+    proc = _scan(repo, tmp_path / "scan")
+    assert proc.returncode == 1
+    assert "refusing secret text inside bytecode" in proc.stderr
+
+
 def test_a_deeply_nested_constant_is_refused(tmp_path: Path) -> None:
     nested: object = "x"
     for _ in range(1500):
