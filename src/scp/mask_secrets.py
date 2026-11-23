@@ -628,7 +628,11 @@ def _letter_view(text: str) -> str:
 
 
 def _masked_ngrams(masked: str, size: int = 8) -> set[str]:
-    """Every contiguous slice of `size` characters. Built once per scan."""
+    """Every contiguous slice of `size` characters. Built once per scan.
+
+    At the one-million-character cap this set is on the order of 200 MB.
+    That is the cost of checking each candidate in linear time.
+    """
     if len(masked) < size:
         return set()
     return {masked[index : index + size] for index in range(len(masked) - size + 1)}
