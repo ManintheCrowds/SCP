@@ -701,6 +701,19 @@ def test_blob_exemption_list_is_read_from_the_base_not_the_head(tmp_path: Path) 
     assert "refusing" in proc.stderr
 
 
+def test_a_lone_surrogate_constant_is_refused(tmp_path: Path) -> None:
+    code = compile("x = 1\n", "m.py", "exec").replace(co_consts=("\ud800",))
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "m.pyc").write_bytes(_code_pyc(code))
+    _git(repo, "add", "m.pyc")
+    _git(repo, "commit", "-q", "-m", "surrogate")
+    proc = _scan(repo, tmp_path / "scan")
+    assert proc.returncode == 1
+    assert "Traceback" not in proc.stderr
+    assert "refusing" in proc.stderr
+
+
 def test_a_short_utf16_run_is_refused_in_a_binary_and_a_constant(tmp_path: Path) -> None:
     alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
     state = 91

@@ -225,7 +225,10 @@ jobs:
                   raw = bytes(obj)
                   return utf16_text(raw) or ascii_after_nul(raw)
               if isinstance(obj, str):
-                  utf8 = obj.encode("utf-8", "surrogateescape")
+                  try:
+                      utf8 = obj.encode("utf-8", "surrogateescape")
+                  except UnicodeEncodeError:
+                      return True
                   try:
                       latin = obj.encode("latin-1")
                   except UnicodeEncodeError:
