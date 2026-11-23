@@ -222,84 +222,108 @@ _AWS_ID_FIELD = re.compile("^" + re.escape(_cat("AK", "IA")) + r"[A-Z0-9]{16}$")
 _AWS_SECRET_FIELD = re.compile(r"^[A-Za-z0-9/+][A-Za-z0-9/+=]{19,}$")
 
 
-def _mask_aws_row(line: str) -> str:
-    """Mask a secret field on a row that also holds an access key id.
+def _record_bounds(text: str) -> list[tuple[int, int]]:
+    """Rows split on newlines that are not inside quotes."""
+    bounds: list[tuple[int, int]] = []
+    start = 0
+    quoted = False
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == '"':
+            if quoted and index + 1 < length and text[index + 1] == '"':
+                index += 2
+                continue
+            quoted = not quoted
+        elif char == "\n" and not quoted:
+            bounds.append((start, index))
+            start = index + 1
+        index += 1
+    if start < length:
+        bounds.append((start, length))
+    return bounds
 
-    Quotes, an extra column, and either field order are all the same row.
-    """
-    if "\t" in line:
+
+def _field_bounds(record: str, delimiter: str) -> list[tuple[int, int, str]]:
+    fields: list[tuple[int, int, str]] = []
+    index = 0
+    length = len(record)
+    while index <= length:
+        if index < length and record[index] == '"':
+            index += 1
+            start = index
+            chars: list[str] = []
+            while index < length:
+                if record[index] == '"':
+                    if index + 1 < length and record[index + 1] == '"':
+                        chars.append('"')
+                        index += 2
+                        continue
+                    break
+                chars.append(record[index])
+                index += 1
+            fields.append((start, index, "".join(chars)))
+            if index < length and record[index] == '"':
+                index += 1
+            if index < length and record[index] == delimiter:
+                index += 1
+                if index == length:
+                    fields.append((index, index, ""))
+                continue
+            break
+        start = index
+        while index < length and record[index] != delimiter:
+            index += 1
+        fields.append((start, index, record[start:index]))
+        if index >= length:
+            break
+        index += 1
+        if index == length:
+            fields.append((index, index, ""))
+    return fields
+
+
+def _collapsed_field(field: str) -> str:
+    return field.replace("\n", "").replace("\r", "").strip()
+
+
+def _aws_record_spans(record: str, offset: int) -> list[tuple[int, int, str]]:
+    if "\t" in record:
         delimiter = "\t"
-    elif "," in line:
-        delimiter = ","
-    else:
-        return line
-    try:
-        fields = next(csv.reader([line], delimiter=delimiter))
-    except csv.Error:
-        return line
-    if not any(_AWS_ID_FIELD.match(field.strip()) for field in fields):
-        return line
-    changed = False
-    rewritten: list[str] = []
-    for field in fields:
-        body = field.strip()
-        if _AWS_ID_FIELD.match(body):
-            rewritten.append(field)
-            continue
-        if _AWS_SECRET_FIELD.match(body):
-            rewritten.append("[REDACTED]")
-            changed = True
-            continue
-        rewritten.append(field)
-    if not changed:
-        return line
-    buffer = io.StringIO()
-    csv.writer(buffer, delimiter=delimiter, lineterminator="").writerow(rewritten)
-    return buffer.getvalue()
-
-
-def _aws_line_spans(line: str, offset: int) -> list[tuple[int, int, str]]:
-    if "\t" in line:
-        delimiter = "\t"
-    elif "," in line:
+    elif "," in record:
         delimiter = ","
     else:
         return []
     try:
-        fields = next(csv.reader([line], delimiter=delimiter))
+        parsed = next(csv.reader(io.StringIO(record), delimiter=delimiter))
     except csv.Error:
         return []
-    if not any(_AWS_ID_FIELD.match(field.strip()) for field in fields):
+    if not any(_AWS_ID_FIELD.match(_collapsed_field(field)) for field in parsed):
         return []
     spans: list[tuple[int, int, str]] = []
-    cursor = 0
-    for field in fields:
-        body = field.strip()
+    for start, end, raw in _field_bounds(record, delimiter):
+        body = _collapsed_field(raw)
         if _AWS_ID_FIELD.match(body) or not _AWS_SECRET_FIELD.match(body):
             continue
-        start = line.find(body, cursor)
-        if start < 0:
+        if end <= start:
             continue
-        spans.append((offset + start, offset + start + len(body), "[REDACTED]"))
-        cursor = start + len(body)
+        spans.append((offset + start, offset + end, "[REDACTED]"))
     return spans
 
 
 def _aws_row_spans(text: str) -> list[tuple[int, int, str]]:
-    """Secret fields on CSV or TSV rows, including a normalized view."""
+    """Secret fields on CSV or TSV rows, including a quoted newline."""
     spans: list[tuple[int, int, str]] = []
-    offset = 0
-    lines = text.split("\n")
-    for index, line in enumerate(lines):
-        spans.extend(_aws_line_spans(line, offset))
-        offset += len(line)
-        if index + 1 < len(lines):
-            offset += 1
+    for start, end in _record_bounds(text):
+        spans.extend(_aws_record_spans(text[start:end], start))
     return spans
 
 
 def _mask_plain(text: str) -> str:
-    text = "\n".join(_mask_aws_row(line) for line in text.split("\n"))
+    spans = _aws_row_spans(text)
+    if spans:
+        text = _apply_spans(text, spans)
     pem = _pem_spans(text)
     result = _apply_spans(text, pem) if pem else text
     for pattern, replacement in REDACT_PATTERNS:

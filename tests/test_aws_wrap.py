@@ -164,6 +164,28 @@ def test_windows_excel_aws_rows_are_masked() -> None:
     assert leaked == 0
 
 
+def test_a_quoted_aws_secret_may_span_lines() -> None:
+    leaked = 0
+    total = 0
+    for salt in range(20):
+        chars = list(_chunk(40, salt + 140, "A"))
+        chars[20] = "/"
+        value = "".join(chars)
+        key_id = _key_id(salt + 180)
+        forms = (
+            '"' + key_id + '","' + value[:20] + "\n" + value[20:] + '"',
+            '"' + key_id + '","' + value[:20] + "\r\n" + value[20:] + '"',
+            '"' + key_id + '","\n' + value + '"',
+            '"' + key_id + '\n","' + value + '"',
+        )
+        for text in forms:
+            total += 1
+            if _value_visible(text, value):
+                leaked += 1
+    assert total == 80
+    assert leaked == 0
+
+
 def test_sts_xml_and_escaped_json_are_masked() -> None:
     leaked = 0
     total = 0
