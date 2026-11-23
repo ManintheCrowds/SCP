@@ -394,6 +394,22 @@ def _loose_header() -> bytes:
     return header + bytes((0xE3,)) + counts + bytes((0x73,)) + (1).to_bytes(4, "little") + b"\x00"
 
 
+def test_prescan_does_not_import_repo_root_modules(tmp_path: Path) -> None:
+    """A pull request cannot shadow the stdlib modules the prescan imports."""
+    repo = tmp_path / "repo"
+    _init(repo)
+    shadow = "open(__file__ + '.ran', 'w', encoding='utf-8').write('ran\\n')\n"
+    for name in ("subprocess.py", "os.py", "json.py"):
+        (repo / name).write_text(shadow, encoding="utf-8")
+    (repo / "app.py").write_text("value " + _token(44) + "\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "leak and shadows")
+    proc = _scan(repo, tmp_path / "scan")
+    ran = sorted(path.name for path in repo.glob("*.ran"))
+    assert ran == []
+    assert proc.returncode == 2
+
+
 def test_a_cpython_bytecode_blob_is_not_refused_as_utf16(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)

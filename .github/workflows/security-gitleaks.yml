@@ -127,13 +127,23 @@ jobs:
           else
             : > "${blob_allow}"
           fi
-          python3 - "${scan}" "${blob_allow}" << 'PY'
+          # Isolated from the checkout: a root subprocess.py, os.py, or json.py
+          # must not run inside the step that holds the trusted config.
+          (
+          cd "${RUNNER_TEMP}"
+          PYTHONSAFEPATH=1 python3 -I - "${scan}" "${blob_allow}" << 'PY'
           import io
+          import json
           import marshal
+          import os
           import subprocess
           import sys
           import types
           from pathlib import Path
+
+          if not hasattr(os, "environ") or not hasattr(json, "dumps") or not hasattr(subprocess, "run"):
+              sys.stderr.write("refusing shadowed interpreter modules\n")
+              sys.exit(1)
 
           root = Path(sys.argv[1])
           allowed_blobs = set()
@@ -361,6 +371,7 @@ jobs:
                   sys.stderr.write(f"refusing NUL byte in text file: {name}\n")
                   sys.exit(1)
           PY
+          )
           (
             cd "${scan}"
             gitleaks detect --redact --exit-code=2 \

@@ -118,14 +118,14 @@ jobs:
               echo "base revision has no mask checker; failing closed" >&2
               exit 1
             fi
-            python3 "$checker"
+            python3 -I "$checker"
             exit $?
           fi
           if [ ! -f scripts/run_mask_check.py ]; then
             echo "mask checker missing; failing closed" >&2
             exit 1
           fi
-          python3 scripts/run_mask_check.py
+          python3 -I scripts/run_mask_check.py
 
   # Required status context for main branch protection. Must keep this job id as CI.
   CI:
