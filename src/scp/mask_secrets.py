@@ -258,6 +258,46 @@ def _mask_aws_row(line: str) -> str:
     return buffer.getvalue()
 
 
+def _aws_line_spans(line: str, offset: int) -> list[tuple[int, int, str]]:
+    if "\t" in line:
+        delimiter = "\t"
+    elif "," in line:
+        delimiter = ","
+    else:
+        return []
+    try:
+        fields = next(csv.reader([line], delimiter=delimiter))
+    except csv.Error:
+        return []
+    if not any(_AWS_ID_FIELD.match(field.strip()) for field in fields):
+        return []
+    spans: list[tuple[int, int, str]] = []
+    cursor = 0
+    for field in fields:
+        body = field.strip()
+        if _AWS_ID_FIELD.match(body) or not _AWS_SECRET_FIELD.match(body):
+            continue
+        start = line.find(body, cursor)
+        if start < 0:
+            continue
+        spans.append((offset + start, offset + start + len(body), "[REDACTED]"))
+        cursor = start + len(body)
+    return spans
+
+
+def _aws_row_spans(text: str) -> list[tuple[int, int, str]]:
+    """Secret fields on CSV or TSV rows, including a normalized view."""
+    spans: list[tuple[int, int, str]] = []
+    offset = 0
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        spans.extend(_aws_line_spans(line, offset))
+        offset += len(line)
+        if index + 1 < len(lines):
+            offset += 1
+    return spans
+
+
 def _mask_plain(text: str) -> str:
     text = "\n".join(_mask_aws_row(line) for line in text.split("\n"))
     pem = _pem_spans(text)
@@ -445,7 +485,7 @@ def _apply_spans(text: str, spans: list[tuple[int, int, str]]) -> str:
 
 
 def _spans_on_view(view: str) -> list[tuple[int, int, str]]:
-    return [*credential_spans(view), *_email_spans(view)]
+    return [*credential_spans(view), *_email_spans(view), *_aws_row_spans(view)]
 
 
 def _mask_views(text: str, unjoined: str, joined: str) -> str:

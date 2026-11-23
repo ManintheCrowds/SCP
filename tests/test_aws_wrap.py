@@ -126,6 +126,44 @@ def test_quoted_and_reordered_aws_rows_are_masked() -> None:
     assert leaked == 0
 
 
+def test_windows_excel_aws_rows_are_masked() -> None:
+    """CRLF, a BOM, or a zero-width space must not skip the row masker."""
+    leaked = 0
+    total = 0
+    bom = "\ufeff"
+    zwsp = "\u200b"
+    user = "alice"
+    for salt in range(20):
+        chars = list(_chunk(40, salt + 90, "A"))
+        chars[20] = "/"
+        value = "".join(chars)
+        key_id = _key_id(salt + 110)
+        quoted = '"' + key_id + '","' + value + '"'
+        reordered = '"' + value + '","' + key_id + '"'
+        excel = (
+            '"' + user + '","' + key_id + '","' + value
+            + '","https://example.test/console","ok"'
+        )
+        header = '"Access key ID","Secret access key"'
+        forms = (
+            header + "\r\n" + quoted + "\r\n",
+            header + "\r\n" + reordered + "\r\n",
+            header + "\r\n" + excel + "\r\n",
+            bom + quoted,
+            bom + value + "," + key_id,
+            value + "," + key_id + "\r\n",
+            value + "\t" + key_id + "\r\n",
+            header[:8] + zwsp + header[8:] + "\n" + quoted,
+            header + "\r" + quoted + "\n",
+        )
+        for text in forms:
+            total += 1
+            if _value_visible(text, value):
+                leaked += 1
+    assert total == 180
+    assert leaked == 0
+
+
 def test_sts_xml_and_escaped_json_are_masked() -> None:
     leaked = 0
     total = 0
