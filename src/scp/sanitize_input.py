@@ -865,6 +865,8 @@ _FINDING_CATEGORY = {
     "jailbreak_mythic": "jailbreak_mythic",
     "hostile_ux": "hostile_ux",
 }
+_TOOL_POISON_JOIN_CHARS = frozenset("._/\\-")
+_TOOL_POISON_OPTIONAL_CHARS = frozenset("'")
 _INJECTION_FINDING_KEYS = (
     "override_phrases",
     "leetspeak_phrases",
@@ -942,7 +944,22 @@ def _compile_poison_phrase(phrase: str) -> re.Pattern[str]:
         inner = stripped[1:-1].strip()
         if inner:
             return re.compile(r"<\s*" + re.escape(inner) + r"\s*>", re.IGNORECASE)
-    escaped = re.escape(stripped).replace(r"\ ", r"\s+")
+    parts: list[str] = []
+    for index, char in enumerate(stripped):
+        if char.isspace():
+            if not parts or parts[-1] != r"\s+":
+                parts.append(r"\s+")
+        elif char in _TOOL_POISON_JOIN_CHARS:
+            before = r"\s*" if index > 0 else ""
+            after = r"\s*" if index < len(stripped) - 1 else ""
+            parts.append(before + re.escape(char) + after)
+        elif char in _TOOL_POISON_OPTIONAL_CHARS:
+            before = r"\s*" if index > 0 else ""
+            after = r"\s*" if index < len(stripped) - 1 else ""
+            parts.append(before + re.escape(char) + "?" + after)
+        else:
+            parts.append(re.escape(char))
+    escaped = "".join(parts)
     ends_alnum = stripped[-1].isalnum()
     if stripped.startswith("."):
         prefix = r"(?<![\w.])"
