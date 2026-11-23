@@ -526,6 +526,42 @@ def test_utf16_in_each_code_object_field_is_refused(tmp_path: Path) -> None:
     assert refused == len(payloads)
 
 
+def test_prescan_locks_the_isolation_and_the_field_walk() -> None:
+    script = _run_block("Scan with the base ignore file")
+    assert 'cd "${RUNNER_TEMP}"' in script
+    assert "PYTHONSAFEPATH=1" in script
+    assert "python3 -I " in script
+    assert script.count("if _utf16_pairs(data):") >= 2
+    load_at = script.find("_load_marshal(data[16:])")
+    pairs_at = script.find("if _utf16_pairs(data):")
+    assert pairs_at != -1 and load_at != -1 and pairs_at < load_at
+    assert '"co_filename"' in script
+    assert "_CODE_BINARY" in script
+    for name in ("co_code", "co_linetable", "co_exceptiontable"):
+        assert name in script
+
+
+def test_a_short_filename_and_a_twenty_character_line_table_are_refused(tmp_path: Path) -> None:
+    base = compile("x = 1\n", "m.py", "exec")
+    short = "ABCDEFGHIJ".encode("utf-16-le").decode("latin-1")
+    twenty = "ABCDEFGHIJKLMNOPQRST".encode("utf-16-le")
+    payloads = (
+        _code_pyc(base.replace(co_filename=short)),
+        _code_pyc(base.replace(co_linetable=twenty)),
+    )
+    refused = 0
+    for index, payload in enumerate(payloads):
+        repo = tmp_path / f"repo{index}"
+        _init(repo)
+        (repo / "m.pyc").write_bytes(payload)
+        _git(repo, "add", "m.pyc")
+        _git(repo, "commit", "-q", "-m", "short-field")
+        proc = _scan(repo, tmp_path / f"scan{index}")
+        if proc.returncode == 1 and "refusing secret text inside bytecode" in proc.stderr:
+            refused += 1
+    assert refused == len(payloads)
+
+
 def test_a_spliced_code_table_is_refused_before_it_is_loaded(tmp_path: Path) -> None:
     """The 3.13.5 crash shape: UTF-16 bytes written over the code table."""
     hidden = _planted(90).encode("latin-1")
