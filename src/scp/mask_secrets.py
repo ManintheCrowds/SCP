@@ -428,48 +428,64 @@ def _without_controls(text: str) -> str:
     return "".join(char for char in text if not secret_surface.is_refused_control(char))
 
 
-def _token_side(text: str, *, reverse: bool) -> int:
-    """Token characters on one side of a control. Parameter bytes are glue."""
-    alphabet = secret_surface._TOKEN_CHARS
-    params = set("[];:?0123456789")
-    count = 0
-    started = False
-    chars = reversed(text) if reverse else text
-    for char in chars:
-        if char in params and not started:
-            continue
-        if char in alphabet:
-            started = True
-            count += 1
-            continue
-        break
-    return count
-
-
 def _control_splits_a_token(text: str) -> bool:
     """A refused control next to a token run can hide a credential.
 
     Parameter digits stay in the text when the control itself is dropped, so
     one long side is enough. A cursor command in prose has no such side.
+    One forward pass and one backward pass, then a scan of the controls.
     """
+    alphabet = secret_surface._TOKEN_CHARS
+    params = set("[];:?0123456789")
+    length = len(text)
+    end_run = [0] * length
+    run = 0
+    for index, char in enumerate(text):
+        if char in alphabet:
+            run += 1
+        else:
+            run = 0
+        end_run[index] = run
+    start_run = [0] * length
+    run = 0
+    for index in range(length - 1, -1, -1):
+        if text[index] in alphabet:
+            run += 1
+        else:
+            run = 0
+        start_run[index] = run
+    left_of = [-1] * length
+    last = -1
+    for index, char in enumerate(text):
+        left_of[index] = last
+        if char not in params:
+            last = index
+    right_of = [length] * length
+    nxt = length
+    for index in range(length - 1, -1, -1):
+        right_of[index] = nxt
+        if text[index] not in params:
+            nxt = index
     for index, char in enumerate(text):
         if not secret_surface.is_refused_control(char):
             continue
-        if _token_side(text[:index], reverse=True) >= 8:
-            return True
-        if _token_side(text[index + 1 :], reverse=False) >= 8:
+        left_at = left_of[index]
+        left = end_run[left_at] if left_at >= 0 and text[left_at] in alphabet else 0
+        right_at = right_of[index]
+        right = start_run[right_at] if right_at < length and text[right_at] in alphabet else 0
+        if left >= 8 or right >= 8:
             return True
     return False
 
 
 def _mask_chosen(text: str) -> str:
     """Mask one view. A control inside a token blanks that view; prose stays."""
+    if _over_cap(text):
+        return "[REDACTED]"
     if secret_surface.has_refused_control(text):
         if _control_splits_a_token(text):
             return "[REDACTED]"
         text = _without_controls(text)
-    if _over_cap(text):
-        return "[REDACTED]"
     try:
         unjoined, joined = secret_surface.detection_views(text)
     except secret_surface.NormalizationBudgetExceeded:
@@ -517,28 +533,6 @@ def _pattern_secret(text: str) -> bool:
     return joined != unjoined and _view_has_secret(joined)
 
 
-def _run_ending(text: str) -> int:
-    alphabet = secret_surface._TOKEN_CHARS
-    count = 0
-    for char in reversed(text):
-        if char in alphabet:
-            count += 1
-            continue
-        break
-    return count
-
-
-def _run_starting(text: str) -> int:
-    alphabet = secret_surface._TOKEN_CHARS
-    count = 0
-    for char in text:
-        if char in alphabet:
-            count += 1
-            continue
-        break
-    return count
-
-
 def _letter_view(text: str) -> str:
     """Drop a finished CSI but keep the final letter."""
     if "\x1b" not in text:
@@ -552,19 +546,47 @@ def _slice_visible(piece: str, masked: str) -> bool:
     return any(piece[index : index + 8] in masked for index in range(len(piece) - 7))
 
 
+def _run_lengths(text: str) -> tuple[list[int], list[int]]:
+    """Token-run length ending at each index, and starting at each index."""
+    alphabet = secret_surface._TOKEN_CHARS
+    length = len(text)
+    ending = [0] * length
+    run = 0
+    for index, char in enumerate(text):
+        if char in alphabet:
+            run += 1
+        else:
+            run = 0
+        ending[index] = run
+    starting = [0] * length
+    run = 0
+    for index in range(length - 1, -1, -1):
+        if text[index] in alphabet:
+            run += 1
+        else:
+            run = 0
+        starting[index] = run
+    return ending, starting
+
+
 def _csi_hides_a_token(text: str) -> bool:
     """A finished CSI ate part of a token, on either view, whatever else is present.
 
     Semicolons and colons are parameters, so they stay inside the match and
-    do not split the token runs on either side. Each CSI is judged on its own.
+    do not split the token runs on either side. Run lengths are one pass.
+    Each CSI is judged on its own, including when another secret is present.
     """
-    if "\x1b" not in text:
+    if "\x1b" not in text or _over_cap(text):
+        return False
+    matches = list(_CSI.finditer(text))
+    if not matches:
         return False
     stripped, _kept = _sgr_views(text)
     masked = _mask_chosen(stripped)
-    for match in _CSI.finditer(text):
-        pre = _run_ending(text[: match.start()])
-        post = _run_starting(text[match.end() :])
+    ending, starting = _run_lengths(text)
+    for match in matches:
+        pre = ending[match.start() - 1] if match.start() else 0
+        post = starting[match.end()] if match.end() < len(text) else 0
         if pre < 4 and post < 8 and pre + post < 8:
             continue
         before = text[match.start() - pre : match.start()]
@@ -583,6 +605,8 @@ def mask(text: str) -> str:
     The stripped view and the view that keeps a CSI final letter are both
     scanned. A token character that finished the sequence is not emitted.
     """
+    if _over_cap(text):
+        return "[REDACTED]"
     stripped, _kept = _sgr_views(text)
     if _csi_hides_a_token(text):
         return "[REDACTED]"

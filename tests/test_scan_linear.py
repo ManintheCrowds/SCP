@@ -63,6 +63,20 @@ def test_doubling_limit_rejects_an_n_to_the_1_5_loop() -> None:
     assert _ratio(run, 4_000) > _RATIO_LIMIT
 
 
+def test_control_heavy_input_stays_under_two_seconds() -> None:
+    samples = (
+        "\x9b" * 1_000_000,
+        "\x1b[12" * (1_000_000 // 4),
+        "a\x07" * 500_000,
+    )
+    for text in samples:
+        assert len(text) >= 999_996
+        started = time.process_time()
+        mask_secrets.mask(text)
+        elapsed = time.process_time() - started
+        assert elapsed < 2.0
+
+
 def test_over_cap_fails_closed() -> None:
     text = "x" * (mask_secrets.MAX_SCAN_CHARS + 1)
     assert mask_secrets.mask(text) == "[REDACTED]"
