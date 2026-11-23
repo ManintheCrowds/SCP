@@ -344,11 +344,11 @@ jobs:
                   if status == "error":
                       sys.stderr.write(f"refusing unreadable bytecode: {name}\n")
                       sys.exit(1)
-              if obj is not None and (
-                  _payload_hides_secret(obj, set()) or _utf16_pairs(data)
-              ):
-                  sys.stderr.write(f"refusing secret text inside bytecode: {name}\n")
-                  sys.exit(1)
+                  if obj is not None and (
+                      _payload_hides_secret(obj, set()) or _utf16_pairs(data)
+                  ):
+                      sys.stderr.write(f"refusing secret text inside bytecode: {name}\n")
+                      sys.exit(1)
               if utf16_text(data) and not cpython_bytecode(data, name):
                   sys.stderr.write(f"refusing UTF-16 text: {name}\n")
                   sys.exit(1)
