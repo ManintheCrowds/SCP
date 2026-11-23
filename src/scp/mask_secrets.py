@@ -285,7 +285,7 @@ def _field_bounds(record: str, delimiter: str) -> list[tuple[int, int, str]]:
 
 
 def _collapsed_field(field: str) -> str:
-    return field.replace("\n", "").replace("\r", "").strip()
+    return field.replace("\n", "").replace("\r", "").replace('"', "").strip()
 
 
 def _aws_record_spans(record: str, offset: int) -> list[tuple[int, int, str]]:
