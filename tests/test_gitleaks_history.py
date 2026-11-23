@@ -464,17 +464,17 @@ def _code_pyc(code: object) -> bytes:
     return _header(marshal.dumps(code))
 
 
-def _pyc_with_planted_code(secret: bytes) -> bytes:
-    """Put secret bytes in the marshalled code table.
+def _pyc_with_planted_code(planted_bytes: bytes) -> bytes:
+    """Put hidden bytes in the marshalled code table.
 
     The code-object constructor rewrites co_code, so a plant has to be
     written into the marshal blob after that constructor has finished.
     """
     base = compile("x = 1\n" * 40, "m.py", "exec")
     original = base.co_code
-    if len(secret) > len(original):
+    if len(planted_bytes) > len(original):
         raise AssertionError("bytecode plant is longer than the host code")
-    planted = secret + original[len(secret) :]
+    planted = planted_bytes + original[len(planted_bytes) :]
     blob = bytearray(marshal.dumps(base))
     at = blob.find(original)
     if at < 0:
@@ -490,18 +490,18 @@ def _planted(salt: int) -> str:
 
 def test_utf16_in_each_code_object_field_is_refused(tmp_path: Path) -> None:
     base = compile("x = 1\n", "m.py", "exec")
-    secret = _planted(90)
-    raw = secret.encode("latin-1")
+    hidden = _planted(90)
+    raw = hidden.encode("latin-1")
     nulled = "".join(char + "\x00" for char in _token(91))
-    nested = base.replace(co_consts=base.co_consts + (base.replace(co_filename=secret),))
+    nested = base.replace(co_consts=base.co_consts + (base.replace(co_filename=hidden),))
     cases = (
-        ("co_filename", base.replace(co_filename=secret)),
-        ("co_name", base.replace(co_name=secret)),
-        ("co_qualname", base.replace(co_qualname=secret)),
-        ("co_names", base.replace(co_names=base.co_names + (secret,))),
-        ("co_varnames", base.replace(co_varnames=(secret,), co_nlocals=1)),
-        ("co_freevars", base.replace(co_freevars=(secret,))),
-        ("co_cellvars", base.replace(co_cellvars=(secret,))),
+        ("co_filename", base.replace(co_filename=hidden)),
+        ("co_name", base.replace(co_name=hidden)),
+        ("co_qualname", base.replace(co_qualname=hidden)),
+        ("co_names", base.replace(co_names=base.co_names + (hidden,))),
+        ("co_varnames", base.replace(co_varnames=(hidden,), co_nlocals=1)),
+        ("co_freevars", base.replace(co_freevars=(hidden,))),
+        ("co_cellvars", base.replace(co_cellvars=(hidden,))),
         ("co_linetable", base.replace(co_linetable=raw)),
         ("co_exceptiontable", base.replace(co_exceptiontable=raw)),
         ("nested_co_filename", nested),
@@ -725,12 +725,12 @@ def test_a_non_code_marshal_object_is_not_exempt(tmp_path: Path) -> None:
 
 
 def test_marshal_containers_are_refused_as_bytecode(tmp_path: Path) -> None:
-    secret = _utf16(99, "utf-16-le")
+    hidden = _utf16(99, "utf-16-le")
     payloads = (
-        marshal.dumps({"k": secret}),
-        marshal.dumps({secret: "v"}),
-        marshal.dumps((secret,)),
-        marshal.dumps(frozenset((secret,))),
+        marshal.dumps({"k": hidden}),
+        marshal.dumps({hidden: "v"}),
+        marshal.dumps((hidden,)),
+        marshal.dumps(frozenset((hidden,))),
     )
     refused = 0
     for index, payload in enumerate(payloads):
@@ -757,8 +757,8 @@ def test_a_long_bytecode_filename_is_not_refused(tmp_path: Path) -> None:
 
 
 def test_ascii_after_a_nul_in_a_constant_is_still_refused(tmp_path: Path) -> None:
-    secret = b"\x00" + (b"A" * 24)
-    code = compile("x = 1\n", "m.py", "exec").replace(co_consts=(secret,))
+    hidden = b"\x00" + (b"A" * 24)
+    code = compile("x = 1\n", "m.py", "exec").replace(co_consts=(hidden,))
     repo = tmp_path / "repo"
     _init(repo)
     (repo / "m.pyc").write_bytes(_code_pyc(code))
