@@ -68,6 +68,30 @@ def test_retired_token_run_helpers_are_gone() -> None:
     assert not hasattr(mask_secrets, "_longest_token_run")
 
 
+def test_split_token_color_sequences_stay_linear() -> None:
+    """Many finished SGRs inside tokens must stay on one linear pass.
+
+    The shape is a 40-character token with an SGR inserted after the 20th
+    character, repeated. Both mask and egress have to finish well under the
+    old quadratic cost.
+    """
+    token = "".join(("gh", "p_")) + ("A" * 36)
+    piece = token[:20] + "\x1b[m" + token[20:] + " "
+    text = piece * 20_000
+    assert len(text) == 880_000
+    budget = 20.0
+    started = time.process_time()
+    masked = mask_secrets.mask(text)
+    assert time.process_time() - started < budget
+    started = time.process_time()
+    outbound = mask_secrets.prepare_outbound(text)
+    assert time.process_time() - started < budget
+    assert token not in masked
+    assert token not in outbound
+    assert token[:8] not in masked
+    assert token[:8] not in outbound
+
+
 def test_control_heavy_input_stays_under_two_seconds() -> None:
     samples = (
         "\x9b" * 1_000_000,

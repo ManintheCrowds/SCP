@@ -563,10 +563,17 @@ def _letter_view(text: str) -> str:
     return _CSI.sub(r"\1", _OSC.sub("", text))
 
 
-def _slice_visible(piece: str, masked: str) -> bool:
-    if len(piece) < 8:
+def _masked_ngrams(masked: str, size: int = 8) -> set[str]:
+    """Every contiguous slice of `size` characters. Built once per scan."""
+    if len(masked) < size:
+        return set()
+    return {masked[index : index + size] for index in range(len(masked) - size + 1)}
+
+
+def _slice_visible(piece: str, ngrams: set[str]) -> bool:
+    if len(piece) < 8 or not ngrams:
         return False
-    return any(piece[index : index + 8] in masked for index in range(len(piece) - 7))
+    return any(piece[index : index + 8] in ngrams for index in range(len(piece) - 7))
 
 
 def _run_lengths(text: str) -> tuple[list[int], list[int]]:
@@ -605,7 +612,7 @@ def _csi_hides_a_token(text: str) -> bool:
     if not matches:
         return False
     stripped, _kept = _sgr_views(text)
-    masked = _mask_chosen(stripped)
+    ngrams = _masked_ngrams(_mask_chosen(stripped))
     ending, starting = _run_lengths(text)
     for match in matches:
         pre = ending[match.start() - 1] if match.start() else 0
@@ -617,7 +624,7 @@ def _csi_hides_a_token(text: str) -> bool:
         # The final letter is kept in one candidate and dropped in the other,
         # so a parameter semicolon or colon cannot hide either shape.
         candidates = (before + match.group(1) + after, before + after)
-        if any(_slice_visible(candidate, masked) for candidate in candidates):
+        if any(_slice_visible(candidate, ngrams) for candidate in candidates):
             return True
     return False
 
