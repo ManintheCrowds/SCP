@@ -164,6 +164,17 @@ def test_windows_excel_aws_rows_are_masked() -> None:
     assert leaked == 0
 
 
+def test_a_split_key_id_is_detected_and_masked() -> None:
+    """mask and has_secrets agree when a quoted newline splits the key id."""
+    chars = list(_chunk(40, 7, "A"))
+    chars[20] = "/"
+    value = "".join(chars)
+    key_id = _key_id(9)
+    text = '"' + key_id + '\n","' + value + '"'
+    assert mask_secrets.has_secrets(text) is True
+    assert not _value_visible(text, value)
+
+
 def test_a_quoted_aws_secret_may_span_lines() -> None:
     leaked = 0
     total = 0

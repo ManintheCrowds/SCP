@@ -730,6 +730,8 @@ def _detect(text: str) -> bool:
         unjoined, joined = secret_surface.detection_views(text)
     except secret_surface.NormalizationBudgetExceeded:
         return True
+    if _aws_row_spans(unjoined) or (joined != unjoined and _aws_row_spans(joined)):
+        return True
     if _view_has_secret(unjoined):
         return True
     return joined != unjoined and _view_has_secret(joined)
