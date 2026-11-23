@@ -21,6 +21,9 @@ def test_secret_scan_doc_covers_exemptions_and_progress_bars() -> None:
         "bracketed paste",
         "8-bit CSI",
         "does not erase a benign paragraph",
+        "types.CodeType",
+        "constants",
+        "marshal.load",
     )
     missing = [phrase for phrase in required if phrase not in text]
     assert missing == []

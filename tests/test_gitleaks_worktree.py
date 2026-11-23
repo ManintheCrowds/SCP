@@ -386,6 +386,12 @@ def test_checker_forces_pythonsafepath(tmp_path: Path) -> None:
     assert log.read_text(encoding="utf-8") == "1"
 
 
+def test_tests_job_fetches_history_and_names_the_head() -> None:
+    text = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "fetch-depth: 0" in text
+    assert "SCP_GITLEAKS_HISTORY" in text
+
+
 def test_codeowners_covers_the_ignore_file_and_github_workflows() -> None:
     # GitHub reads .github/CODEOWNERS before a root file. #101 also adds
     # .github/CODEOWNERS, so the entries have to live here or they are ignored.

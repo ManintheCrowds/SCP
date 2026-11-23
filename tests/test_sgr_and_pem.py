@@ -130,6 +130,41 @@ def test_a_second_secret_does_not_unmask_a_broken_token() -> None:
     assert leaked == 0
 
 
+def test_a_short_piece_still_hides_when_another_secret_is_present() -> None:
+    """A 12-character remainder is below a 20-character threshold.
+
+    The letter-keeping view cannot rebuild the token, because the digits
+    were parameters. Skipping the check when another secret is present
+    would leave that remainder.
+    """
+    other = _token_with("A", 900)
+    prefix = "".join(("gh", "p_")) + "A" * 8
+    eaten = "1" * 12 + "m"
+    suffix = "B" * 3
+    token = prefix + eaten + suffix
+    text = prefix + "\x1b[" + eaten + suffix + "\n" + other
+    masked = mask_secrets.mask(text)
+    logged = encounter_auto_log._sanitize_for_log(text, "reversal")
+    if _eight_visible(token, masked) or _eight_visible(token, logged):
+        raise AssertionError("short piece visible")
+
+
+def test_joined_sides_of_an_eaten_letter_do_not_leak() -> None:
+    """Four characters on each side join once the final letter is removed.
+
+    A check that only looks at the candidate which still contains that
+    letter does not see the joined piece.
+    """
+    left = "".join(("gh", "p_"))
+    right = "WXYZ"
+    text = left + "\x1b[31" + "m" + right
+    masked = mask_secrets.mask(text)
+    logged = encounter_auto_log._sanitize_for_log(text, "reversal")
+    joined = left + right
+    if joined in masked or joined in logged:
+        raise AssertionError("joined sides visible")
+
+
 def test_multiparam_sgr_does_not_leak_a_token() -> None:
     leaked = 0
     total = 0
