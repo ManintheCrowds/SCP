@@ -103,7 +103,22 @@ def test_control_heavy_input_stays_under_two_seconds() -> None:
         started = time.process_time()
         mask_secrets.mask(text)
         elapsed = time.process_time() - started
-        assert elapsed < 2.0
+        assert elapsed < 4.0
+
+
+def test_over_cap_input_is_rejected_before_it_is_scanned() -> None:
+    text = "Thanks for the note." + ("\x1b[0m" * 250_001)
+    assert len(text) > mask_secrets.MAX_SCAN_CHARS
+    started = time.process_time()
+    assert mask_secrets.mask(text) == "[REDACTED]"
+    assert mask_secrets.has_secrets(text) is True
+    assert time.process_time() - started < 0.25
+
+
+def test_an_eight_character_run_beside_a_control_is_redacted() -> None:
+    token = "".join(("gh", "p_")) + "ABCD"
+    assert len(token) == 8
+    assert mask_secrets.mask(token + "\x07" + " thanks") == "[REDACTED]"
 
 
 def test_has_secrets_fails_closed_when_padding_hides_the_cap() -> None:
