@@ -868,6 +868,38 @@ def test_a_short_utf16_run_is_refused_in_a_binary_and_a_constant(tmp_path: Path)
     assert pyc_proc.returncode == 1 and "refusing secret text inside bytecode" in pyc_proc.stderr
 
 
+def test_nul_strides_behind_binary_magic_are_refused(tmp_path: Path) -> None:
+    letters = "ABCDEFGHIJKLMNOP"
+    magics = ((b"\x89PNG\r\n\x1a\n", "shot.png"), (b"PK\x03\x04", "pack.zip"))
+    refused = 0
+    total = 0
+    for stride in (2, 3, 4):
+        planted = b"".join(bytes((ord(char),)) + (b"\x00" * (stride - 1)) for char in letters)
+        for index, (magic, name) in enumerate(magics):
+            repo = tmp_path / f"stride{stride}-{index}"
+            _init(repo)
+            (repo / name).write_bytes(magic + planted)
+            _git(repo, "add", name)
+            _git(repo, "commit", "-q", "-m", "stride")
+            proc = _scan(repo, tmp_path / f"stride-scan{stride}-{index}")
+            total += 1
+            if proc.returncode == 1 and "refusing UTF-16 text" in proc.stderr:
+                refused += 1
+    assert total == 6
+    assert refused == 6
+    noise = bytes((index % 200) + 1 for index in range(80))
+    clean = 0
+    for index, (magic, name) in enumerate(magics):
+        repo = tmp_path / f"clean{index}"
+        _init(repo)
+        (repo / name).write_bytes(magic + noise)
+        _git(repo, "add", name)
+        _git(repo, "commit", "-q", "-m", "clean")
+        if _scan(repo, tmp_path / f"clean-scan{index}").returncode == 0:
+            clean += 1
+    assert clean == len(magics)
+
+
 def test_a_real_png_header_without_text_is_not_refused(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)

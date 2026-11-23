@@ -186,32 +186,37 @@ jobs:
           _CODE_BINARY = ("co_code", "co_linetable", "co_exceptiontable")
 
           def _utf16_pairs(data: bytes, need: int = 16) -> bool:
-              """Printable text interleaved with NUL bytes, in either byte order."""
+              """Printable text with 1, 2, or 3 trailing or leading NUL bytes.
 
-              def scan(start: int) -> bool:
-                  little = 0
-                  big = 0
-                  index = start
-                  last = len(data) - 1
-                  while index < last:
-                      first = data[index]
-                      second = data[index + 1]
-                      if second == 0 and 32 <= first <= 126:
-                          little += 1
-                          if little >= need:
-                              return True
-                      else:
-                          little = 0
-                      if first == 0 and 32 <= second <= 126:
-                          big += 1
-                          if big >= need:
-                              return True
-                      else:
-                          big = 0
-                      index += 2
+              Stride 2 is UTF-16, stride 3 is a two-NUL gap, and stride 4 is
+              UTF-32. Either byte order counts.
+              """
+
+              def scan(stride: int) -> bool:
+                  length = len(data)
+                  gap = b"\x00" * (stride - 1)
+                  for align in range(stride):
+                      little = 0
+                      big = 0
+                      index = align
+                      while index + stride <= length:
+                          window = data[index : index + stride]
+                          if 32 <= window[0] <= 126 and window[1:] == gap:
+                              little += 1
+                              if little >= need:
+                                  return True
+                          else:
+                              little = 0
+                          if 32 <= window[-1] <= 126 and window[:-1] == gap:
+                              big += 1
+                              if big >= need:
+                                  return True
+                          else:
+                              big = 0
+                          index += stride
                   return False
 
-              return bool(data) and (scan(0) or scan(1))
+              return bool(data) and (scan(2) or scan(3) or scan(4))
 
           def _payload_hides_secret(obj: object, seen: set[int]) -> bool:
               marker = id(obj)
