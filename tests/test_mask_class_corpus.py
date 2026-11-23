@@ -155,6 +155,17 @@ def test_benign_flags_stay_under_the_ceiling() -> None:
     assert len(flagged) <= _BENIGN_FLAG_CEILING
 
 
+def test_a_wordpress_nonce_is_not_a_secret() -> None:
+    lines = (
+        'name="_wpnonce" value="a1b2c3d4e5"',
+        "wp_nonce=a1b2c3d4e5",
+        '<input type="hidden" name="_wpnonce" value="0a1b2c3d4e" />',
+        "action=edit&_wpnonce=abcdef1234",
+    )
+    for line in lines:
+        assert mask_secrets.has_secrets(line) is False
+
+
 def test_sha_uuid_long_ids_and_key_in_prose_are_not_secrets() -> None:
     samples = (
         "The key to the shed is on the hook.",
