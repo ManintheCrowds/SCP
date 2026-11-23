@@ -724,6 +724,30 @@ def test_a_non_code_marshal_object_is_not_exempt(tmp_path: Path) -> None:
     assert "refusing" in proc.stderr
 
 
+def test_a_short_utf16_constant_is_not_saved_by_the_blob_exemption(tmp_path: Path) -> None:
+    """Ten interleaved pairs are too short for the raw code-table run."""
+    hidden = ("ABCDEFGHIJ").encode("utf-16-le")
+    assert len(hidden) == 20
+    code = compile("x = 1\n", "m.py", "exec").replace(co_consts=(hidden,))
+    cases = (
+        _code_pyc(code),
+        _header(marshal.dumps({"k": hidden})),
+        _header(marshal.dumps({hidden: "v"})),
+        _header(marshal.dumps((hidden,))),
+    )
+    refused = 0
+    for index, payload in enumerate(cases):
+        repo = tmp_path / f"short{index}"
+        _init(repo)
+        (repo / "m.pyc").write_bytes(payload)
+        _git(repo, "add", "m.pyc")
+        _git(repo, "commit", "-q", "-m", "short")
+        proc = _scan(repo, tmp_path / f"short-scan{index}")
+        if proc.returncode == 1 and "refusing secret text inside bytecode" in proc.stderr:
+            refused += 1
+    assert refused == len(cases)
+
+
 def test_marshal_containers_are_refused_as_bytecode(tmp_path: Path) -> None:
     hidden = _utf16(99, "utf-16-le")
     payloads = (

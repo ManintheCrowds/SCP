@@ -115,6 +115,15 @@ def test_over_cap_input_is_rejected_before_it_is_scanned() -> None:
     assert time.process_time() - started < 0.25
 
 
+def test_over_cap_mask_does_not_parse_the_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    def explode(text: str) -> tuple[str, str]:
+        raise AssertionError(text[:1])
+
+    monkeypatch.setattr(mask_secrets, "_sgr_views", explode)
+    text = "x" * (mask_secrets.MAX_SCAN_CHARS + 1)
+    assert mask_secrets.mask(text) == "[REDACTED]"
+
+
 def test_an_eight_character_run_beside_a_control_is_redacted() -> None:
     token = "".join(("gh", "p_")) + "ABCD"
     assert len(token) == 8

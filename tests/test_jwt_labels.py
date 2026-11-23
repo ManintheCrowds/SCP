@@ -237,6 +237,14 @@ def test_list_table_and_punctuation_prefixes_do_not_emit_the_signature() -> None
     assert leaked == 0
 
 
+def test_a_known_prefix_inside_an_open_jwt_still_joins() -> None:
+    header = "".join(("ey", "J")) + ("A" * 20)
+    payload = "".join(("gh", "p_")) + ("B" * 16)
+    signature = "C" * 24
+    text = header + ".\n" + payload + ".\n" + signature
+    assert signature not in mask_secrets.mask(text)
+
+
 def test_a_fragment_word_stays_off_an_open_jwt() -> None:
     header = "".join(("ey", "J")) + ("A" * 20)
     text = header + ".\n" + "before"
