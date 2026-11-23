@@ -386,6 +386,64 @@ def test_checker_forces_pythonsafepath(tmp_path: Path) -> None:
     assert log.read_text(encoding="utf-8") == "1"
 
 
+def test_checker_runs_isolated_from_the_head_tree(tmp_path: Path) -> None:
+    script = _run_block(_workflow("ci.yml"), "Run the base mask checker")
+    base = tmp_path / "base"
+    (base / "scripts").mkdir(parents=True)
+    (base / "scripts" / "run_mask_check.py").write_text("print('ok')\n", encoding="utf-8")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "argv"
+    stub = bindir / "python3"
+    stub.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PY_LOG\"\nprintf '%s' \"$PYTHONSAFEPATH\" >> \"$PY_LOG\"\nexit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    env = os.environ.copy()
+    env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
+    env["PY_LOG"] = str(log)
+    env["PYTHONPATH"] = str(tmp_path / "head")
+    env["PYTHONSAFEPATH"] = "0"
+    env["GITHUB_EVENT_NAME"] = "pull_request"
+    env["BASE_DIR"] = str(base)
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    recorded = log.read_text(encoding="utf-8")
+    assert recorded.splitlines()[0].startswith("-I ")
+    assert recorded.endswith("1")
+
+
+def test_mask_check_job_runs_on_a_pull_request() -> None:
+    lines = _workflow("ci.yml").splitlines()
+    start = next(index for index, line in enumerate(lines) if line == "  mask-check:")
+    job = []
+    for line in lines[start + 1 :]:
+        if line.startswith("  ") and not line.startswith("   ") and line.endswith(":"):
+            break
+        job.append(line)
+    assert "if: github.event_name == 'push'" not in "\n".join(job)
+    checker = []
+    seen = False
+    for line in job:
+        if line.strip() == "- name: Run the base mask checker":
+            seen = True
+        elif seen and line.strip().startswith("- name:"):
+            break
+        if seen:
+            checker.append(line)
+    assert seen
+    assert not any(line.strip().startswith("if:") for line in checker)
+    assert "python3 -I " in "\n".join(checker)
+
+
 def test_tests_job_fetches_history_and_names_the_head() -> None:
     text = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "fetch-depth: 0" in text

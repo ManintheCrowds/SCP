@@ -701,6 +701,50 @@ def test_blob_exemption_list_is_read_from_the_base_not_the_head(tmp_path: Path) 
     assert "refusing" in proc.stderr
 
 
+def test_a_renamed_code_object_is_not_exempt(tmp_path: Path) -> None:
+    code = compile("x = 1\n", "m.py", "exec").replace(co_filename=("p" * 80) + ".py")
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "notes.txt").write_bytes(_code_pyc(code))
+    _git(repo, "add", "notes.txt")
+    _git(repo, "commit", "-q", "-m", "renamed")
+    proc = _scan(repo, tmp_path / "scan")
+    assert proc.returncode == 1
+    assert "refusing" in proc.stderr
+
+
+def test_a_non_code_marshal_object_is_not_exempt(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "m.pyc").write_bytes(_header(marshal.dumps("p" * 80)))
+    _git(repo, "add", "m.pyc")
+    _git(repo, "commit", "-q", "-m", "string")
+    proc = _scan(repo, tmp_path / "scan")
+    assert proc.returncode == 1
+    assert "refusing" in proc.stderr
+
+
+def test_marshal_containers_are_refused_as_bytecode(tmp_path: Path) -> None:
+    secret = _utf16(99, "utf-16-le")
+    payloads = (
+        marshal.dumps({"k": secret}),
+        marshal.dumps({secret: "v"}),
+        marshal.dumps((secret,)),
+        marshal.dumps(frozenset((secret,))),
+    )
+    refused = 0
+    for index, payload in enumerate(payloads):
+        repo = tmp_path / f"box{index}"
+        _init(repo)
+        (repo / "m.pyc").write_bytes(_header(payload))
+        _git(repo, "add", "m.pyc")
+        _git(repo, "commit", "-q", "-m", "box")
+        proc = _scan(repo, tmp_path / f"box-scan{index}")
+        if proc.returncode == 1 and "refusing secret text inside bytecode" in proc.stderr:
+            refused += 1
+    assert refused == len(payloads)
+
+
 def test_a_long_bytecode_filename_is_not_refused(tmp_path: Path) -> None:
     code = compile("x = 1\n", "m.py", "exec").replace(co_filename=("p" * 80) + ".py")
     repo = tmp_path / "repo"
