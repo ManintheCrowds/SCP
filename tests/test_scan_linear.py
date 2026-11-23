@@ -106,6 +106,19 @@ def test_control_heavy_input_stays_under_two_seconds() -> None:
         assert elapsed < 2.0
 
 
+def test_has_secrets_fails_closed_when_padding_hides_the_cap() -> None:
+    """SGR padding must not shrink the text below the cap before the check."""
+    prefix = "".join(("gh", "p_")) + ("A" * 8)
+    eaten = "1" * 12 + "m"
+    suffix = "B" * 3
+    under = prefix + "\x1b[" + eaten + suffix
+    assert mask_secrets.has_secrets(under) is True
+    padded = under + ("\x1b[0m" * 250_001)
+    assert len(padded) > mask_secrets.MAX_SCAN_CHARS
+    assert mask_secrets.has_secrets(padded) is True
+    assert mask_secrets.mask(padded) == "[REDACTED]"
+
+
 def test_over_cap_fails_closed() -> None:
     text = "x" * (mask_secrets.MAX_SCAN_CHARS + 1)
     assert mask_secrets.mask(text) == "[REDACTED]"

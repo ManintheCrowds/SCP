@@ -742,6 +742,8 @@ def has_secrets(text: str) -> bool:
     keeps a CSI final letter. An exhausted normalization budget or an
     over-cap input fails closed. Email addresses alone do not count.
     """
+    if _over_cap(text):
+        return True
     stripped, kept = _sgr_views(text)
     if _detect(stripped) or (kept != stripped and _detect(kept)):
         return True
