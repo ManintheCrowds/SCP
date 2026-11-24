@@ -16,12 +16,25 @@ To allow one blob:
 
 ## Narrow JWT wraps
 
-`mask` joins wrapped lines of a JSON Web Token when the pieces do not look like separate words. A bare token wrapped at a narrow width still leaks. Two measurements, each of 200 tokens, cover widths 4 through 16:
+`mask` joins wrapped lines of a JSON Web Token when the pieces do not look like separate words. A bare token wrapped at a narrow width still leaks. The counts below are produced by `tests/test_jwt_wrap_widths.py`: 200 tokens, a 33-character header, a 43-character payload, and a 43-character signature, wrapped on a fixed width. The first count is 8 or more signature characters still visible after `mask`. The second is the whole signature, after newlines are removed.
 
-- Rebuilding the whole signature from the visible lines: width 4 was effectively unmasked, 200/200. Width 5 was 10/200. Width 6 was 5/200. Widths 7 through 12 were 0/200, except one run of 40 at width 8 that leaked once.
-- Counting a leak as 8 or more signature characters still visible: width 6 was 35/200, width 7 was 7/200, width 8 was 3/200, width 10 was 13/200, width 12 was 3/200, and width 16 was 1/200.
+| Width | 8 or more characters | Whole signature |
+| --- | --- | --- |
+| 4 | 96/200 | 65/200 |
+| 5 | 66/200 | 59/200 |
+| 6 | 25/200 | 19/200 |
+| 7 | 6/200 | 6/200 |
+| 8 | 12/200 | 9/200 |
+| 9 | 6/200 | 6/200 |
+| 10 | 13/200 | 13/200 |
+| 11 | 0/200 | 0/200 |
+| 12 | 6/200 | 6/200 |
+| 13 | 0/200 | 0/200 |
+| 14 | 0/200 | 0/200 |
+| 15 | 41/200 | 41/200 |
+| 16 | 0/200 | 0/200 |
 
-Width 4 is not a partial leak. Width 8 leaks rarely. Width 10 leaks more often than the widths next to it, because a wrapped line can look like the end of a sentence. Closing width 4 without gluing ordinary prose is not part of this scan.
+Width 15 is 41/200, about one in five. Width 4 is 96/200 on this generator. Closing these widths without gluing ordinary prose is not part of this scan.
 
 ## Controls and progress bars
 
