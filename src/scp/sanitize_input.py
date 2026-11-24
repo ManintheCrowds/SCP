@@ -930,19 +930,36 @@ def _base_severity_for_key(key: str) -> str:
     raise ValueError(f"unknown finding key: {key}")
 
 
+def _compile_poison_phrase_body(phrase: str) -> str:
+    parts: list[str] = []
+    for char in phrase:
+        if char.isspace():
+            parts.append(r"\s+")
+        elif char == "'":
+            parts.append(r"\s*'?\s*")
+        elif char in "./\\_-":
+            parts.append(r"\s*" + re.escape(char) + r"\s*")
+        else:
+            parts.append(re.escape(char))
+    return "".join(parts)
+
+
+@lru_cache(maxsize=256)
 def _compile_poison_phrase(phrase: str) -> re.Pattern[str]:
     """Match a registry phrase literally, with flexible whitespace.
 
     Dotted filenames such as ``.env`` must be a whole path segment so
     ``manifest.env`` and ``.env.example`` do not match. Instruction tags match
-    the angle-bracket form only, so the word "important" does not.
+    the angle-bracket form only, so the word "important" does not. Path-like
+    phrases tolerate whitespace around join characters because those splits are
+    common tool-poisoning obfuscation.
     """
     stripped = phrase.strip()
     if len(stripped) >= 3 and stripped[0] == "<" and stripped[-1] == ">":
         inner = stripped[1:-1].strip()
         if inner:
             return re.compile(r"<\s*" + re.escape(inner) + r"\s*>", re.IGNORECASE)
-    escaped = re.escape(stripped).replace(r"\ ", r"\s+")
+    escaped = _compile_poison_phrase_body(stripped)
     ends_alnum = stripped[-1].isalnum()
     if stripped.startswith("."):
         prefix = r"(?<![\w.])"
