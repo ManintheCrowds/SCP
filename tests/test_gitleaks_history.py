@@ -567,9 +567,6 @@ def test_utf16_in_each_code_object_field_is_refused(tmp_path: Path) -> None:
 
 def test_prescan_locks_the_isolation_and_the_field_walk() -> None:
     script = _run_block("Scan with the base ignore file")
-    assert 'cd "${RUNNER_TEMP}"' in script
-    assert "PYTHONSAFEPATH=1" in script
-    assert "python3 -I " in script
     assert "refusing bytecode that is not on the base allow-list" in script
     assert 'sys.executable, "-I", "-c"' in script
     assert '"co_filename"' in script
@@ -577,6 +574,54 @@ def test_prescan_locks_the_isolation_and_the_field_walk() -> None:
     assert "_CODE_BINARY" in script
     for name in ("co_code", "co_linetable", "co_exceptiontable"):
         assert name in script
+
+
+def test_prescan_python_is_isolated_from_the_checkout(tmp_path: Path) -> None:
+    """The prescan interpreter is isolated, even if the text of the step changes."""
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "app")
+    binary = _binary(tmp_path / "bin")
+    bindir = tmp_path / "stub"
+    bindir.mkdir()
+    log = tmp_path / "py.log"
+    stub = bindir / "python3"
+    stub.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" > \"$PY_LOG\"\n"
+        "printf '%s\\n' \"$PWD\" >> \"$PY_LOG\"\n"
+        "printf '%s\\n' \"${PYTHONSAFEPATH-}\" >> \"$PY_LOG\"\n"
+        "cat >/dev/null\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    env = os.environ.copy()
+    env["PATH"] = f"{bindir}{os.pathsep}{binary.parent}{os.pathsep}{env.get('PATH', '')}"
+    env["PY_LOG"] = str(log)
+    env["RUNNER_TEMP"] = str(runner)
+    env["GITHUB_EVENT_NAME"] = "pull_request"
+    env["BASE_SHA"] = ""
+    env["GITLEAKS_CONFIG"] = str(repo / "rules.toml")
+    env["GITLEAKS_VERSION"] = _VERSION
+    env["PYTHONSAFEPATH"] = "0"
+    proc = subprocess.run(
+        ["bash", "-c", _run_block("Scan with the base ignore file")],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    recorded = log.read_text(encoding="utf-8").splitlines()
+    assert recorded[0].startswith("-I ")
+    assert recorded[1] == str(runner)
+    assert recorded[2] == "1"
 
 
 def test_a_short_filename_and_a_twenty_character_line_table_are_refused(tmp_path: Path) -> None:

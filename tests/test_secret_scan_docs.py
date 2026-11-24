@@ -24,6 +24,7 @@ def test_secret_scan_doc_covers_exemptions_and_progress_bars() -> None:
         "types.CodeType",
         "constants",
         "marshal.load",
+        "Unlisted bytecode never reaches that walk",
     )
     missing = [phrase for phrase in required if phrase not in text]
     assert missing == []
