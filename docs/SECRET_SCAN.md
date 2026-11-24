@@ -14,6 +14,15 @@ To allow one blob:
 2. That file is owned in `.github/CODEOWNERS`. A pull request cannot grant its own exemption: the job reads the list from the base revision (`git show BASE_SHA:scripts/gitleaks_blob_allow.txt`). On a push to the default branch the working tree is the post-merge content.
 3. The exemption skips only the NUL / UTF-16 precheck. Gitleaks still scans the blob. A different blob at the same path is refused. A token after a NUL in an exempted blob is refused.
 
+## Narrow JWT wraps
+
+`mask` joins wrapped lines of a JSON Web Token when the pieces do not look like separate words. A bare token wrapped at a narrow width still leaks. Two measurements, each of 200 tokens, cover widths 4 through 16:
+
+- Rebuilding the whole signature from the visible lines: width 4 was effectively unmasked, 200/200. Width 5 was 10/200. Width 6 was 5/200. Widths 7 through 12 were 0/200, except one run of 40 at width 8 that leaked once.
+- Counting a leak as 8 or more signature characters still visible: width 6 was 35/200, width 7 was 7/200, width 8 was 3/200, width 10 was 13/200, width 12 was 3/200, and width 16 was 1/200.
+
+Width 4 is not a partial leak. Width 8 leaks rarely. Width 10 leaks more often than the widths next to it, because a wrapped line can look like the end of a sentence. Closing width 4 without gluing ordinary prose is not part of this scan.
+
 ## Controls and progress bars
 
 Egress refuses every C0 control except tab, line feed, and carriage return, plus DEL and the C1 range. The CLI exits nonzero and writes nothing. That includes the sequences progress bars use:
