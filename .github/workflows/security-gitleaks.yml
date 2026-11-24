@@ -202,7 +202,12 @@ jobs:
           _CODE_BINARY = ("co_code", "co_linetable", "co_exceptiontable")
 
           def _little_gap(data: bytes, need: int) -> bool:
-              """A printable byte followed by 1, 2, or 3 NULs, gaps may mix."""
+              """A printable byte followed by 1, 2, or 3 NULs. Gaps may mix.
+
+              A gap of exactly 4 NULs does not start a run and is not a
+              character, but it does not wipe out a run that has started.
+              A longer gap resets the run.
+              """
               length = len(data)
               run = 0
               index = 0
@@ -210,14 +215,18 @@ jobs:
                   byte = data[index]
                   if 32 <= byte <= 126:
                       cursor = index + 1
-                      limit = index + 4
+                      limit = index + 6
                       while cursor < length and cursor < limit and data[cursor] == 0:
                           cursor += 1
                       gap = cursor - (index + 1)
-                      if gap >= 1 and (cursor >= length or data[cursor] != 0):
+                      bounded = cursor >= length or data[cursor] != 0
+                      if 1 <= gap <= 3 and bounded:
                           run += 1
                           if run >= need:
                               return True
+                          index = cursor
+                          continue
+                      if gap == 4 and bounded and run > 0:
                           index = cursor
                           continue
                   run = 0
@@ -225,7 +234,11 @@ jobs:
               return False
 
           def _big_gap(data: bytes, need: int) -> bool:
-              """1, 2, or 3 NULs followed by a printable byte. Gaps may mix."""
+              """1, 2, or 3 NULs followed by a printable byte. Gaps may mix.
+
+              A gap of exactly 4 NULs keeps a run that has already started
+              and does not start one. A longer gap resets the run.
+              """
               length = len(data)
               run = 0
               index = 0
@@ -235,20 +248,18 @@ jobs:
                       index += 1
                       continue
                   cursor = index
-                  limit = index + 3
+                  limit = index + 5
                   while cursor < length and cursor < limit and data[cursor] == 0:
                       cursor += 1
                   gap = cursor - index
-                  printable = (
-                      gap >= 1
-                      and cursor < length
-                      and data[cursor] != 0
-                      and 32 <= data[cursor] <= 126
-                  )
-                  if printable:
+                  printable = cursor < length and 32 <= data[cursor] <= 126
+                  if printable and 1 <= gap <= 3:
                       run += 1
                       if run >= need:
                           return True
+                      index = cursor + 1
+                      continue
+                  if printable and gap == 4 and run > 0:
                       index = cursor + 1
                       continue
                   run = 0
@@ -259,8 +270,9 @@ jobs:
               """Printable text with a gap of 1, 2, or 3 NUL bytes.
 
               The gap may change from one character to the next. Either byte
-              order counts. A gap of 4 or more NULs, or a separator that is
-              not a NUL, is not this pattern.
+              order counts. One gap of exactly 4 NULs does not erase a run
+              that has started, and it cannot start a run. A gap of 5 or
+              more NULs, or a separator that is not a NUL, resets the run.
               """
               return bool(data) and (_little_gap(data, need) or _big_gap(data, need))
 

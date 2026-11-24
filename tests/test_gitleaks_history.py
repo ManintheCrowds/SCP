@@ -1255,8 +1255,37 @@ def test_mixed_nul_gaps_are_refused_and_wider_gaps_are_not(tmp_path: Path) -> No
         if _scan(repo, tmp_path / f"limit-scan{index}").returncode == 0:
             passed += 1
     assert passed == 2
+    # A 4-NUL gap every 7 characters used to reset the run under the threshold.
+    # A gap that cycles through 1, 2, 3, and 4 does the same.
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWX"
+    every_seven = b"".join(
+        bytes((ord(char),)) + (b"\x00" * (4 if (index + 1) % 7 == 0 else (index % 3) + 1))
+        for index, char in enumerate(letters)
+    )
+    cycling = b"".join(
+        bytes((ord(char),)) + (b"\x00" * ((index % 4) + 1)) for index, char in enumerate(letters)
+    )
+    caught = 0
+    for index, planted in enumerate((every_seven, cycling)):
+        repo = tmp_path / f"inside{index}"
+        _init(repo)
+        (repo / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + planted)
+        _git(repo, "add", "shot.png")
+        _git(repo, "commit", "-q", "-m", "inside")
+        proc = _scan(repo, tmp_path / f"inside-scan{index}")
+        if proc.returncode == 1 and "refusing UTF-16 text" in proc.stderr:
+            caught += 1
+    assert caught == 2
+    wider = b"".join(bytes((ord(char),)) + (b"\x00" * 5) for char in "ABCDEFGHIJKLMNOP")
+    quiet = tmp_path / "five"
+    _init(quiet)
+    (quiet / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + wider)
+    _git(quiet, "add", "shot.png")
+    _git(quiet, "commit", "-q", "-m", "five")
+    assert _scan(quiet, tmp_path / "five-scan").returncode == 0
     doc = (_REPO / "docs" / "SECRET_SCAN.md").read_text(encoding="utf-8")
-    assert "4 or more NULs" in doc
+    assert "gap of exactly 4 NULs" in doc
+    assert "gap of 5 or more NULs" in doc
     assert "separator that is not a NUL" in doc
 
 
