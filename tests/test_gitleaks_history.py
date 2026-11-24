@@ -1268,6 +1268,51 @@ def test_a_big_endian_run_at_the_threshold_is_refused(tmp_path: Path) -> None:
     assert passed == 3
 
 
+def test_a_little_endian_run_at_the_threshold_is_refused(tmp_path: Path) -> None:
+    """Exactly eight little-endian characters, including mixed gaps.
+
+    Nine or more are also caught by the shifted big-endian walk. The
+    threshold length is not, and a mixed gap is not a fixed stride, so
+    both the little-endian walk and the mixed-gap walk have to see it.
+    """
+    letters = "ABCDEFGH"
+    short = "ABCDEFG"
+    refused = 0
+    passed = 0
+    patterns = []
+    for stride in (2, 3, 4):
+        patterns.append(
+            b"".join(bytes((ord(char),)) + (b"\x00" * (stride - 1)) for char in letters) + b"\x01"
+        )
+    gaps = (1, 2, 3, 1, 2, 3, 2, 1)
+    patterns.append(
+        b"".join(bytes((ord(char),)) + (b"\x00" * gap) for char, gap in zip(letters, gaps, strict=True))
+        + b"\x01"
+    )
+    for index, planted in enumerate(patterns):
+        repo = tmp_path / f"le{index}"
+        _init(repo)
+        (repo / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + planted)
+        _git(repo, "add", "shot.png")
+        _git(repo, "commit", "-q", "-m", "little-endian")
+        proc = _scan(repo, tmp_path / f"le-scan{index}")
+        if proc.returncode == 1 and "refusing UTF-16 text" in proc.stderr:
+            refused += 1
+    for stride in (2, 3, 4):
+        under = b"".join(
+            bytes((ord(char),)) + (b"\x00" * (stride - 1)) for char in short
+        ) + b"\x01"
+        quiet = tmp_path / f"le-under{stride}"
+        _init(quiet)
+        (quiet / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + under)
+        _git(quiet, "add", "shot.png")
+        _git(quiet, "commit", "-q", "-m", "under")
+        if _scan(quiet, tmp_path / f"le-under-scan{stride}").returncode == 0:
+            passed += 1
+    assert refused == 4
+    assert passed == 3
+
+
 def test_a_real_png_header_without_text_is_not_refused(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)
