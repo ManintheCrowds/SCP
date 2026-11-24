@@ -698,6 +698,35 @@ def test_the_bytecode_child_ignores_a_path_module(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+def test_a_listed_integer_constant_hides_utf16_before_the_child(tmp_path: Path) -> None:
+    """Digits of a long integer are UTF-16 letters the child does not walk."""
+    letters = "ABCDEFGHIJKLMNOPQRST"
+    number = 0
+    for digit in (ord(char) for char in letters):
+        number = (number << 15) | digit
+    code = compile("x = 1\n", "m.py", "exec").replace(co_consts=(number,))
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "m.pyc").write_bytes(_code_pyc(code))
+    _git(repo, "add", "m.pyc")
+    _git(repo, "commit", "-q", "-m", "digits")
+    proc = _scan_as_base(repo, tmp_path / "scan")
+    assert proc.returncode == 1, proc.stderr
+    assert "refusing secret text inside bytecode" in proc.stderr
+
+
+def test_a_listed_non_code_value_is_not_accepted(tmp_path: Path) -> None:
+    hidden = "ABCDEFGHIJKLMNOPQRSTUVWX"
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "m.pyc").write_bytes(_header(marshal.dumps((hidden,))))
+    _git(repo, "add", "m.pyc")
+    _git(repo, "commit", "-q", "-m", "tuple")
+    proc = _scan_as_base(repo, tmp_path / "scan")
+    assert proc.returncode == 1, proc.stderr
+    assert "refusing text hidden after a NUL byte" in proc.stderr
+
+
 def test_a_short_filename_and_a_twenty_character_line_table_are_refused(tmp_path: Path) -> None:
     base = compile("x = 1\n", "m.py", "exec")
     short = "ABCDEFGHIJ".encode("utf-16-le").decode("latin-1")
