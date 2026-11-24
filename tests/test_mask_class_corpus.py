@@ -1,0 +1,198 @@
+# PURPOSE: Locked leak classes and a benign false-positive ceiling.
+# Tokens are built at runtime. Nothing here is a real credential.
+
+from __future__ import annotations
+
+import tracemalloc
+
+import pytest
+
+from scp import mask_secrets, secret_surface
+
+_BENIGN_PER_TEMPLATE = 40
+_BENIGN_FLAG_CEILING = 0
+_TEMPLATES = (
+    "Thanks for the note. Notes from meeting {n} stay in the folder.",
+    "def total(left, right):\n    return left + right  # item {n}\n",
+    (
+        '<div class="et_pb_module et_pb_text et_pb_bg_layout_light">'
+        '<div class="et_pb_text_inner"><p>Studio note {n}.</p></div></div>'
+    ),
+    "Write ada@\n    example.com about item {n}.",
+    "# rebuild the static page for item {n}",
+    '{{"title": "weekly update", "item": {n}}}',
+    ".et_pb_text_inner {{ color: #333; margin: {n}px; }}",
+    'The shelf is 27" wide and item {n} is on the left.',
+    "select title, body from notes where item = {n}",
+    "<p>Ordinary paragraph {n}. Nothing to hide.</p>",
+    "Version 1.2.{n} shipped on 12 March. See the changelog.",
+    '"Hello," she said, "item {n} is ready for review."',
+    "The key to the shed is on the hook for item {n}.",
+    "Build {n} uses digest " + ("ab" * 32) + " in the log.",
+    "Record {n} id " + "12345678-1234-1234-1234-123456789abc" + " stays.",
+    "Ticket {n} ref " + ("id" + ("x" * 48)) + " is public.",
+)
+
+
+def _cat(*parts: str) -> str:
+    return "".join(parts)
+
+
+def _token() -> str:
+    return _cat("gh", "p_") + ("A" * 36)
+
+
+def _jwt() -> str:
+    return ("a" * 16) + "." + ("b" * 16) + "." + ("c" * 16)
+
+
+def _pii_cases() -> list[tuple[str, str, str]]:
+    personal = _cat("gh", "p_") + ("A" * 36)
+    oauth = _cat("gh", "o_") + ("B" * 36)
+    fine = _cat("github", "_pat_") + ("C" * 22)
+    lab = _cat("gl", "pat-") + ("D" * 20)
+    project = _cat("sk-", "proj-") + ("E" * 20)
+    access = _cat("AK", "IA") + ("F" * 16)
+    slack = _cat("xo", "xb-") + ("1" * 10) + "-" + ("A" * 16)
+    ssn = "000" + "-" + "00" + "-" + "0000"
+    phone = "555" + "-010-" + "0000"
+    return [
+        ("bare-personal", "see " + personal + " end", personal),
+        ("bare-oauth", "see " + oauth + " end", oauth),
+        ("bare-fine", "see " + fine + " end", fine),
+        ("bare-lab", "see " + lab + " end", lab),
+        ("bare-project", "see " + project + " end", project),
+        ("bare-access", "see " + access + " end", access),
+        ("bare-slack", "see " + slack + " end", slack),
+        ("plain-jwt", "see " + _jwt() + " end", _jwt()),
+        ("patient", "Patient: Ada Lovelace", "Ada Lovelace"),
+        ("dob", "DOB: 01/02/1900", "01/02/1900"),
+        ("ssn", "record " + ssn + " end", ssn),
+        ("phone", "Call " + phone + " today", phone),
+    ]
+
+
+def _assignment(token: str | None = None) -> str:
+    return "export GH_TOKEN=" + (token if token is not None else _token())
+
+
+def _cases() -> list[tuple[str, str, str]]:
+    token = _token()
+    line = _assignment(token)
+    jwt = _jwt()
+    parts = jwt.split(".")
+    prefix = ("Note. " * 8) + "export GH_TOKEN="
+    prose = prefix + token + " before Friday."
+    samples = [
+        ("prose-80", prose[:80] + "\n" + prose[80:], token),
+        ("prose-80-indent", prose[:80] + "\n    " + prose[80:], token),
+        ("tab-indent", line[:20] + "\n\t" + line[20:], token),
+        ("jwt-dots", parts[0] + ".\n" + parts[1] + ".\n" + parts[2], jwt),
+        ("per-char-separator", _assignment("\u2028".join(token)), token),
+        ("filler-17b4", _assignment(token[:8] + "\u17b4" + token[8:]), token),
+        ("filler-17b5", _assignment(token[:8] + "\u17b5" + token[8:]), token),
+        ("hangul-filler", _assignment(token[:8] + "\u3164" + token[8:]), token),
+        ("nbsp", _assignment(token[:8] + "\u00a0" + token[8:]), token),
+        ("fullwidth", _assignment(token[:8] + "\uff21" + token[8:]), token),
+        ("control-del", _assignment(token[:8] + "\u007f" + token[8:]), token),
+    ]
+    for width in range(17, 24):
+        samples.append((f"wrap-{width}", line[:width] + "\n" + line[width:], token))
+    samples.append(
+        (
+            "wrap-3-lines",
+            "export GH_TOKEN=" + token[:4] + "\n" + token[4:8] + "\n" + token[8:],
+            token,
+        )
+    )
+    filler = "Note. " * 12
+    samples.append(("label-80", filler + "GH_TOK\nEN=" + token, token))
+    samples.append(("label-space-token", "token: \n" + token, token))
+    samples.append(("label-space-key", "key = \n" + token, token))
+    bearer = "B" * 24
+    samples.append(("label-space-bearer", "Bearer \n" + bearer, bearer))
+    samples.append(("label-tail-3", "token: " + token[:3] + "\n" + token[3:], token))
+    samples.append(
+        (
+            "jwt-inside-segments",
+            jwt[:25] + "\n" + jwt[25:33] + "\n" + jwt[33:42] + "\n" + jwt[42:],
+            jwt,
+        )
+    )
+    samples.extend(_pii_cases())
+    return samples
+
+
+def test_more_than_seven_benign_templates() -> None:
+    assert len(_TEMPLATES) > 7
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "secret"),
+    _cases(),
+    ids=[case[0] for case in _cases()],
+)
+def test_leak_class_is_masked(name: str, text: str, secret: str) -> None:
+    del name
+    assert mask_secrets.has_secrets(text)
+    masked = mask_secrets.mask(text)
+    assert secret not in masked
+    if secret_surface.has_refused_control(text):
+        with pytest.raises(mask_secrets.EgressMaskError):
+            mask_secrets.prepare_outbound(text)
+    else:
+        outbound = mask_secrets.prepare_outbound(text)
+        assert secret not in outbound
+
+
+def _benign_lines() -> list[str]:
+    count = len(_TEMPLATES) * _BENIGN_PER_TEMPLATE
+    return [_TEMPLATES[index % len(_TEMPLATES)].format(n=index) for index in range(count)]
+
+
+def test_benign_flags_stay_under_the_ceiling() -> None:
+    flagged = [line for line in _benign_lines() if mask_secrets.has_secrets(line)]
+    assert len(flagged) <= _BENIGN_FLAG_CEILING
+
+
+def test_a_wordpress_nonce_is_not_a_secret() -> None:
+    lines = (
+        'name="_wpnonce" value="a1b2c3d4e5"',
+        "wp_nonce=a1b2c3d4e5",
+        '<input type="hidden" name="_wpnonce" value="0a1b2c3d4e" />',
+        "action=edit&_wpnonce=abcdef1234",
+    )
+    for line in lines:
+        assert mask_secrets.has_secrets(line) is False
+
+
+def test_sha_uuid_long_ids_and_key_in_prose_are_not_secrets() -> None:
+    samples = (
+        "The key to the shed is on the hook.",
+        "digest " + ("ab" * 32),
+        "id 12345678-1234-1234-1234-123456789abc",
+        "ref " + ("id" + ("x" * 48)),
+        "plain " + ("0" * 9),
+    )
+    for text in samples[:-1]:
+        assert mask_secrets.has_secrets(text) is False
+    assert mask_secrets.has_secrets(samples[-1]) is True
+
+
+def test_prose_mask_trace_stays_under_the_old_map_cost() -> None:
+    """A 250 KB prose sample must stay far below the old per-character map.
+
+    Local measurement of this build: tracemalloc peaked at 9,448,809 bytes
+    during mask() of 999,972 bytes of short prose lines (about 9.5 bytes of
+    traced allocation per input byte) and 19,128,380 bytes for 1,999,991
+    input bytes. Process RSS in a fresh interpreter was 41,464 KB and
+    53,360 KB for those two sizes. The previous map-backed build peaked
+    around 268 MB for 1 MB.
+    """
+    line = "Thanks for the note. Notes stay in the folder.\n"
+    text = line * (250_000 // len(line))
+    tracemalloc.start()
+    mask_secrets.mask(text)
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert peak < 20 * len(text)

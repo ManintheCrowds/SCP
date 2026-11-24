@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   gitleaks:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,11 +21,492 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 3.13.18 is pinned so this job's pre-load check runs on one interpreter.
+      # The pin does not stop a crash inside marshal: a spliced code table
+      # still faults on 3.13.18 if it is loaded. Unlisted bytecode is refused
+      # before that load. The CI tests job runs on Python 3.12, so those
+      # tests do not execute this prescan on 3.13.18. This job does.
+      - name: Pin the bytecode parser
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.18"
+
+      - name: Select the base gitleaks config
+        id: gitleaks-config
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ -z "${BASE_SHA}" ] || ! git cat-file -e "${BASE_SHA}:.gitleaks.toml" 2>/dev/null; then
+              echo "base revision has no gitleaks config; failing closed" >&2
+              exit 1
+            fi
+            git show "${BASE_SHA}:.gitleaks.toml" > "${RUNNER_TEMP}/gitleaks.base.toml"
+            echo "path=${RUNNER_TEMP}/gitleaks.base.toml" >> "${GITHUB_OUTPUT}"
+          else
+            if [ ! -f .gitleaks.toml ]; then
+              echo "gitleaks config missing; failing closed" >&2
+              exit 1
+            fi
+            echo "path=.gitleaks.toml" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_CONFIG: ${{ steps.gitleaks-config.outputs.path }}
           GITLEAKS_ENABLE_COMMENTS: false
           GITLEAKS_ENABLE_SUMMARY: true
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+
+      # gitleaks 8.30.1 reads ./.gitleaksignore from the scanned worktree even
+      # when --gitleaks-ignore-path is set. Check out a worktree, delete that
+      # file, and scan the copy with the base ignore file only.
+      # This step does not repeat the full base..head range scan.
+      - name: Scan with the base ignore file
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITLEAKS_CONFIG: ${{ steps.gitleaks-config.outputs.path }}
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          set -euo pipefail
+          expected_version="8.30.1"
+          expected_sha="88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509"
+          if [ "${GITLEAKS_VERSION}" != "${expected_version}" ]; then
+            echo "refusing GITLEAKS_VERSION=${GITLEAKS_VERSION}" >&2
+            exit 1
+          fi
+          bin="$(command -v gitleaks)"
+          # Hash the file before executing it. A cached binary must not run
+          # in order to report its version.
+          actual_sha="$(sha256sum "${bin}" | awk '{print $1}')"
+          if [ "${actual_sha}" != "${expected_sha}" ]; then
+            echo "refusing gitleaks binary digest" >&2
+            exit 1
+          fi
+          actual_version="$("${bin}" version | tr -d '[:space:]')"
+          if [ "${actual_version}" != "${expected_version}" ]; then
+            echo "refusing gitleaks version ${actual_version}" >&2
+            exit 1
+          fi
+          dest="${RUNNER_TEMP}/gitleaks.base.ignore"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ -n "${BASE_SHA:-}" ] && git cat-file -e "${BASE_SHA}:.gitleaksignore" 2>/dev/null; then
+              git show "${BASE_SHA}:.gitleaksignore" > "$dest"
+            else
+              : > "$dest"
+            fi
+          elif [ -f .gitleaksignore ]; then
+            cp .gitleaksignore "$dest"
+          else
+            : > "$dest"
+          fi
+          scan="${RUNNER_TEMP}/gitleaks-worktree"
+          rm -rf "${scan}"
+          git worktree add --detach "${scan}" HEAD
+          cleanup() {
+            git worktree remove --force "${scan}" >/dev/null 2>&1 || rm -rf "${scan}"
+          }
+          trap cleanup EXIT
+          rm -f "${scan}/.gitleaksignore"
+          # git's attributes and binary detection hide patches. The log options
+          # force a text diff and show a merge commit's own changes, without
+          # walking refs other than the history of this checkout.
+          # Blob exemptions come from the base revision, not from this pull request.
+          blob_allow="${RUNNER_TEMP}/gitleaks.blob-allow"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ -n "${BASE_SHA:-}" ] && git cat-file -e "${BASE_SHA}:scripts/gitleaks_blob_allow.txt" 2>/dev/null; then
+              git show "${BASE_SHA}:scripts/gitleaks_blob_allow.txt" > "${blob_allow}"
+            else
+              : > "${blob_allow}"
+            fi
+          elif [ -f scripts/gitleaks_blob_allow.txt ]; then
+            cp scripts/gitleaks_blob_allow.txt "${blob_allow}"
+          else
+            : > "${blob_allow}"
+          fi
+          # Isolated from the checkout: a root subprocess.py, os.py, or json.py
+          # must not run inside the step that holds the trusted config.
+          (
+          cd "${RUNNER_TEMP}"
+          PYTHONSAFEPATH=1 python3 -I - "${scan}" "${blob_allow}" << 'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          if not hasattr(os, "environ") or not hasattr(json, "dumps") or not hasattr(subprocess, "run"):
+              sys.stderr.write("refusing shadowed interpreter modules\n")
+              sys.exit(1)
+
+          root = Path(sys.argv[1])
+          allowed_blobs = set()
+          allow_path = Path(sys.argv[2])
+          if allow_path.is_file():
+              for raw in allow_path.read_text(encoding="utf-8").splitlines():
+                  item = raw.strip()
+                  if item and not item.startswith("#"):
+                      allowed_blobs.add(item)
+          # Blobs already on the base revision. A pull request cannot add an
+          # id here, and it cannot grant its own exemption through the file.
+          base_blobs = set()
+          base_sha = os.environ.get("BASE_SHA", "")
+          if base_sha:
+              listed_base = subprocess.run(
+                  ["git", "rev-list", "--objects", base_sha],
+                  cwd=root,
+                  capture_output=True,
+              )
+              if listed_base.returncode != 0:
+                  sys.stderr.write("refusing to scan: base object list failed\n")
+                  sys.exit(1)
+              for base_line in listed_base.stdout.splitlines():
+                  base_oid, _, _base_rest = base_line.partition(b" ")
+                  if base_oid:
+                      base_blobs.add(base_oid.decode("ascii"))
+          # Content signatures. The file name is not an exemption.
+          _MAGICS = (
+              b"\x89PNG\r\n\x1a\n",
+              b"\xff\xd8\xff",
+              b"GIF87a",
+              b"GIF89a",
+              b"%PDF-",
+              b"\x7fELF",
+              b"PK\x03\x04",
+              b"\x1f\x8b",
+          )
+
+          def known_binary(data: bytes) -> bool:
+              if any(data.startswith(magic) for magic in _MAGICS):
+                  return True
+              return len(data) >= 4 and data[1:4] == b"\r\r\n"
+
+          # String and tuple fields are ordinary text. The three byte fields are
+          # the interpreter's own tables, so only a long UTF-16 run is a plant.
+          _CODE_TEXT = (
+              "co_consts",
+              "co_names",
+              "co_varnames",
+              "co_freevars",
+              "co_cellvars",
+              "co_filename",
+              "co_name",
+              "co_qualname",
+          )
+          _CODE_BINARY = ("co_code", "co_linetable", "co_exceptiontable")
+
+          def _little_gap(data: bytes, need: int) -> bool:
+              """A printable byte followed by 1, 2, or 3 NULs. Gaps may mix.
+
+              A gap of exactly 4 NULs does not start a run and is not a
+              character, but it does not wipe out a run that has started.
+              A longer gap resets the run.
+              """
+              length = len(data)
+              run = 0
+              index = 0
+              while index < length:
+                  byte = data[index]
+                  if 32 <= byte <= 126:
+                      cursor = index + 1
+                      limit = index + 6
+                      while cursor < length and cursor < limit and data[cursor] == 0:
+                          cursor += 1
+                      gap = cursor - (index + 1)
+                      bounded = cursor >= length or data[cursor] != 0
+                      if 1 <= gap <= 3 and bounded:
+                          run += 1
+                          if run >= need:
+                              return True
+                          index = cursor
+                          continue
+                      if gap == 4 and bounded and run > 0:
+                          index = cursor
+                          continue
+                  run = 0
+                  index += 1
+              return False
+
+          def _big_gap(data: bytes, need: int) -> bool:
+              """1, 2, or 3 NULs followed by a printable byte. Gaps may mix.
+
+              A gap of exactly 4 NULs keeps a run that has already started
+              and does not start one. A longer gap resets the run.
+              """
+              length = len(data)
+              run = 0
+              index = 0
+              while index < length:
+                  if data[index] != 0:
+                      run = 0
+                      index += 1
+                      continue
+                  cursor = index
+                  limit = index + 5
+                  while cursor < length and cursor < limit and data[cursor] == 0:
+                      cursor += 1
+                  gap = cursor - index
+                  printable = cursor < length and 32 <= data[cursor] <= 126
+                  if printable and 1 <= gap <= 3:
+                      run += 1
+                      if run >= need:
+                          return True
+                      index = cursor + 1
+                      continue
+                  if printable and gap == 4 and run > 0:
+                      index = cursor + 1
+                      continue
+                  run = 0
+                  index += 1
+              return False
+
+          def _utf16_pairs(data: bytes, need: int = 16) -> bool:
+              """Printable text with a gap of 1, 2, or 3 NUL bytes.
+
+              The gap may change from one character to the next. Either byte
+              order counts. One gap of exactly 4 NULs does not erase a run
+              that has started, and it cannot start a run. A gap of 5 or
+              more NULs, or a separator that is not a NUL, resets the run.
+              """
+              return bool(data) and (_little_gap(data, need) or _big_gap(data, need))
+
+          def utf16_text(data: bytes) -> bool:
+              if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+                  return True
+              # A run of printable bytes interleaved with NULs. A fixed window
+              # misses a short secret sitting between non-zero neighbors.
+              return _utf16_pairs(data, 8)
+
+          def ascii_after_nul(data: bytes) -> bool:
+              start = data.find(b"\x00")
+              if start < 0:
+                  return False
+              run = 0
+              for byte in data[start + 1 :]:
+                  if 48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122:
+                      run += 1
+                      if run >= 20:
+                          return True
+                  else:
+                      run = 0
+              return False
+
+          def _text_hides(text: str) -> bool:
+              try:
+                  utf8 = text.encode("utf-8", "surrogateescape")
+              except UnicodeEncodeError:
+                  return True
+              try:
+                  latin = text.encode("latin-1")
+              except UnicodeEncodeError:
+                  latin = b""
+              return (
+                  utf16_text(utf8)
+                  or ascii_after_nul(utf8)
+                  or utf16_text(latin)
+                  or ascii_after_nul(latin)
+              )
+
+          def _json_hides(node: object) -> bool:
+              if not isinstance(node, dict):
+                  return False
+              kind = node.get("k")
+              if kind == "code":
+                  fields = node.get("fields")
+                  if not isinstance(fields, dict):
+                      return True
+                  for name in _CODE_TEXT:
+                      if _json_hides(fields.get(name)):
+                          return True
+                  for name in _CODE_BINARY:
+                      raw = fields.get(name)
+                      if not isinstance(raw, dict) or raw.get("k") != "bytes":
+                          return True
+                      try:
+                          table = bytes.fromhex(str(raw.get("v", "")))
+                      except ValueError:
+                          return True
+                      if _utf16_pairs(table):
+                          return True
+                  return False
+              if kind == "bytes":
+                  try:
+                      raw = bytes.fromhex(str(node.get("v", "")))
+                  except ValueError:
+                      return True
+                  return utf16_text(raw) or ascii_after_nul(raw)
+              if kind == "str":
+                  codes = node.get("v")
+                  if not isinstance(codes, list):
+                      return True
+                  try:
+                      text = "".join(chr(int(code)) for code in codes)
+                  except (TypeError, ValueError, OverflowError):
+                      return True
+                  return _text_hides(text)
+              if kind == "dict":
+                  pairs = node.get("items")
+                  if not isinstance(pairs, list):
+                      return True
+                  return any(_json_hides(item) for pair in pairs for item in pair)
+              if kind == "seq":
+                  items = node.get("items")
+                  if not isinstance(items, list):
+                      return True
+                  return any(_json_hides(item) for item in items)
+              return False
+
+          # marshal.load runs only in this child. A signal or any other
+          # failure is a refusal. The parent never unmarshals a blob.
+          _CHILD = r"""
+          import io
+          import json
+          import marshal
+          import sys
+          import types
+
+          def emit(obj, seen, depth):
+              if isinstance(obj, (str, bytes, bytearray)):
+                  if isinstance(obj, str):
+                      return {"k": "str", "v": [ord(char) for char in obj]}
+                  return {"k": "bytes", "v": bytes(obj).hex()}
+              if depth > 1000:
+                  raise RuntimeError("deep")
+              marker = id(obj)
+              if marker in seen:
+                  return {"k": "other"}
+              seen.add(marker)
+              if isinstance(obj, types.CodeType):
+                  fields = {}
+                  for name in dir(obj):
+                      if name.startswith("co_"):
+                          fields[name] = emit(getattr(obj, name), seen, depth + 1)
+                  return {"k": "code", "fields": fields}
+              if isinstance(obj, dict):
+                  return {
+                      "k": "dict",
+                      "items": [
+                          [emit(key, seen, depth + 1), emit(value, seen, depth + 1)]
+                          for key, value in obj.items()
+                      ],
+                  }
+              if isinstance(obj, (tuple, list, set, frozenset)):
+                  return {"k": "seq", "items": [emit(item, seen, depth + 1) for item in obj]}
+              return {"k": "other"}
+
+          try:
+              payload = sys.stdin.buffer.read()
+              buffer = io.BytesIO(payload)
+              obj = marshal.load(buffer)
+              if buffer.tell() != len(payload):
+                  sys.exit(1)
+              json.dump(emit(obj, set(), 0), sys.stdout)
+          except Exception:
+              sys.exit(1)
+          """
+
+          def _child_limit() -> float:
+              raw = os.environ.get("BYTECODE_CHILD_SECONDS", "")
+              if not raw:
+                  return 60.0
+              try:
+                  value = float(raw)
+              except ValueError:
+                  return 60.0
+              if value < 0.001 or value > 60.0:
+                  return 60.0
+              return value
+
+          def _child_bytecode(payload: bytes) -> tuple[str, object]:
+              try:
+                  proc = subprocess.run(
+                      [sys.executable, "-I", "-c", _CHILD],
+                      input=payload,
+                      capture_output=True,
+                      timeout=_child_limit(),
+                  )
+              except subprocess.TimeoutExpired:
+                  return "crash", None
+              if proc.returncode != 0:
+                  return "crash", None
+              try:
+                  return "ok", json.loads(proc.stdout.decode("utf-8"))
+              except (UnicodeDecodeError, json.JSONDecodeError):
+                  return "crash", None
+
+          listed = subprocess.run(
+              ["git", "rev-list", "--objects", "HEAD"],
+              cwd=root,
+              capture_output=True,
+          )
+          if listed.returncode != 0:
+              sys.stderr.write("refusing to scan: git object list failed\n")
+              sys.exit(1)
+          for line in listed.stdout.splitlines():
+              if b" " not in line:
+                  continue
+              oid, _, path = line.partition(b" ")
+              kind = subprocess.run(
+                  ["git", "cat-file", "-t", oid],
+                  cwd=root,
+                  capture_output=True,
+              ).stdout.strip()
+              if kind != b"blob":
+                  continue
+              oid_text = oid.decode("ascii")
+              data = subprocess.run(
+                  ["git", "cat-file", "blob", oid],
+                  cwd=root,
+                  capture_output=True,
+              ).stdout
+              name = path.decode("utf-8", "replace")
+              if len(data) >= 16 and data[1:4] == b"\r\r\n":
+                  # Any other bytecode is refused before marshal. The child
+                  # below is the only load, and only for a base blob.
+                  if oid_text not in allowed_blobs and oid_text not in base_blobs:
+                      sys.stderr.write(
+                          f"refusing bytecode that is not on the base allow-list: {name}\n"
+                      )
+                      sys.exit(1)
+                  # A long UTF-16 run is refused before the child loads it.
+                  if _utf16_pairs(data):
+                      sys.stderr.write(f"refusing secret text inside bytecode: {name}\n")
+                      sys.exit(1)
+                  status, tree = _child_bytecode(data[16:])
+                  if status != "ok":
+                      sys.stderr.write(f"refusing unreadable bytecode: {name}\n")
+                      sys.exit(1)
+                  if _json_hides(tree):
+                      sys.stderr.write(f"refusing secret text inside bytecode: {name}\n")
+                      sys.exit(1)
+                  if isinstance(tree, dict) and tree.get("k") == "code":
+                      continue
+              if oid_text in allowed_blobs:
+                  continue
+              if utf16_text(data):
+                  sys.stderr.write(f"refusing UTF-16 text: {name}\n")
+                  sys.exit(1)
+              if b"\x00" not in data:
+                  continue
+              if ascii_after_nul(data):
+                  sys.stderr.write(f"refusing text hidden after a NUL byte: {name}\n")
+                  sys.exit(1)
+              if not known_binary(data):
+                  sys.stderr.write(f"refusing NUL byte in text file: {name}\n")
+                  sys.exit(1)
+          PY
+          )
+          (
+            cd "${scan}"
+            gitleaks detect --redact --exit-code=2 \
+              --config "${GITLEAKS_CONFIG}" \
+              --gitleaks-ignore-path "${dest}" \
+              --ignore-gitleaks-allow \
+              --log-opts="--diff-merges=first-parent --text"
+          )
