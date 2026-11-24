@@ -201,38 +201,68 @@ jobs:
           )
           _CODE_BINARY = ("co_code", "co_linetable", "co_exceptiontable")
 
+          def _little_gap(data: bytes, need: int) -> bool:
+              """A printable byte followed by 1, 2, or 3 NULs, gaps may mix."""
+              length = len(data)
+              run = 0
+              index = 0
+              while index < length:
+                  byte = data[index]
+                  if 32 <= byte <= 126:
+                      cursor = index + 1
+                      limit = index + 4
+                      while cursor < length and cursor < limit and data[cursor] == 0:
+                          cursor += 1
+                      gap = cursor - (index + 1)
+                      if gap >= 1 and (cursor >= length or data[cursor] != 0):
+                          run += 1
+                          if run >= need:
+                              return True
+                          index = cursor
+                          continue
+                  run = 0
+                  index += 1
+              return False
+
+          def _big_gap(data: bytes, need: int) -> bool:
+              """1, 2, or 3 NULs followed by a printable byte. Gaps may mix."""
+              length = len(data)
+              run = 0
+              index = 0
+              while index < length:
+                  if data[index] != 0:
+                      run = 0
+                      index += 1
+                      continue
+                  cursor = index
+                  limit = index + 3
+                  while cursor < length and cursor < limit and data[cursor] == 0:
+                      cursor += 1
+                  gap = cursor - index
+                  printable = (
+                      gap >= 1
+                      and cursor < length
+                      and data[cursor] != 0
+                      and 32 <= data[cursor] <= 126
+                  )
+                  if printable:
+                      run += 1
+                      if run >= need:
+                          return True
+                      index = cursor + 1
+                      continue
+                  run = 0
+                  index += 1
+              return False
+
           def _utf16_pairs(data: bytes, need: int = 16) -> bool:
-              """Printable text with 1, 2, or 3 trailing or leading NUL bytes.
+              """Printable text with a gap of 1, 2, or 3 NUL bytes.
 
-              Stride 2 is UTF-16, stride 3 is a two-NUL gap, and stride 4 is
-              UTF-32. Either byte order counts.
+              The gap may change from one character to the next. Either byte
+              order counts. A gap of 4 or more NULs, or a separator that is
+              not a NUL, is not this pattern.
               """
-
-              def scan(stride: int) -> bool:
-                  length = len(data)
-                  gap = b"\x00" * (stride - 1)
-                  for align in range(stride):
-                      little = 0
-                      big = 0
-                      index = align
-                      while index + stride <= length:
-                          window = data[index : index + stride]
-                          if 32 <= window[0] <= 126 and window[1:] == gap:
-                              little += 1
-                              if little >= need:
-                                  return True
-                          else:
-                              little = 0
-                          if 32 <= window[-1] <= 126 and window[:-1] == gap:
-                              big += 1
-                              if big >= need:
-                                  return True
-                          else:
-                              big = 0
-                          index += stride
-                  return False
-
-              return bool(data) and (scan(2) or scan(3) or scan(4))
+              return bool(data) and (_little_gap(data, need) or _big_gap(data, need))
 
           def utf16_text(data: bytes) -> bool:
               if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):

@@ -1074,6 +1074,44 @@ def test_nul_strides_behind_binary_magic_are_refused(tmp_path: Path) -> None:
     assert clean == len(magics)
 
 
+def test_mixed_nul_gaps_are_refused_and_wider_gaps_are_not(tmp_path: Path) -> None:
+    """Gaps of 1 to 3 NULs may mix. Four NULs, or a non-NUL separator, stay."""
+    letters = "ABCDEFGHIJKLMNOP"
+    gaps = (1, 2, 3)
+    little = b"".join(
+        bytes((ord(char),)) + (b"\x00" * gaps[index % 3]) for index, char in enumerate(letters)
+    )
+    big = b"".join(
+        (b"\x00" * gaps[index % 3]) + bytes((ord(char),)) for index, char in enumerate(letters)
+    )
+    refused = 0
+    for index, planted in enumerate((little, big)):
+        repo = tmp_path / f"mix{index}"
+        _init(repo)
+        (repo / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + planted)
+        _git(repo, "add", "shot.png")
+        _git(repo, "commit", "-q", "-m", "mixed")
+        proc = _scan(repo, tmp_path / f"mix-scan{index}")
+        if proc.returncode == 1 and "refusing UTF-16 text" in proc.stderr:
+            refused += 1
+    assert refused == 2
+    wide = b"".join(bytes((ord(char),)) + (b"\x00" * 4) for char in letters)
+    separated = b"".join(bytes((ord(char), 1)) for char in letters)
+    passed = 0
+    for index, planted in enumerate((wide, separated)):
+        repo = tmp_path / f"limit{index}"
+        _init(repo)
+        (repo / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + planted)
+        _git(repo, "add", "shot.png")
+        _git(repo, "commit", "-q", "-m", "limit")
+        if _scan(repo, tmp_path / f"limit-scan{index}").returncode == 0:
+            passed += 1
+    assert passed == 2
+    doc = (_REPO / "docs" / "SECRET_SCAN.md").read_text(encoding="utf-8")
+    assert "4 or more NULs" in doc
+    assert "separator that is not a NUL" in doc
+
+
 def test_a_real_png_header_without_text_is_not_refused(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)
