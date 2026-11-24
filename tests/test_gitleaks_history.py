@@ -1112,6 +1112,43 @@ def test_mixed_nul_gaps_are_refused_and_wider_gaps_are_not(tmp_path: Path) -> No
     assert "separator that is not a NUL" in doc
 
 
+def test_a_big_endian_run_at_the_threshold_is_refused(tmp_path: Path) -> None:
+    """Exactly eight big-endian characters, then a byte that is not NUL.
+
+    A longer run is also caught by the shifted little-endian alignment.
+    The threshold length is not, so the big-endian walk has to see it.
+    Seven characters stay under the threshold.
+    """
+    letters = "ABCDEFGH"
+    short = "ABCDEFG"
+    refused = 0
+    passed = 0
+    for stride in (2, 3, 4):
+        planted = b"".join(
+            (b"\x00" * (stride - 1)) + bytes((ord(char),)) for char in letters
+        ) + b"\x01"
+        repo = tmp_path / f"be{stride}"
+        _init(repo)
+        (repo / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + planted)
+        _git(repo, "add", "shot.png")
+        _git(repo, "commit", "-q", "-m", "big-endian")
+        proc = _scan(repo, tmp_path / f"be-scan{stride}")
+        if proc.returncode == 1 and "refusing UTF-16 text" in proc.stderr:
+            refused += 1
+        under = b"".join(
+            (b"\x00" * (stride - 1)) + bytes((ord(char),)) for char in short
+        ) + b"\x01"
+        quiet = tmp_path / f"under{stride}"
+        _init(quiet)
+        (quiet / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + under)
+        _git(quiet, "add", "shot.png")
+        _git(quiet, "commit", "-q", "-m", "under")
+        if _scan(quiet, tmp_path / f"under-scan{stride}").returncode == 0:
+            passed += 1
+    assert refused == 3
+    assert passed == 3
+
+
 def test_a_real_png_header_without_text_is_not_refused(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init(repo)
