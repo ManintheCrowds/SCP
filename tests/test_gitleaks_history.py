@@ -333,12 +333,21 @@ def _head(repo: Path) -> str:
     return completed.stdout.strip()
 
 
-def _scan_as_base(repo: Path, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+def _scan_as_base(
+    repo: Path,
+    tmp_path: Path,
+    extra: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Treat the commit that holds the blob as the base revision."""
-    return _scan_at_base(repo, tmp_path, _head(repo))
+    return _scan_at_base(repo, tmp_path, _head(repo), extra)
 
 
-def _scan_at_base(repo: Path, tmp_path: Path, base_sha: str) -> subprocess.CompletedProcess[str]:
+def _scan_at_base(
+    repo: Path,
+    tmp_path: Path,
+    base_sha: str,
+    extra: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     binary = _binary(tmp_path / "bin")
     runner = tmp_path / "runner"
     runner.mkdir(exist_ok=True)
@@ -349,6 +358,8 @@ def _scan_at_base(repo: Path, tmp_path: Path, base_sha: str) -> subprocess.Compl
     env["BASE_SHA"] = base_sha
     env["GITLEAKS_CONFIG"] = str(repo / "rules.toml")
     env["GITLEAKS_VERSION"] = _VERSION
+    if extra:
+        env.update(extra)
     return subprocess.run(
         ["bash", "-c", _run_block("Scan with the base ignore file")],
         cwd=repo,
@@ -568,7 +579,6 @@ def test_utf16_in_each_code_object_field_is_refused(tmp_path: Path) -> None:
 def test_prescan_locks_the_isolation_and_the_field_walk() -> None:
     script = _run_block("Scan with the base ignore file")
     assert "refusing bytecode that is not on the base allow-list" in script
-    assert 'sys.executable, "-I", "-c"' in script
     assert '"co_filename"' in script
     assert '"co_names"' in script
     assert "_CODE_BINARY" in script
@@ -622,6 +632,70 @@ def test_prescan_python_is_isolated_from_the_checkout(tmp_path: Path) -> None:
     assert recorded[0].startswith("-I ")
     assert recorded[1] == str(runner)
     assert recorded[2] == "1"
+
+
+def _crashing_code_table() -> bytes:
+    """High bytes over a code table. marshal faults on this shape."""
+    salt = 6
+    length = 60
+    planted = bytes((128 + ((salt * 17 + index) % 128)) for index in range(length))
+    return _pyc_with_planted_code(planted)
+
+
+def test_a_listed_crash_is_refused_by_the_child_not_the_parent(tmp_path: Path) -> None:
+    """A signal from the child is a refusal, and the parent stays up.
+
+    Loading the same bytes in this process, or treating the signal as
+    success, changes the result.
+    """
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "m.pyc").write_bytes(_crashing_code_table())
+    _git(repo, "add", "m.pyc")
+    _git(repo, "commit", "-q", "-m", "crash")
+    proc = _scan_as_base(repo, tmp_path / "scan")
+    assert proc.returncode == 1, proc.stderr
+    assert "refusing unreadable bytecode" in proc.stderr
+    assert "Traceback" not in proc.stderr
+
+
+def test_a_child_timeout_is_a_refusal(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "m.pyc").write_bytes(_compiled(tmp_path))
+    _git(repo, "add", "m.pyc")
+    _git(repo, "commit", "-q", "-m", "clean")
+    proc = _scan_as_base(
+        repo,
+        tmp_path / "scan",
+        {"BYTECODE_CHILD_SECONDS": "0.001"},
+    )
+    assert proc.returncode == 1, proc.stderr
+    assert "refusing unreadable bytecode" in proc.stderr
+    assert "Traceback" not in proc.stderr
+
+
+def test_the_bytecode_child_ignores_a_path_module(tmp_path: Path) -> None:
+    """The load runs out of process and does not import from PYTHONPATH."""
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "m.pyc").write_bytes(_compiled(tmp_path))
+    _git(repo, "add", "m.pyc")
+    _git(repo, "commit", "-q", "-m", "clean")
+    site = tmp_path / "site"
+    site.mkdir()
+    marker = tmp_path / "site-ran"
+    (site / "sitecustomize.py").write_text(
+        "open(__import__('os').environ['SITE_LOG'], 'w').write('ran\\n')\n",
+        encoding="utf-8",
+    )
+    proc = _scan_as_base(
+        repo,
+        tmp_path / "scan",
+        {"PYTHONPATH": str(site), "SITE_LOG": str(marker)},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert not marker.exists()
 
 
 def test_a_short_filename_and_a_twenty_character_line_table_are_refused(tmp_path: Path) -> None:
