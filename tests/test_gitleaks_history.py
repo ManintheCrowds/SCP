@@ -460,6 +460,15 @@ def test_a_pyc_header_or_tail_does_not_hide_utf16(tmp_path: Path) -> None:
     assert "marshal.load" in script
     assert "buffer.tell()" in script
     assert 'python-version: "3.13.18"' in _workflow()
+    workflow = _workflow()
+    assert "crashes while walking a spliced code table" not in workflow
+    assert "The pin does not stop a crash inside marshal" in workflow
+    assert "The CI tests job runs on Python 3.12" in workflow
+    ci = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert 'python-version: "3.12"' in ci
+    doc = (_REPO / "docs" / "SECRET_SCAN.md").read_text(encoding="utf-8")
+    assert "The CI tests job runs on Python 3.12" in doc
+    assert "The pin does not stop a crash inside marshal" in doc
 
 
 def _header(payload: bytes) -> bytes:

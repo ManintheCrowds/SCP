@@ -21,9 +21,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      # marshal.load of bytecode is version-specific. 3.13.18 consumes every
-      # historical bytecode blob on main. The patch is pinned so a job cannot
-      # drift onto an older 3.13 that crashes while walking a spliced code table.
+      # 3.13.18 is pinned so this job's pre-load check runs on one interpreter.
+      # The pin does not stop a crash inside marshal: a spliced code table
+      # still faults on 3.13.18 if it is loaded. Unlisted bytecode is refused
+      # before that load. The CI tests job runs on Python 3.12, so those
+      # tests do not execute this prescan on 3.13.18. This job does.
       - name: Pin the bytecode parser
         uses: actions/setup-python@v5
         with:
