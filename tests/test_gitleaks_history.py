@@ -322,6 +322,22 @@ def _oid(repo: Path, path: str) -> str:
     return proc.stdout.strip()
 
 
+def _head(repo: Path) -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return completed.stdout.strip()
+
+
+def _scan_as_base(repo: Path, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    """Treat the commit that holds the blob as the base revision."""
+    return _scan_at_base(repo, tmp_path, _head(repo))
+
+
 def _scan_at_base(repo: Path, tmp_path: Path, base_sha: str) -> subprocess.CompletedProcess[str]:
     binary = _binary(tmp_path / "bin")
     runner = tmp_path / "runner"
@@ -416,8 +432,8 @@ def test_a_cpython_bytecode_blob_is_not_refused_as_utf16(tmp_path: Path) -> None
     (repo / "notes.pyc").write_bytes(_compiled(tmp_path))
     _git(repo, "add", "notes.pyc")
     _git(repo, "commit", "-q", "-m", "bytecode")
-    proc = _scan(repo, tmp_path)
-    assert proc.returncode == 0
+    proc = _scan_as_base(repo, tmp_path)
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_a_pyc_header_or_tail_does_not_hide_utf16(tmp_path: Path) -> None:
@@ -470,7 +486,14 @@ def _pyc_with_planted_code(planted_bytes: bytes) -> bytes:
     The code-object constructor rewrites co_code, so a plant has to be
     written into the marshal blob after that constructor has finished.
     """
-    base = compile("x = 1\n" * 40, "m.py", "exec")
+    base = compile(
+        "def f(a, b, c):\n"
+        "    return (a + b) * c\n"
+        "print(f(1, 2, 3))\n"
+        "items = [f(i, i + 1, 2) for i in range(4)]\n",
+        "m.py",
+        "exec",
+    )
     original = base.co_code
     if len(planted_bytes) > len(original):
         raise AssertionError("bytecode plant is longer than the host code")
@@ -509,21 +532,28 @@ def test_utf16_in_each_code_object_field_is_refused(tmp_path: Path) -> None:
     )
     payloads = [(label, _code_pyc(code)) for label, code in cases]
     payloads.append(("co_code", _pyc_with_planted_code(raw)))
-    refused = 0
+    missed: list[str] = []
     for index, (label, payload) in enumerate(payloads):
         repo = tmp_path / f"field{index}"
         _init(repo)
         (repo / "m.pyc").write_bytes(payload)
         _git(repo, "add", "m.pyc")
         _git(repo, "commit", "-q", "-m", label)
-        proc = _scan(repo, tmp_path / f"field-scan{index}")
-        # A spliced code table can crash an older interpreter. Any nonzero
-        # exit still fails closed. The other fields must name the refusal.
-        if label == "co_code" and proc.returncode != 0:
-            refused += 1
-        elif proc.returncode == 1 and "refusing secret text inside bytecode" in proc.stderr:
-            refused += 1
-    assert refused == len(payloads)
+        proc = _scan_as_base(repo, tmp_path / f"field-scan{index}")
+        # The code table is loaded only in a child. A crash there is a
+        # refusal and must not take the parent down. The other fields have
+        # to name the secret.
+        if label == "co_code":
+            ok = (
+                proc.returncode == 1
+                and "refusing" in proc.stderr
+                and "Traceback" not in proc.stderr
+            )
+        else:
+            ok = proc.returncode == 1 and "refusing secret text inside bytecode" in proc.stderr
+        if not ok:
+            missed.append(f"{label} rc={proc.returncode} {proc.stderr[-180:]!r}")
+    assert missed == []
 
 
 def test_prescan_locks_the_isolation_and_the_field_walk() -> None:
@@ -531,11 +561,10 @@ def test_prescan_locks_the_isolation_and_the_field_walk() -> None:
     assert 'cd "${RUNNER_TEMP}"' in script
     assert "PYTHONSAFEPATH=1" in script
     assert "python3 -I " in script
-    assert script.count("if _utf16_pairs(data):") >= 2
-    load_at = script.find("_load_marshal(data[16:])")
-    pairs_at = script.find("if _utf16_pairs(data):")
-    assert pairs_at != -1 and load_at != -1 and pairs_at < load_at
+    assert "refusing bytecode that is not on the base allow-list" in script
+    assert 'sys.executable, "-I", "-c"' in script
     assert '"co_filename"' in script
+    assert '"co_names"' in script
     assert "_CODE_BINARY" in script
     for name in ("co_code", "co_linetable", "co_exceptiontable"):
         assert name in script
@@ -547,6 +576,7 @@ def test_a_short_filename_and_a_twenty_character_line_table_are_refused(tmp_path
     twenty = "ABCDEFGHIJKLMNOPQRST".encode("utf-16-le")
     payloads = (
         _code_pyc(base.replace(co_filename=short)),
+        _code_pyc(base.replace(co_names=base.co_names + (short,))),
         _code_pyc(base.replace(co_linetable=twenty)),
     )
     refused = 0
@@ -556,7 +586,7 @@ def test_a_short_filename_and_a_twenty_character_line_table_are_refused(tmp_path
         (repo / "m.pyc").write_bytes(payload)
         _git(repo, "add", "m.pyc")
         _git(repo, "commit", "-q", "-m", "short-field")
-        proc = _scan(repo, tmp_path / f"scan{index}")
+        proc = _scan_as_base(repo, tmp_path / f"scan{index}")
         if proc.returncode == 1 and "refusing secret text inside bytecode" in proc.stderr:
             refused += 1
     assert refused == len(payloads)
@@ -572,8 +602,99 @@ def test_a_spliced_code_table_is_refused_before_it_is_loaded(tmp_path: Path) -> 
     _git(repo, "commit", "-q", "-m", "splice")
     proc = _scan(repo, tmp_path / "scan")
     assert proc.returncode == 1
-    assert "refusing secret text inside bytecode" in proc.stderr
+    assert "refusing bytecode that is not on the base allow-list" in proc.stderr
     assert "Traceback" not in proc.stderr
+
+
+def _fixed_stride_run(data: bytes, need: int = 16) -> bool:
+    """Printable bytes with a fixed NUL gap. The old splice host tripped this."""
+
+    def scan(stride: int) -> bool:
+        gap = b"\x00" * (stride - 1)
+        length = len(data)
+        for align in range(stride):
+            run = 0
+            index = align
+            while index + stride <= length:
+                window = data[index : index + stride]
+                if 32 <= window[0] <= 126 and window[1:] == gap:
+                    run += 1
+                    if run >= need:
+                        return True
+                else:
+                    run = 0
+                index += stride
+        return False
+
+    return bool(data) and (scan(2) or scan(3) or scan(4))
+
+
+def test_a_clean_bytecode_host_passes_when_the_base_lists_it(tmp_path: Path) -> None:
+    """The host itself is not a NUL run, so a splice is what changes the blob."""
+    host = compile(
+        "def f(a, b, c):\n"
+        "    return (a + b) * c\n"
+        "print(f(1, 2, 3))\n"
+        "items = [f(i, i + 1, 2) for i in range(4)]\n",
+        "m.py",
+        "exec",
+    )
+    blob = _code_pyc(host)
+    assert _fixed_stride_run(marshal.dumps(host)) is False
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "m.pyc").write_bytes(blob)
+    _git(repo, "add", "m.pyc")
+    _git(repo, "commit", "-q", "-m", "clean host")
+    listed = _scan_as_base(repo, tmp_path / "listed")
+    assert listed.returncode == 0, listed.stderr
+    bare = tmp_path / "bare"
+    _init(bare)
+    (bare / "m.pyc").write_bytes(blob)
+    _git(bare, "add", "m.pyc")
+    _git(bare, "commit", "-q", "-m", "unlisted host")
+    unlisted = _scan(bare, tmp_path / "unlisted")
+    assert unlisted.returncode == 1
+    assert "refusing bytecode that is not on the base allow-list" in unlisted.stderr
+
+
+def test_random_non_text_code_splices_are_refused_without_a_crash(tmp_path: Path) -> None:
+    """High bytes, random bytes, and NUL-free pairs must not reach marshal."""
+    names = ("m.pyc", "notes.bin", "__pycache__/m.cpython-313.pyc")
+    refused = 0
+    total = 0
+    for salt in range(12):
+        length = 60 if salt % 2 == 0 else 40
+        if salt % 3 == 0:
+            planted = bytes((128 + ((salt * 17 + index) % 128)) for index in range(length))
+        elif salt % 3 == 1:
+            state = (salt + 1) * 997
+            raw = bytearray()
+            for index in range(length):
+                state = (state * 1664525 + 1013904223 + index) & 0xFFFFFFFF
+                raw.append(state & 0xFF)
+            planted = bytes(raw)
+        else:
+            planted = bytes(((index + salt) % 255) + 1 for index in range(length))
+        payload = _pyc_with_planted_code(planted)
+        repo = tmp_path / f"splice{salt}"
+        _init(repo)
+        name = names[salt % len(names)]
+        if "/" in name:
+            (repo / name).parent.mkdir()
+        (repo / name).write_bytes(payload)
+        _git(repo, "add", name)
+        _git(repo, "commit", "-q", "-m", "splice")
+        proc = _scan(repo, tmp_path / f"splice-scan{salt}")
+        total += 1
+        if (
+            proc.returncode == 1
+            and "refusing bytecode that is not on the base allow-list" in proc.stderr
+            and "Traceback" not in proc.stderr
+        ):
+            refused += 1
+    assert total == 12
+    assert refused == 12
 
 
 def test_bytecode_constants_and_renamed_files_do_not_hide_utf16(tmp_path: Path) -> None:
@@ -655,8 +776,16 @@ def test_historical_bytecode_on_main_is_consumed_exactly(tmp_path: Path) -> None
         (repo / f"blob{index}.pyc").write_bytes(data)
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "history")
-    proc = _scan(repo, tmp_path / "scan")
-    assert proc.returncode == 0
+    proc = _scan_as_base(repo, tmp_path / "scan")
+    assert proc.returncode == 0, proc.stderr
+    base = _head(repo)
+    (repo / "extra.pyc").write_bytes(_compiled(tmp_path))
+    _git(repo, "add", "extra.pyc")
+    _git(repo, "commit", "-q", "-m", "new bytecode")
+    added = _scan_at_base(repo, tmp_path / "added", base)
+    assert added.returncode == 1
+    assert "refusing bytecode that is not on the base allow-list" in added.stderr
+    assert "Traceback" not in added.stderr
 
 
 def test_a_pyc_header_in_front_of_utf16_is_refused(tmp_path: Path) -> None:
@@ -796,7 +925,7 @@ def test_a_short_utf16_constant_is_not_saved_by_the_blob_exemption(tmp_path: Pat
         (repo / "m.pyc").write_bytes(payload)
         _git(repo, "add", "m.pyc")
         _git(repo, "commit", "-q", "-m", "short")
-        proc = _scan(repo, tmp_path / f"short-scan{index}")
+        proc = _scan_as_base(repo, tmp_path / f"short-scan{index}")
         if proc.returncode == 1 and "refusing secret text inside bytecode" in proc.stderr:
             refused += 1
     assert refused == len(cases)
@@ -817,7 +946,7 @@ def test_marshal_containers_are_refused_as_bytecode(tmp_path: Path) -> None:
         (repo / "m.pyc").write_bytes(_header(payload))
         _git(repo, "add", "m.pyc")
         _git(repo, "commit", "-q", "-m", "box")
-        proc = _scan(repo, tmp_path / f"box-scan{index}")
+        proc = _scan_as_base(repo, tmp_path / f"box-scan{index}")
         if proc.returncode == 1 and "refusing secret text inside bytecode" in proc.stderr:
             refused += 1
     assert refused == len(payloads)
@@ -830,7 +959,7 @@ def test_a_long_bytecode_filename_is_not_refused(tmp_path: Path) -> None:
     (repo / "m.pyc").write_bytes(_code_pyc(code))
     _git(repo, "add", "m.pyc")
     _git(repo, "commit", "-q", "-m", "filename")
-    proc = _scan(repo, tmp_path / "scan")
+    proc = _scan_as_base(repo, tmp_path / "scan")
     assert proc.returncode == 0, proc.stderr
 
 
@@ -842,7 +971,7 @@ def test_ascii_after_a_nul_in_a_constant_is_still_refused(tmp_path: Path) -> Non
     (repo / "m.pyc").write_bytes(_code_pyc(code))
     _git(repo, "add", "m.pyc")
     _git(repo, "commit", "-q", "-m", "nul")
-    proc = _scan(repo, tmp_path / "scan")
+    proc = _scan_as_base(repo, tmp_path / "scan")
     assert proc.returncode == 1
     assert "refusing secret text inside bytecode" in proc.stderr
 
@@ -857,7 +986,7 @@ def test_a_deeply_nested_constant_is_refused(tmp_path: Path) -> None:
     (repo / "m.pyc").write_bytes(_code_pyc(code))
     _git(repo, "add", "m.pyc")
     _git(repo, "commit", "-q", "-m", "deep")
-    proc = _scan(repo, tmp_path / "scan")
+    proc = _scan_as_base(repo, tmp_path / "scan")
     assert proc.returncode == 1
     assert "Traceback" not in proc.stderr
     assert "refusing unreadable bytecode: m.pyc" in proc.stderr
@@ -870,10 +999,10 @@ def test_a_lone_surrogate_constant_is_refused(tmp_path: Path) -> None:
     (repo / "m.pyc").write_bytes(_code_pyc(code))
     _git(repo, "add", "m.pyc")
     _git(repo, "commit", "-q", "-m", "surrogate")
-    proc = _scan(repo, tmp_path / "scan")
+    proc = _scan_as_base(repo, tmp_path / "scan")
     assert proc.returncode == 1
     assert "Traceback" not in proc.stderr
-    assert "refusing" in proc.stderr
+    assert "refusing secret text inside bytecode" in proc.stderr
 
 
 def test_a_short_utf16_run_is_refused_in_a_binary_and_a_constant(tmp_path: Path) -> None:
@@ -899,7 +1028,7 @@ def test_a_short_utf16_run_is_refused_in_a_binary_and_a_constant(tmp_path: Path)
     (pyc / "m.pyc").write_bytes(_code_pyc(code))
     _git(pyc, "add", "m.pyc")
     _git(pyc, "commit", "-q", "-m", "pyc")
-    pyc_proc = _scan(pyc, tmp_path / "pyc-scan")
+    pyc_proc = _scan_as_base(pyc, tmp_path / "pyc-scan")
     assert png_proc.returncode == 1 and "refusing UTF-16 text" in png_proc.stderr
     assert pyc_proc.returncode == 1 and "refusing secret text inside bytecode" in pyc_proc.stderr
 

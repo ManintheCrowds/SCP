@@ -133,13 +133,10 @@ jobs:
           (
           cd "${RUNNER_TEMP}"
           PYTHONSAFEPATH=1 python3 -I - "${scan}" "${blob_allow}" << 'PY'
-          import io
           import json
-          import marshal
           import os
           import subprocess
           import sys
-          import types
           from pathlib import Path
 
           if not hasattr(os, "environ") or not hasattr(json, "dumps") or not hasattr(subprocess, "run"):
@@ -154,6 +151,23 @@ jobs:
                   item = raw.strip()
                   if item and not item.startswith("#"):
                       allowed_blobs.add(item)
+          # Blobs already on the base revision. A pull request cannot add an
+          # id here, and it cannot grant its own exemption through the file.
+          base_blobs = set()
+          base_sha = os.environ.get("BASE_SHA", "")
+          if base_sha:
+              listed_base = subprocess.run(
+                  ["git", "rev-list", "--objects", base_sha],
+                  cwd=root,
+                  capture_output=True,
+              )
+              if listed_base.returncode != 0:
+                  sys.stderr.write("refusing to scan: base object list failed\n")
+                  sys.exit(1)
+              for base_line in listed_base.stdout.splitlines():
+                  base_oid, _, _base_rest = base_line.partition(b" ")
+                  if base_oid:
+                      base_blobs.add(base_oid.decode("ascii"))
           # Content signatures. The file name is not an exemption.
           _MAGICS = (
               b"\x89PNG\r\n\x1a\n",
@@ -218,79 +232,6 @@ jobs:
 
               return bool(data) and (scan(2) or scan(3) or scan(4))
 
-          def _payload_hides_secret(obj: object, seen: set[int]) -> bool:
-              marker = id(obj)
-              if marker in seen:
-                  return False
-              seen.add(marker)
-              if isinstance(obj, types.CodeType):
-                  if any(_payload_hides_secret(getattr(obj, name), seen) for name in _CODE_TEXT):
-                      return True
-                  return any(_utf16_pairs(getattr(obj, name)) for name in _CODE_BINARY)
-              if isinstance(obj, (bytes, bytearray)):
-                  raw = bytes(obj)
-                  return utf16_text(raw) or ascii_after_nul(raw)
-              if isinstance(obj, str):
-                  try:
-                      utf8 = obj.encode("utf-8", "surrogateescape")
-                  except UnicodeEncodeError:
-                      return True
-                  try:
-                      latin = obj.encode("latin-1")
-                  except UnicodeEncodeError:
-                      latin = b""
-                  return (
-                      utf16_text(utf8)
-                      or ascii_after_nul(utf8)
-                      or utf16_text(latin)
-                      or ascii_after_nul(latin)
-                  )
-              if isinstance(obj, dict):
-                  return any(_payload_hides_secret(item, seen) for item in obj) or any(
-                      _payload_hides_secret(item, seen) for item in obj.values()
-                  )
-              if isinstance(obj, (tuple, list, set, frozenset)):
-                  return any(_payload_hides_secret(item, seen) for item in obj)
-              return False
-
-          def _load_marshal(payload: bytes) -> tuple[str, object]:
-              buffer = io.BytesIO(payload)
-              try:
-                  obj = marshal.load(buffer)
-              except Exception:
-                  return "error", None
-              if buffer.tell() != len(payload):
-                  return "partial", obj
-              return "ok", obj
-
-          def cpython_bytecode(data: bytes, name: str) -> bool:
-              """A .pyc whose marshal value is exactly one code object.
-
-              Every string field is scanned, including nested code objects.
-              Bytes and strings are checked as UTF-16 and as text hidden by
-              NUL bytes. The code and line tables are checked for a long
-              UTF-16 run.
-              Any other marshal error refuses the blob. A non-.pyc name is
-              never exempt.
-              """
-              if not name.endswith(".pyc") or len(data) < 16 or data[1:4] != b"\r\r\n":
-                  return False
-              # Do not load a blob that already looks like planted text.
-              if _utf16_pairs(data):
-                  return False
-              flags = int.from_bytes(data[4:8], "little")
-              if flags not in (0, 1):
-                  return False
-              status, obj = _load_marshal(data[16:])
-              if status == "error":
-                  sys.stderr.write(f"refusing unreadable bytecode: {name}\n")
-                  sys.exit(1)
-              if status != "ok" or not isinstance(obj, types.CodeType):
-                  return False
-              if _payload_hides_secret(obj, set()):
-                  return False
-              return True
-
           def utf16_text(data: bytes) -> bool:
               if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
                   return True
@@ -312,6 +253,137 @@ jobs:
                       run = 0
               return False
 
+          def _text_hides(text: str) -> bool:
+              try:
+                  utf8 = text.encode("utf-8", "surrogateescape")
+              except UnicodeEncodeError:
+                  return True
+              try:
+                  latin = text.encode("latin-1")
+              except UnicodeEncodeError:
+                  latin = b""
+              return (
+                  utf16_text(utf8)
+                  or ascii_after_nul(utf8)
+                  or utf16_text(latin)
+                  or ascii_after_nul(latin)
+              )
+
+          def _json_hides(node: object) -> bool:
+              if not isinstance(node, dict):
+                  return False
+              kind = node.get("k")
+              if kind == "code":
+                  fields = node.get("fields")
+                  if not isinstance(fields, dict):
+                      return True
+                  for name in _CODE_TEXT:
+                      if _json_hides(fields.get(name)):
+                          return True
+                  for name in _CODE_BINARY:
+                      raw = fields.get(name)
+                      if not isinstance(raw, dict) or raw.get("k") != "bytes":
+                          return True
+                      try:
+                          table = bytes.fromhex(str(raw.get("v", "")))
+                      except ValueError:
+                          return True
+                      if _utf16_pairs(table):
+                          return True
+                  return False
+              if kind == "bytes":
+                  try:
+                      raw = bytes.fromhex(str(node.get("v", "")))
+                  except ValueError:
+                      return True
+                  return utf16_text(raw) or ascii_after_nul(raw)
+              if kind == "str":
+                  codes = node.get("v")
+                  if not isinstance(codes, list):
+                      return True
+                  try:
+                      text = "".join(chr(int(code)) for code in codes)
+                  except (TypeError, ValueError, OverflowError):
+                      return True
+                  return _text_hides(text)
+              if kind == "dict":
+                  pairs = node.get("items")
+                  if not isinstance(pairs, list):
+                      return True
+                  return any(_json_hides(item) for pair in pairs for item in pair)
+              if kind == "seq":
+                  items = node.get("items")
+                  if not isinstance(items, list):
+                      return True
+                  return any(_json_hides(item) for item in items)
+              return False
+
+          # marshal.load runs only in this child. A signal or any other
+          # failure is a refusal. The parent never unmarshals a blob.
+          _CHILD = r"""
+          import io
+          import json
+          import marshal
+          import sys
+          import types
+
+          def emit(obj, seen, depth):
+              if isinstance(obj, (str, bytes, bytearray)):
+                  if isinstance(obj, str):
+                      return {"k": "str", "v": [ord(char) for char in obj]}
+                  return {"k": "bytes", "v": bytes(obj).hex()}
+              if depth > 1000:
+                  raise RuntimeError("deep")
+              marker = id(obj)
+              if marker in seen:
+                  return {"k": "other"}
+              seen.add(marker)
+              if isinstance(obj, types.CodeType):
+                  fields = {}
+                  for name in dir(obj):
+                      if name.startswith("co_"):
+                          fields[name] = emit(getattr(obj, name), seen, depth + 1)
+                  return {"k": "code", "fields": fields}
+              if isinstance(obj, dict):
+                  return {
+                      "k": "dict",
+                      "items": [
+                          [emit(key, seen, depth + 1), emit(value, seen, depth + 1)]
+                          for key, value in obj.items()
+                      ],
+                  }
+              if isinstance(obj, (tuple, list, set, frozenset)):
+                  return {"k": "seq", "items": [emit(item, seen, depth + 1) for item in obj]}
+              return {"k": "other"}
+
+          try:
+              payload = sys.stdin.buffer.read()
+              buffer = io.BytesIO(payload)
+              obj = marshal.load(buffer)
+              if buffer.tell() != len(payload):
+                  sys.exit(1)
+              json.dump(emit(obj, set(), 0), sys.stdout)
+          except Exception:
+              sys.exit(1)
+          """
+
+          def _child_bytecode(payload: bytes) -> tuple[str, object]:
+              try:
+                  proc = subprocess.run(
+                      [sys.executable, "-I", "-c", _CHILD],
+                      input=payload,
+                      capture_output=True,
+                      timeout=60,
+                  )
+              except subprocess.TimeoutExpired:
+                  return "crash", None
+              if proc.returncode != 0:
+                  return "crash", None
+              try:
+                  return "ok", json.loads(proc.stdout.decode("utf-8"))
+              except (UnicodeDecodeError, json.JSONDecodeError):
+                  return "crash", None
+
           listed = subprocess.run(
               ["git", "rev-list", "--objects", "HEAD"],
               cwd=root,
@@ -331,8 +403,7 @@ jobs:
               ).stdout.strip()
               if kind != b"blob":
                   continue
-              if oid.decode("ascii") in allowed_blobs:
-                  continue
+              oid_text = oid.decode("ascii")
               data = subprocess.run(
                   ["git", "cat-file", "blob", oid],
                   cwd=root,
@@ -340,29 +411,34 @@ jobs:
               ).stdout
               name = path.decode("utf-8", "replace")
               if len(data) >= 16 and data[1:4] == b"\r\r\n":
-                  # A UTF-16 run is refused before marshal.load. Loading a
-                  # spliced code table can crash the interpreter.
+                  # Any other bytecode is refused before marshal. The child
+                  # below is the only load, and only for a base blob.
+                  if oid_text not in allowed_blobs and oid_text not in base_blobs:
+                      sys.stderr.write(
+                          f"refusing bytecode that is not on the base allow-list: {name}\n"
+                      )
+                      sys.exit(1)
+                  # A long UTF-16 run is refused before the child loads it.
                   if _utf16_pairs(data):
                       sys.stderr.write(f"refusing secret text inside bytecode: {name}\n")
                       sys.exit(1)
-                  status, obj = _load_marshal(data[16:])
-                  if status == "error":
+                  status, tree = _child_bytecode(data[16:])
+                  if status != "ok":
                       sys.stderr.write(f"refusing unreadable bytecode: {name}\n")
                       sys.exit(1)
-                  try:
-                      hides = obj is not None and _payload_hides_secret(obj, set())
-                  except RecursionError:
-                      sys.stderr.write(f"refusing unreadable bytecode: {name}\n")
-                      sys.exit(1)
-                  if hides:
+                  if _json_hides(tree):
                       sys.stderr.write(f"refusing secret text inside bytecode: {name}\n")
                       sys.exit(1)
-              if utf16_text(data) and not cpython_bytecode(data, name):
+                  if isinstance(tree, dict) and tree.get("k") == "code":
+                      continue
+              if oid_text in allowed_blobs:
+                  continue
+              if utf16_text(data):
                   sys.stderr.write(f"refusing UTF-16 text: {name}\n")
                   sys.exit(1)
               if b"\x00" not in data:
                   continue
-              if ascii_after_nul(data) and not cpython_bytecode(data, name):
+              if ascii_after_nul(data):
                   sys.stderr.write(f"refusing text hidden after a NUL byte: {name}\n")
                   sys.exit(1)
               if not known_binary(data):
