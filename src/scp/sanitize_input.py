@@ -942,7 +942,19 @@ def _compile_poison_phrase(phrase: str) -> re.Pattern[str]:
         inner = stripped[1:-1].strip()
         if inner:
             return re.compile(r"<\s*" + re.escape(inner) + r"\s*>", re.IGNORECASE)
-    escaped = re.escape(stripped).replace(r"\ ", r"\s+")
+    parts: list[str] = []
+    join_chars = frozenset({".", "/", "\\", "_", "-"})
+    for index, char in enumerate(stripped):
+        if char.isspace():
+            parts.append(r"\s+")
+        elif char == "'":
+            parts.append(r"\s*'?\s*")
+        elif char in join_chars:
+            escaped_char = re.escape(char)
+            parts.append(escaped_char + r"\s*" if index == 0 else r"\s*" + escaped_char + r"\s*")
+        else:
+            parts.append(re.escape(char))
+    escaped = "".join(parts)
     ends_alnum = stripped[-1].isalnum()
     if stripped.startswith("."):
         prefix = r"(?<![\w.])"
