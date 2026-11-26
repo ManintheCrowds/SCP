@@ -45,6 +45,63 @@ jobs:
         working-directory: examples/promptfoo
         run: npx promptfoo eval -c promptfooconfig.yaml
 
+  # The checker script is the base revision's file. There is no fallback that
+  # runs this pull request's copy. Until main contains scripts/run_mask_check.py,
+  # a pull request fails closed.
+  mask-check:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: pinned-masker
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the base masker when that revision has a checker
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -f pinned-masker/scripts/run_mask_check.py ]; then
+            python3 -m pip install ./pinned-masker
+          fi
+      - name: Install the pushed masker
+        if: github.event_name != 'pull_request'
+        run: python3 -m pip install ./head
+      - name: Run the base mask checker
+        working-directory: head
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          BASE_DIR: ${{ github.workspace }}/pinned-masker
+          SCP_MASK_CHECK_ROOT: ${{ github.workspace }}/head
+        run: |
+          set -euo pipefail
+          # A pull request must not put its own tree on the import path.
+          unset PYTHONPATH
+          export PYTHONSAFEPATH=1
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            checker="${BASE_DIR}/scripts/run_mask_check.py"
+            if [ ! -f "$checker" ]; then
+              echo "base revision has no mask checker; failing closed" >&2
+              exit 1
+            fi
+            python3 -I "$checker"
+            exit $?
+          fi
+          if [ ! -f scripts/run_mask_check.py ]; then
+            echo "mask checker missing; failing closed" >&2
+            exit 1
+          fi
+          python3 -I scripts/run_mask_check.py
+
   # Required status context for main branch protection. Must keep this job id as CI.
   CI:
     needs: [contract, promptfoo-eval]
