@@ -98,8 +98,30 @@ REDACT_PATTERNS = [
 ]
 
 
+# The mask checker plants this shape at runtime. The prefix is concatenated
+# so this source file does not contain a token literal.
+_PERSONAL_TOKEN = re.compile(
+    "(?<![A-Za-z0-9])" + "".join(("gh", "p_")) + "[A-Za-z0-9]{36}(?![A-Za-z0-9])"
+)
+
+
 def mask(text: str) -> str:
     result = text
     for pattern, replacement in REDACT_PATTERNS:
         result = pattern.sub(replacement, result)
     return _mask_emails_linear(result)
+
+
+def has_secrets(text: str) -> bool:
+    """True when credential text is visible.
+
+    Email addresses alone do not count. mask() still redacts those.
+    The personal-token shape is included so a value built at runtime fails
+    the mask checker. Redaction behavior of mask() is unchanged.
+    """
+    if _PERSONAL_TOKEN.search(text):
+        return True
+    for pattern, _replacement in REDACT_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
