@@ -974,8 +974,8 @@ def scan_tool_poisoning(text: str) -> list[tuple[int, str, str, str]]:
     return findings
 
 
-def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
-    """Split ``<!-- ... -->`` comments out of text.
+def _extract_html_comment_views(text: str) -> tuple[str, str, list[tuple[int, str]]]:
+    """Split ``<!-- ... -->`` comments into glued and boundary-preserving views.
 
     Each full comment is removed from the visible text, matching how HTML
     comments disappear for renderers. Comment bodies are returned separately as
@@ -983,23 +983,36 @@ def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
     missing closer runs to the end of the input. One forward ``str.find`` walk
     stays linear when many comments are left unclosed.
     """
-    parts: list[str] = []
+    glued_parts: list[str] = []
+    spaced_parts: list[str] = []
     comments: list[tuple[int, str]] = []
     cursor = 0
     length = len(text)
     while cursor < length:
         start = text.find("<!--", cursor)
         if start < 0:
-            parts.append(text[cursor:])
+            tail = text[cursor:]
+            glued_parts.append(tail)
+            spaced_parts.append(tail)
             break
-        parts.append(text[cursor:start])
+        visible_part = text[cursor:start]
+        glued_parts.append(visible_part)
+        spaced_parts.append(visible_part)
         close = text.find("-->", start + 4)
         if close < 0:
             comments.append((start, text[start + 4 :]))
+            spaced_parts.append(" ")
             break
         comments.append((start, text[start + 4 : close]))
+        spaced_parts.append(" ")
         cursor = close + 3
-    return "".join(parts), comments
+    return "".join(glued_parts), "".join(spaced_parts), comments
+
+
+def extract_html_comments(text: str) -> tuple[str, list[tuple[int, str]]]:
+    """Split ``<!-- ... -->`` comments out of text."""
+    visible, _, comments = _extract_html_comment_views(text)
+    return visible, comments
 
 
 def _scan_finding_groups(raw: str, prepared: str) -> dict[str, list[tuple[int, str]]]:
@@ -1059,8 +1072,10 @@ def reconcile_severity(result: dict) -> None:
 
 def classify(text: str) -> dict:
     scp_limits.assert_within_limit(text, what="classify content")
-    visible, comments = extract_html_comments(text)
+    visible, spaced_visible, comments = _extract_html_comment_views(text)
     segments: list[tuple[str, int, str]] = [("text", 0, visible)]
+    if spaced_visible != visible:
+        segments.append(("text", 0, spaced_visible))
     for start, body in comments:
         if body.strip():
             segments.append(("html_comment", start, body))
